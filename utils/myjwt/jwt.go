@@ -36,7 +36,8 @@ func ParseToken(token string) (string, bool) {
 	t, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (interface{}, error) {
 		return []byte(config.GetConfig().Key), nil
 	})
-	if !t.Valid || err != nil || claims == nil {
+	// 先判断 err 和 t 是否为空，再访问 t.Valid，避免解析失败时出现空指针。
+	if err != nil || t == nil || !t.Valid || claims == nil {
 		return "", false
 	}
 	return claims.Username, true

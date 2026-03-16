@@ -13,18 +13,17 @@ import (
 func Login(username, password string) (string, code.Code) {
 	var userInformation *model.User
 	var ok bool
-	//1:判断用户是否存在
-	if ok, userInformation = user.IsExistUser(username); !ok {
 
+	// 登录链路按用户名查用户，保持当前外部接口不变。
+	if ok, userInformation = user.IsExistUser(username); !ok {
 		return "", code.CodeUserNotExist
 	}
-	//2:判断用户是否密码账号正确
+	// 当前仍沿用 MD5，对外行为不变，后续再单独升级为 bcrypt。
 	if userInformation.Password != utils.MD5(password) {
 		return "", code.CodeInvalidPassword
 	}
-	//3:返回一个Token
-	token, err := myjwt.GenerateToken(userInformation.ID, userInformation.Username)
 
+	token, err := myjwt.GenerateToken(userInformation.ID, userInformation.Username)
 	if err != nil {
 		return "", code.CodeServerBusy
 	}
@@ -32,36 +31,35 @@ func Login(username, password string) (string, code.Code) {
 }
 
 func Register(email, password, captcha string) (string, code.Code) {
-
-	var ok bool
 	var userInformation *model.User
 
-	//1:先判断用户是否已经存在了
-	if ok, _ := user.IsExistUser(email); ok {
+	// P0 修复：注册必须按邮箱查重，不能再把 email 当 username 去查。
+	if ok, err := user.ExistsByEmail(email); err != nil {
+		return "", code.CodeServerBusy
+	} else if ok {
 		return "", code.CodeUserExist
 	}
 
-	//2:从redis中验证验证码是否有效
-	if ok, _ := myredis.CheckCaptchaForEmail(email, captcha); !ok {
+	// 区分业务错误和系统错误：Redis 故障返回服务忙，验证码不匹配才返回验证码错误。
+	if ok, err := myredis.CheckCaptchaForEmail(email, captcha); err != nil {
+		return "", code.CodeServerBusy
+	} else if !ok {
 		return "", code.CodeInvalidCaptcha
 	}
 
-	//3：生成11位的账号
+	// 当前用户名仍由随机数字生成，这一轮先不扩展外部行为。
 	username := utils.GetRandomNumbers(11)
 
-	//4：注册到数据库中
-	if userInformation, ok = user.Register(username, email, password); !ok {
+	var err error
+	if userInformation, err = user.Register(username, email, password); err != nil {
 		return "", code.CodeServerBusy
 	}
 
-	//5：将账号一并发送到对应邮箱上去，后续需要账号登录
 	if err := myemail.SendCaptcha(email, username, user.UserNameMsg); err != nil {
 		return "", code.CodeServerBusy
 	}
 
-	// 6:生成Token
 	token, err := myjwt.GenerateToken(userInformation.ID, userInformation.Username)
-
 	if err != nil {
 		return "", code.CodeServerBusy
 	}
@@ -69,19 +67,14 @@ func Register(email, password, captcha string) (string, code.Code) {
 	return token, code.CodeSuccess
 }
 
-// 往指定邮箱发送验证码
-// 分为以下任务：
-// 1：先存放redis
-// 2：再进行远程发送
-func SendCaptcha(email_ string) code.Code {
-	send_code := utils.GetRandomNumbers(6)
-	//1:先存放到redis
-	if err := myredis.SetCaptchaForEmail(email_, send_code); err != nil {
+func SendCaptcha(email string) code.Code {
+	sendCode := utils.GetRandomNumbers(6)
+	// 先写 Redis，再发邮件，保证后续注册时有可校验的验证码。
+	if err := myredis.SetCaptchaForEmail(email, sendCode); err != nil {
 		return code.CodeServerBusy
 	}
 
-	//2:再进行远程发送
-	if err := myemail.SendCaptcha(email_, send_code, myemail.CodeMsg); err != nil {
+	if err := myemail.SendCaptcha(email, sendCode, myemail.CodeMsg); err != nil {
 		return code.CodeServerBusy
 	}
 

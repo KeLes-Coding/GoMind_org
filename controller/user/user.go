@@ -10,31 +10,34 @@ import (
 )
 
 type (
-	//这里的Username只能是账号登录，和我做的另一个项目有区别（邮箱账号均可)
+	// LoginRequest 对应账号密码登录的请求体。
 	LoginRequest struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
 	}
-	// omitempty当字段为空的时候，不返回这个东西
+
+	// LoginResponse 在统一响应结构上补充 token 字段。
 	LoginResponse struct {
 		controller.Response
 		Token string `json:"token,omitempty"`
 	}
-	//验证码由后端生成，存放到redis中，固然需要先发送一次请求CaptchaRequest,然后用返回的验证码
-	//邮箱以及密码进行注册，后续再将账号进行返回
+
+	// RegisterRequest 对注册入口做第一层格式校验。
 	RegisterRequest struct {
-		Email    string `json:"email" binding:"required"`
-		Captcha  string `json:"captcha"`
-		Password string `json:"password"`
+		Email    string `json:"email" binding:"required,email"`
+		Captcha  string `json:"captcha" binding:"required,len=6"`
+		Password string `json:"password" binding:"required,min=6"`
 	}
-	//注册成功之后，直接让其进行登录状态
+
+	// RegisterResponse 注册成功后直接返回登录态 token。
 	RegisterResponse struct {
 		controller.Response
 		Token string `json:"token,omitempty"`
 	}
 
+	// CaptchaRequest 仅接收邮箱，用于发送验证码。
 	CaptchaRequest struct {
-		Email string `json:"email" binding:"required"`
+		Email string `json:"email" binding:"required,email"`
 	}
 
 	CaptchaResponse struct {
@@ -43,9 +46,9 @@ type (
 )
 
 func Login(c *gin.Context) {
-
 	req := new(LoginRequest)
 	res := new(LoginResponse)
+	// controller 只做参数绑定和响应封装，不承载业务决策。
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
@@ -60,13 +63,12 @@ func Login(c *gin.Context) {
 	res.Success()
 	res.Token = token
 	c.JSON(http.StatusOK, res)
-
 }
 
 func Register(c *gin.Context) {
-
 	req := new(RegisterRequest)
 	res := new(RegisterResponse)
+	// 先拦截明显非法的输入，减少无效请求进入 service。
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
@@ -86,20 +88,18 @@ func Register(c *gin.Context) {
 func HandleCaptcha(c *gin.Context) {
 	req := new(CaptchaRequest)
 	res := new(CaptchaResponse)
-	//解析参数
+	// 验证码接口只校验邮箱格式，具体发送流程交给 service。
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
 
-	//给service层进行处理
 	code_ := user.SendCaptcha(req.Email)
 	if code_ != code.CodeSuccess {
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
 	}
-	//匿名字段，其实本身res.Success()调用就是res.Response.Success()
-	//res.Response.Success()
+
 	res.Success()
 	c.JSON(http.StatusOK, res)
 }
