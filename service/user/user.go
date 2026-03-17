@@ -1,6 +1,8 @@
 package user
 
 import (
+	"log"
+
 	"GopherAI/common/code"
 	myemail "GopherAI/common/email"
 	myredis "GopherAI/common/redis"
@@ -10,16 +12,18 @@ import (
 	"GopherAI/utils/myjwt"
 )
 
-func Login(username, password string) (string, code.Code) {
-	var userInformation *model.User
-	var ok bool
+const maxUsernameRetry = 5
 
-	// 登录链路仍按用户名查询，保持现有外部接口不变。
-	if ok, userInformation = user.IsExistUser(username); !ok {
+func Login(username, password string) (string, code.Code) {
+	userInformation, err := user.GetByUsername(username)
+	if err != nil {
+		return "", code.CodeServerBusy
+	}
+	if userInformation == nil {
 		return "", code.CodeUserNotExist
 	}
 
-	// 第二轮改造后优先校验 bcrypt；如果命中历史 MD5，则在成功登录后自动升级。
+	// 登录优先校验 bcrypt；如果命中历史 MD5，则在成功登录后自动升级。
 	passwordMatched := utils.VerifyPassword(userInformation.Password, password)
 	if !passwordMatched && userInformation.Password == utils.MD5(password) {
 		passwordMatched = true
@@ -40,12 +44,11 @@ func Login(username, password string) (string, code.Code) {
 }
 
 func Register(email, password, captcha string) (string, code.Code) {
-	var userInformation *model.User
-
-	// 注册必须按邮箱查重，不能再把 email 当成 username 去查。
-	if ok, err := user.ExistsByEmail(email); err != nil {
+	existingUser, err := user.GetByEmail(email)
+	if err != nil {
 		return "", code.CodeServerBusy
-	} else if ok {
+	}
+	if existingUser != nil {
 		return "", code.CodeUserExist
 	}
 
@@ -56,19 +59,30 @@ func Register(email, password, captcha string) (string, code.Code) {
 		return "", code.CodeInvalidCaptcha
 	}
 
-	username := utils.GetRandomNumbers(11)
-
 	// 新注册用户统一写入 bcrypt 哈希，不再继续写 MD5。
 	passwordHash, err := utils.HashPassword(password)
 	if err != nil {
 		return "", code.CodeServerBusy
 	}
 
-	if userInformation, err = user.Register(username, email, passwordHash); err != nil {
-		return "", code.CodeServerBusy
+	// 随机用户名有碰撞概率，这里做有限重试，避免一次碰撞就直接注册失败。
+	var userInformation *model.User
+	for i := 0; i < maxUsernameRetry; i++ {
+		username := utils.GetRandomNumbers(11)
+		userInformation, err = user.CreateUser(username, email, passwordHash)
+		if err == nil {
+			// 邮件发送属于附属通知链路，失败记录日志即可，不影响注册成功。
+			if mailErr := myemail.SendCaptcha(email, username, user.UserNameMsg); mailErr != nil {
+				log.Printf("[register] user created but failed to send username email, email=%s username=%s err=%v", email, username, mailErr)
+			}
+			break
+		}
+		if err != user.ErrDuplicateUsername {
+			return "", code.CodeServerBusy
+		}
 	}
 
-	if err := myemail.SendCaptcha(email, username, user.UserNameMsg); err != nil {
+	if userInformation == nil {
 		return "", code.CodeServerBusy
 	}
 
