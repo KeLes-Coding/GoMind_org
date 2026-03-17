@@ -3,7 +3,6 @@ package user
 import (
 	"GopherAI/common/mysql"
 	"GopherAI/model"
-	"GopherAI/utils"
 
 	"gorm.io/gorm"
 )
@@ -34,16 +33,21 @@ func ExistsByEmail(email string) (bool, error) {
 	return true, nil
 }
 
-func Register(username, email, password string) (*model.User, error) {
-	// DAO 只负责落库，service 负责组织注册流程。
+// Register 只负责把已经处理好的用户信息落库，不在 DAO 层做密码加密。
+func Register(username, email, passwordHash string) (*model.User, error) {
 	user, err := mysql.InsertUser(&model.User{
 		Email:    email,
 		Name:     username,
 		Username: username,
-		Password: utils.MD5(password),
+		Password: passwordHash,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return user, nil
+}
+
+// UpdatePasswordHash 在历史 MD5 密码用户成功登录后，回写新的 bcrypt 哈希。
+func UpdatePasswordHash(userID int64, passwordHash string) error {
+	return mysql.UpdateUserPasswordByID(userID, passwordHash)
 }

@@ -22,7 +22,6 @@ func InitMysql() error {
 	password := config.GetConfig().MysqlPassword
 	charset := config.GetConfig().MysqlCharset
 
-	//dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=%s&parseTime=true&loc=Local", username, password, host, port, dbname, charset)
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=true&loc=Local", username, password, host, port, dbname, charset)
 
 	var log logger.Interface
@@ -80,7 +79,12 @@ func GetUserByUsername(username string) (*model.User, error) {
 
 func GetUserByEmail(email string) (*model.User, error) {
 	user := new(model.User)
-	// 注册链路新增按邮箱查重能力，保持查询逻辑和用户名查询一致。
+	// 注册链路需要按邮箱查重，保持查询方式和用户名查询一致。
 	err := DB.Where("email = ?", email).First(user).Error
 	return user, err
+}
+
+// UpdateUserPasswordByID 用于密码哈希算法升级时回写新的密码哈希。
+func UpdateUserPasswordByID(id int64, password string) error {
+	return DB.Model(&model.User{}).Where("id = ?", id).Update("password", password).Error
 }

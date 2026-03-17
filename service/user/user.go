@@ -14,12 +14,21 @@ func Login(username, password string) (string, code.Code) {
 	var userInformation *model.User
 	var ok bool
 
-	// 登录链路按用户名查用户，保持当前外部接口不变。
+	// 登录链路仍按用户名查询，保持现有外部接口不变。
 	if ok, userInformation = user.IsExistUser(username); !ok {
 		return "", code.CodeUserNotExist
 	}
-	// 当前仍沿用 MD5，对外行为不变，后续再单独升级为 bcrypt。
-	if userInformation.Password != utils.MD5(password) {
+
+	// 第二轮改造后优先校验 bcrypt；如果命中历史 MD5，则在成功登录后自动升级。
+	passwordMatched := utils.VerifyPassword(userInformation.Password, password)
+	if !passwordMatched && userInformation.Password == utils.MD5(password) {
+		passwordMatched = true
+		if passwordHash, err := utils.HashPassword(password); err == nil {
+			// 这里只做平滑升级，不影响本次登录结果。
+			_ = user.UpdatePasswordHash(userInformation.ID, passwordHash)
+		}
+	}
+	if !passwordMatched {
 		return "", code.CodeInvalidPassword
 	}
 
@@ -33,25 +42,29 @@ func Login(username, password string) (string, code.Code) {
 func Register(email, password, captcha string) (string, code.Code) {
 	var userInformation *model.User
 
-	// P0 修复：注册必须按邮箱查重，不能再把 email 当 username 去查。
+	// 注册必须按邮箱查重，不能再把 email 当成 username 去查。
 	if ok, err := user.ExistsByEmail(email); err != nil {
 		return "", code.CodeServerBusy
 	} else if ok {
 		return "", code.CodeUserExist
 	}
 
-	// 区分业务错误和系统错误：Redis 故障返回服务忙，验证码不匹配才返回验证码错误。
+	// 业务错误和基础设施错误分开处理，避免 Redis 故障被误报成验证码错误。
 	if ok, err := myredis.CheckCaptchaForEmail(email, captcha); err != nil {
 		return "", code.CodeServerBusy
 	} else if !ok {
 		return "", code.CodeInvalidCaptcha
 	}
 
-	// 当前用户名仍由随机数字生成，这一轮先不扩展外部行为。
 	username := utils.GetRandomNumbers(11)
 
-	var err error
-	if userInformation, err = user.Register(username, email, password); err != nil {
+	// 新注册用户统一写入 bcrypt 哈希，不再继续写 MD5。
+	passwordHash, err := utils.HashPassword(password)
+	if err != nil {
+		return "", code.CodeServerBusy
+	}
+
+	if userInformation, err = user.Register(username, email, passwordHash); err != nil {
 		return "", code.CodeServerBusy
 	}
 

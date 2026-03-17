@@ -15,6 +15,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func GetRandomNumbers(num int) string {
@@ -22,25 +23,38 @@ func GetRandomNumbers(num int) string {
 
 	code := ""
 	for i := 0; i < num; i++ {
-		// 0~9随机数
 		digit := r.Intn(10)
 		code += strconv.Itoa(digit)
 	}
 	return code
 }
 
-// MD5 MD5加密
+// MD5 保留给历史密码兼容逻辑使用，新注册不再写入 MD5。
 func MD5(str string) string {
 	m := md5.New()
 	m.Write([]byte(str))
 	return hex.EncodeToString(m.Sum(nil))
 }
 
+// HashPassword 使用 bcrypt 生成密码哈希，用于新注册用户。
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(bytes), nil
+}
+
+// VerifyPassword 校验 bcrypt 哈希是否与用户输入匹配。
+func VerifyPassword(hashedPassword, password string) bool {
+	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password)) == nil
+}
+
 func GenerateUUID() string {
 	return uuid.New().String()
 }
 
-// 将 schema 消息转换为数据库可存储的格式
+// ConvertToModelMessage 把 schema.Message 转成数据库可存储的消息结构。
 func ConvertToModelMessage(sessionID string, userName string, msg *schema.Message) *model.Message {
 	return &model.Message{
 		SessionID: sessionID,
@@ -49,7 +63,7 @@ func ConvertToModelMessage(sessionID string, userName string, msg *schema.Messag
 	}
 }
 
-// 将数据库消息转换为 schema 消息（供 AI 使用）
+// ConvertToSchemaMessages 把数据库消息转换成 schema.Message，供 AI 模块继续使用。
 func ConvertToSchemaMessages(msgs []*model.Message) []*schema.Message {
 	schemaMsgs := make([]*schema.Message, 0, len(msgs))
 	for _, m := range msgs {
@@ -65,12 +79,12 @@ func ConvertToSchemaMessages(msgs []*model.Message) []*schema.Message {
 	return schemaMsgs
 }
 
-// RemoveAllFilesInDir 删除目录中的所有文件（不删除子目录）
+// RemoveAllFilesInDir 删除目录中的所有文件，但保留子目录。
 func RemoveAllFilesInDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // 目录不存在就算了
+			return nil
 		}
 		return err
 	}
@@ -86,9 +100,8 @@ func RemoveAllFilesInDir(dir string) error {
 	return nil
 }
 
-// ValidateFile 校验文件是否为允许的文本文件（.md 或 .txt）
+// ValidateFile 校验上传文件是否为允许的文本文件，目前只接受 .md 和 .txt。
 func ValidateFile(file *multipart.FileHeader) error {
-	// 校验文件扩展名
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if ext != ".md" && ext != ".txt" {
 		return fmt.Errorf("文件类型不正确，只允许 .md 或 .txt 文件，当前扩展名: %s", ext)
