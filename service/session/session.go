@@ -1,79 +1,131 @@
-package session
+﻿package session
 
 import (
 	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
-	"GopherAI/dao/session"
+	messageDAO "GopherAI/dao/message"
+	sessionDAO "GopherAI/dao/session"
 	"GopherAI/model"
 	"context"
+	"errors"
 	"log"
 	"net/http"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
-var ctx = context.Background()
+// buildAIConfig 统一构造模型初始化参数，避免同步和流式链路重复拼装配置。
+func buildAIConfig(userName string) map[string]interface{} {
+	return map[string]interface{}{
+		"apiKey":   "your-api-key", // TODO: 后续从配置中心或环境变量读取
+		"username": userName,       // RAG / MCP 等模型需要知道当前用户身份
+	}
+}
 
-func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
-	//获取用户的所有会话ID
+// ensureOwnedSession 统一校验会话是否存在，以及是否属于当前用户。
+// 数据库负责会话真相和权限边界，不能只靠运行时 helper 判断会话是否合法。
+func ensureOwnedSession(userName string, sessionID string) (*model.Session, code.Code) {
+	sess, err := sessionDAO.GetSessionByID(sessionID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, code.CodeRecordNotFound
+		}
+		log.Println("ensureOwnedSession GetSessionByID error:", err)
+		return nil, code.CodeServerBusy
+	}
 
+	if sess.UserName != userName {
+		return nil, code.CodeForbidden
+	}
+
+	return sess, code.CodeSuccess
+}
+
+// getOrCreateHelperWithHistory 优先复用当前进程中的 helper；
+// 如果 helper 不存在，就从数据库回放历史消息，再把 helper 放回 manager 中缓存。
+func getOrCreateHelperWithHistory(userName string, sessionID string, modelType string) (*aihelper.AIHelper, code.Code) {
 	manager := aihelper.GetGlobalManager()
-	Sessions := manager.GetUserSessions(userName)
+	if helper, exists := manager.GetAIHelper(userName, sessionID); exists {
+		return helper, code.CodeSuccess
+	}
 
-	var SessionInfos []model.SessionInfo
+	helper, err := manager.GetOrCreateAIHelper(userName, sessionID, modelType, buildAIConfig(userName))
+	if err != nil {
+		log.Println("getOrCreateHelperWithHistory GetOrCreateAIHelper error:", err)
+		return nil, code.AIModelFail
+	}
 
-	for _, session := range Sessions {
-		SessionInfos = append(SessionInfos, model.SessionInfo{
-			SessionID: session,
-			Title:     session, // 暂时用sessionID作为标题，后续重构需要的时候可以更改
+	// helper 首次进入当前进程时，需要从数据库回放消息历史，恢复会话上下文。
+	msgs, err := messageDAO.GetMessagesBySessionID(sessionID)
+	if err != nil {
+		log.Println("getOrCreateHelperWithHistory GetMessagesBySessionID error:", err)
+		return nil, code.CodeServerBusy
+	}
+	if len(msgs) > 0 {
+		helper.LoadMessages(msgs)
+	}
+
+	manager.SetAIHelper(userName, sessionID, helper)
+	return helper, code.CodeSuccess
+}
+
+// GetUserSessionsByUserName 从数据库读取会话列表。
+// 会话列表属于业务真相，不能依赖进程内 helper 的生命周期。
+func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
+	sessions, err := sessionDAO.GetSessionsByUserName(userName)
+	if err != nil {
+		return nil, err
+	}
+
+	sessionInfos := make([]model.SessionInfo, 0, len(sessions))
+	for _, sess := range sessions {
+		sessionInfos = append(sessionInfos, model.SessionInfo{
+			SessionID: sess.ID,
+			Title:     sess.Title,
 		})
 	}
 
-	return SessionInfos, nil
+	return sessionInfos, nil
 }
 
-func CreateSessionAndSendMessage(userName string, userQuestion string, modelType string) (string, string, code.Code) {
-	//1：创建一个新的会话
+// CreateSessionAndSendMessage 创建新会话并发送第一条消息。
+func CreateSessionAndSendMessage(ctx context.Context, userName string, userQuestion string, modelType string) (string, string, code.Code) {
 	newSession := &model.Session{
 		ID:       uuid.New().String(),
 		UserName: userName,
-		Title:    userQuestion, // 可以根据需求设置标题，这边暂时用用户第一次的问题作为标题
+		// 先保持现有产品语义：用首条问题作为会话标题。
+		Title: userQuestion,
 	}
-	createdSession, err := session.CreateSession(newSession)
+	createdSession, err := sessionDAO.CreateSession(newSession)
 	if err != nil {
 		log.Println("CreateSessionAndSendMessage CreateSession error:", err)
 		return "", "", code.CodeServerBusy
 	}
 
-	//2：获取AIHelper并通过其管理消息
-	manager := aihelper.GetGlobalManager()
-	config := map[string]interface{}{
-		"apiKey":   "your-api-key", // TODO: 从配置中获取
-		"username": userName,       // 用于 RAG 模型获取用户文档
-	}
-	helper, err := manager.GetOrCreateAIHelper(userName, createdSession.ID, modelType, config)
-	if err != nil {
-		log.Println("CreateSessionAndSendMessage GetOrCreateAIHelper error:", err)
-		return "", "", code.AIModelFail
+	helper, code_ := getOrCreateHelperWithHistory(userName, createdSession.ID, modelType)
+	if code_ != code.CodeSuccess {
+		return "", "", code_
 	}
 
-	//3：生成AI回复
-	aiResponse, err_ := helper.GenerateResponse(userName, ctx, userQuestion)
-	if err_ != nil {
-		log.Println("CreateSessionAndSendMessage GenerateResponse error:", err_)
+	aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
+	if err != nil {
+		log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
 		return "", "", code.AIModelFail
 	}
 
 	return createdSession.ID, aiResponse.Content, code.CodeSuccess
 }
 
+// CreateStreamSessionOnly 只创建会话，不发送消息。
+// 流式场景先下发 sessionID，再开始持续推流。
 func CreateStreamSessionOnly(userName string, userQuestion string) (string, code.Code) {
 	newSession := &model.Session{
 		ID:       uuid.New().String(),
 		UserName: userName,
 		Title:    userQuestion,
 	}
-	createdSession, err := session.CreateSession(newSession)
+	createdSession, err := sessionDAO.CreateSession(newSession)
 	if err != nil {
 		log.Println("CreateStreamSessionOnly CreateSession error:", err)
 		return "", code.CodeServerBusy
@@ -81,46 +133,39 @@ func CreateStreamSessionOnly(userName string, userQuestion string) (string, code
 	return createdSession.ID, code.CodeSuccess
 }
 
-func StreamMessageToExistingSession(userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
-	// 确保 writer 支持 Flush
+// StreamMessageToExistingSession 向已有会话发送一条流式消息。
+func StreamMessageToExistingSession(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
 		log.Println("StreamMessageToExistingSession: streaming unsupported")
 		return code.CodeServerBusy
 	}
 
-	manager := aihelper.GetGlobalManager()
-	config := map[string]interface{}{
-		"apiKey":   "your-api-key", // TODO: 从配置中获取
-		"username": userName,       // 用于 RAG 模型获取用户文档
+	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+		return code_
 	}
-	helper, err := manager.GetOrCreateAIHelper(userName, sessionID, modelType, config)
-	if err != nil {
-		log.Println("StreamMessageToExistingSession GetOrCreateAIHelper error:", err)
-		return code.AIModelFail
+
+	helper, code_ := getOrCreateHelperWithHistory(userName, sessionID, modelType)
+	if code_ != code.CodeSuccess {
+		return code_
 	}
 
 	cb := func(msg string) {
-		// 直接发送数据，不转义
-		// SSE 格式：data: <content>\n\n
-		log.Printf("[SSE] Sending chunk: %s (len=%d)\n", msg, len(msg))
+		// SSE 要求每个片段都按 "data: xxx\n\n" 输出，并在每次写入后立即 flush。
 		_, err := writer.Write([]byte("data: " + msg + "\n\n"))
 		if err != nil {
-			log.Println("[SSE] Write error:", err)
+			log.Println("StreamMessageToExistingSession Write error:", err)
 			return
 		}
-		flusher.Flush() //  每次必须 flush
-		log.Println("[SSE] Flushed")
+		flusher.Flush()
 	}
 
-	_, err_ := helper.StreamResponse(userName, ctx, cb, userQuestion)
-	if err_ != nil {
-		log.Println("StreamMessageToExistingSession StreamResponse error:", err_)
+	if _, err := helper.StreamResponse(userName, ctx, cb, userQuestion); err != nil {
+		log.Println("StreamMessageToExistingSession StreamResponse error:", err)
 		return code.AIModelFail
 	}
 
-	_, err = writer.Write([]byte("data: [DONE]\n\n"))
-	if err != nil {
+	if _, err := writer.Write([]byte("data: [DONE]\n\n")); err != nil {
 		log.Println("StreamMessageToExistingSession write DONE error:", err)
 		return code.AIModelFail
 	}
@@ -129,60 +174,59 @@ func StreamMessageToExistingSession(userName string, sessionID string, userQuest
 	return code.CodeSuccess
 }
 
-func CreateStreamSessionAndSendMessage(userName string, userQuestion string, modelType string, writer http.ResponseWriter) (string, code.Code) {
-
+// CreateStreamSessionAndSendMessage 创建会话后立即走流式回复。
+func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, userQuestion string, modelType string, writer http.ResponseWriter) (string, code.Code) {
 	sessionID, code_ := CreateStreamSessionOnly(userName, userQuestion)
 	if code_ != code.CodeSuccess {
 		return "", code_
 	}
 
-	code_ = StreamMessageToExistingSession(userName, sessionID, userQuestion, modelType, writer)
+	code_ = StreamMessageToExistingSession(ctx, userName, sessionID, userQuestion, modelType, writer)
 	if code_ != code.CodeSuccess {
-
 		return sessionID, code_
 	}
 
 	return sessionID, code.CodeSuccess
 }
 
-func ChatSend(userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
-	//1：获取AIHelper
-	manager := aihelper.GetGlobalManager()
-	config := map[string]interface{}{
-		"username": userName, // 用于 RAG 模型获取用户文档（若当前用户选择了RAG模型，该字段将会被用到）
-	}
-	helper, err := manager.GetOrCreateAIHelper(userName, sessionID, modelType, config)
-	if err != nil {
-		log.Println("ChatSend GetOrCreateAIHelper error:", err)
-		return "", code.AIModelFail
+// ChatSend 向已有会话发送同步消息。
+func ChatSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
+	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+		return "", code_
 	}
 
-	//2：生成AI回复
-	aiResponse, err_ := helper.GenerateResponse(userName, ctx, userQuestion)
-	if err_ != nil {
-		log.Println("ChatSend GenerateResponse error:", err_)
+	helper, code_ := getOrCreateHelperWithHistory(userName, sessionID, modelType)
+	if code_ != code.CodeSuccess {
+		return "", code_
+	}
+
+	aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
+	if err != nil {
+		log.Println("ChatSend GenerateResponse error:", err)
 		return "", code.AIModelFail
 	}
 
 	return aiResponse.Content, code.CodeSuccess
 }
 
+// GetChatHistory 从数据库读取历史消息。
+// 历史接口强调可恢复性和一致性，因此必须以数据库中的消息记录为准。
 func GetChatHistory(userName string, sessionID string) ([]model.History, code.Code) {
-	// 获取AIHelper中的消息历史
-	manager := aihelper.GetGlobalManager()
-	helper, exists := manager.GetAIHelper(userName, sessionID)
-	if !exists {
+	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+		return nil, code_
+	}
+
+	messages, err := messageDAO.GetMessagesBySessionID(sessionID)
+	if err != nil {
+		log.Println("GetChatHistory GetMessagesBySessionID error:", err)
 		return nil, code.CodeServerBusy
 	}
 
-	messages := helper.GetMessages()
 	history := make([]model.History, 0, len(messages))
-
-	// 转换消息为历史格式（根据消息顺序或内容判断用户/AI消息）
-	for i, msg := range messages {
-		isUser := i%2 == 0
+	for _, msg := range messages {
+		// 直接使用持久化的 IsUser 字段，避免再通过奇偶位猜测消息身份。
 		history = append(history, model.History{
-			IsUser:  isUser,
+			IsUser:  msg.IsUser,
 			Content: msg.Content,
 		})
 	}
@@ -190,7 +234,7 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 	return history, code.CodeSuccess
 }
 
-func ChatStreamSend(userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
-
-	return StreamMessageToExistingSession(userName, sessionID, userQuestion, modelType, writer)
+// ChatStreamSend 向已有会话发送流式消息。
+func ChatStreamSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
+	return StreamMessageToExistingSession(ctx, userName, sessionID, userQuestion, modelType, writer)
 }
