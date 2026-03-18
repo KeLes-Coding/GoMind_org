@@ -3,6 +3,8 @@ package message
 import (
 	"GopherAI/common/mysql"
 	"GopherAI/model"
+
+	"gorm.io/gorm/clause"
 )
 
 func GetMessagesBySessionID(sessionID string) ([]model.Message, error) {
@@ -21,7 +23,11 @@ func GetMessagesBySessionIDs(sessionIDs []string) ([]model.Message, error) {
 }
 
 func CreateMessage(message *model.Message) (*model.Message, error) {
-	err := mysql.DB.Create(message).Error
+	// 以 message_key 作为幂等键；如果消息因为 MQ 重投被重复消费，这里直接忽略重复写入。
+	err := mysql.DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "message_key"}},
+		DoNothing: true,
+	}).Create(message).Error
 	return message, err
 }
 

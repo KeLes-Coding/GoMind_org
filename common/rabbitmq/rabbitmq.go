@@ -1,109 +1,162 @@
-package rabbitmq
+﻿package rabbitmq
 
 import (
 	"GopherAI/config"
 	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	"github.com/streadway/amqp"
 )
 
-// 全局connection对象
-// 所有RabbitMQ都会复用该对象
 var conn *amqp.Connection
 
-// 初始化connection
 func initConn() {
 	c := config.GetConfig()
-	mqUrl := fmt.Sprintf(
+	mqURL := fmt.Sprintf(
 		"amqp://%s:%s@%s:%d/%s",
 		c.RabbitmqUsername, c.RabbitmqPassword, c.RabbitmqHost, c.RabbitmqPort, c.RabbitmqVhost,
 	)
-	log.Println("mqUrl is  " + mqUrl)
+
 	var err error
-	conn, err = amqp.Dial(mqUrl)
+	conn, err = amqp.Dial(mqURL)
 	if err != nil {
-		log.Fatalf("RabbitMQ connection failed: %v", err) // 输出错误并退出程序
+		log.Fatalf("RabbitMQ connection failed: %v", err)
 	}
 }
 
-// RabbitMQ RabbitMQ结构体
+// RabbitMQ 同时维护发布和消费两个 channel。
+// 这样发布确认和消费确认就不会互相干扰。
 type RabbitMQ struct {
-	conn     *amqp.Connection
-	channel  *amqp.Channel
-	Exchange string
-	Key      string
+	conn           *amqp.Connection
+	publishChannel *amqp.Channel
+	consumeChannel *amqp.Channel
+	confirmChan    <-chan amqp.Confirmation
+	publishMu      sync.Mutex
+	Exchange       string
+	Key            string
 }
 
-// NewRabbitMQ 创建RabbitMQ对象
 func NewRabbitMQ(exchange string, key string) *RabbitMQ {
 	return &RabbitMQ{Exchange: exchange, Key: key}
 }
 
-// Destroy 断开 channel 和 connection
+// Destroy 关闭 channel 和 connection。
 func (r *RabbitMQ) Destroy() {
-	_ = r.channel.Close()
-	_ = r.conn.Close()
+	if r.publishChannel != nil {
+		_ = r.publishChannel.Close()
+	}
+	if r.consumeChannel != nil {
+		_ = r.consumeChannel.Close()
+	}
+	if r.conn != nil {
+		_ = r.conn.Close()
+	}
 }
 
-// NewWorkRabbitMQ 创建Work模式的RabbitMQ实例
+// NewWorkRabbitMQ 创建 work queue 模式实例。
 func NewWorkRabbitMQ(queue string) *RabbitMQ {
-	// new rabbitmq
 	rabbitmq := NewRabbitMQ("", queue)
 
-	// get connection
 	if conn == nil {
 		initConn()
 	}
 	rabbitmq.conn = conn
 
-	// get channel
 	var err error
-	rabbitmq.channel, err = rabbitmq.conn.Channel()
+	rabbitmq.publishChannel, err = rabbitmq.conn.Channel()
 	if err != nil {
+		panic(err.Error())
+	}
+
+	rabbitmq.consumeChannel, err = rabbitmq.conn.Channel()
+	if err != nil {
+		panic(err.Error())
+	}
+
+	// 打开发布确认；只有 broker 确认收到消息后，Publish 才返回成功。
+	if err = rabbitmq.publishChannel.Confirm(false); err != nil {
+		panic(err.Error())
+	}
+	rabbitmq.confirmChan = rabbitmq.publishChannel.NotifyPublish(make(chan amqp.Confirmation, 1))
+
+	// 每次只预取一条，确保消费端只有在当前消息处理完成后才拿下一条。
+	if err = rabbitmq.consumeChannel.Qos(1, 0, false); err != nil {
 		panic(err.Error())
 	}
 
 	return rabbitmq
 }
 
-// Publish 发送消息
-func (r *RabbitMQ) Publish(message []byte) error {
-	// 创建队列（不存在时）
-	// 使用默认交换机的情况下，queue即为key
-	_, err := r.channel.QueueDeclare(r.Key, false, false, false, false, nil)
-	if err != nil {
-		return err
-	}
-
-	// 调用 channel 发送消息到队列
-	return r.channel.Publish(r.Exchange, r.Key, false, false,
-		amqp.Publishing{
-			ContentType: "text/plain",
-			Body:        message,
-		},
+// ensureQueue 保证发布和消费看到的是同一个 durable queue。
+func (r *RabbitMQ) ensureQueue(channel *amqp.Channel) (amqp.Queue, error) {
+	return channel.QueueDeclare(
+		r.Key,
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 }
 
-// Consume 消费者
-// handle: 消息的消费业务函数，用于消费消息
+// Publish 发送消息到队列，并等待 broker 的发布确认。
+func (r *RabbitMQ) Publish(message []byte) error {
+	r.publishMu.Lock()
+	defer r.publishMu.Unlock()
+
+	if _, err := r.ensureQueue(r.publishChannel); err != nil {
+		return err
+	}
+
+	if err := r.publishChannel.Publish(r.Exchange, r.Key, false, false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			Body:         message,
+			DeliveryMode: amqp.Persistent,
+			Timestamp:    time.Now(),
+		},
+	); err != nil {
+		return err
+	}
+
+	select {
+	case confirm, ok := <-r.confirmChan:
+		if !ok {
+			return fmt.Errorf("rabbitmq confirm channel closed")
+		}
+		if !confirm.Ack {
+			return fmt.Errorf("rabbitmq broker nack message")
+		}
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("rabbitmq publish confirm timeout")
+	}
+}
+
+// Consume 消费消息并使用手动 ack。
+// 只有 handle 成功返回后才确认消费，失败则重新入队。
 func (r *RabbitMQ) Consume(handle func(msg *amqp.Delivery) error) {
-	// 创建队列
-	q, err := r.channel.QueueDeclare(r.Key, false, false, false, false, nil)
+	q, err := r.ensureQueue(r.consumeChannel)
 	if err != nil {
 		panic(err)
 	}
 
-	// 接收消息
-	msgs, err := r.channel.Consume(q.Name, "", true, false, false, false, nil)
+	msgs, err := r.consumeChannel.Consume(q.Name, "", false, false, false, false, nil)
 	if err != nil {
 		panic(err)
 	}
 
-	// 处理消息
 	for msg := range msgs {
 		if err := handle(&msg); err != nil {
-			fmt.Println(err.Error())
+			log.Println("rabbitmq consume handle error:", err)
+			_ = msg.Nack(false, true)
+			continue
+		}
+
+		if err := msg.Ack(false); err != nil {
+			log.Println("rabbitmq ack error:", err)
 		}
 	}
 }

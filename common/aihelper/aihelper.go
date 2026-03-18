@@ -26,7 +26,7 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 		messages: make([]*model.Message, 0),
 		// 默认通过 RabbitMQ 异步落库，降低聊天主链路上的数据库写入压力。
 		saveFunc: func(msg *model.Message) (*model.Message, error) {
-			data := rabbitmq.GenerateMessageMQParam(msg.SessionID, msg.Content, msg.UserName, msg.IsUser)
+			data := rabbitmq.GenerateMessageMQParam(msg.MessageKey, msg.SessionID, msg.Content, msg.UserName, msg.IsUser)
 			err := rabbitmq.RMQMessage.Publish(data)
 			return msg, err
 		},
@@ -38,6 +38,7 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 // Save=true 时继续走异步持久化；Save=false 时只做内存回放，不重复入库。
 func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save bool) {
 	userMsg := model.Message{
+		MessageKey: utils.GenerateUUID(),
 		SessionID: a.SessionID,
 		Content:   Content,
 		UserName:  UserName,

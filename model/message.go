@@ -6,6 +6,7 @@ import (
 
 type Message struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	MessageKey string   `gorm:"type:varchar(64);uniqueIndex;not null" json:"message_key"`
 	SessionID string    `gorm:"index;not null;type:varchar(36)" json:"session_id"`
 	UserName  string    `gorm:"type:varchar(20)" json:"username"`
 	Content   string    `gorm:"type:text" json:"content"`
