@@ -1,4 +1,4 @@
-package aihelper
+﻿package aihelper
 
 import (
 	"context"
@@ -6,10 +6,25 @@ import (
 	"sync"
 )
 
-// ModelCreator 定义模型创建函数类型（需要 context）
+const (
+	// ModelTypeOpenAI 保持现有对外协议不变，仍然使用原来的字符串值。
+	ModelTypeOpenAI = "1"
+	ModelTypeRAG    = "2"
+	ModelTypeMCP    = "3"
+	ModelTypeOllama = "4"
+)
+
+var supportedModelTypes = map[string]struct{}{
+	ModelTypeOpenAI: {},
+	ModelTypeRAG:    {},
+	ModelTypeMCP:    {},
+	ModelTypeOllama: {},
+}
+
+// ModelCreator 定义模型构造函数签名。
 type ModelCreator func(ctx context.Context, config map[string]interface{}) (AIModel, error)
 
-// AIModelFactory AI模型工厂
+// AIModelFactory 负责按照模型类型创建具体模型实例。
 type AIModelFactory struct {
 	creators map[string]ModelCreator
 }
@@ -19,7 +34,7 @@ var (
 	factoryOnce   sync.Once
 )
 
-// GetGlobalFactory 获取全局单例
+// GetGlobalFactory 返回全局单例工厂。
 func GetGlobalFactory() *AIModelFactory {
 	factoryOnce.Do(func() {
 		globalFactory = &AIModelFactory{
@@ -30,15 +45,19 @@ func GetGlobalFactory() *AIModelFactory {
 	return globalFactory
 }
 
-// 注册模型
+// IsSupportedModelType 判断当前请求里的 modelType 是否受支持。
+func IsSupportedModelType(modelType string) bool {
+	_, ok := supportedModelTypes[modelType]
+	return ok
+}
+
+// registerCreators 注册系统内置的模型构造器。
 func (f *AIModelFactory) registerCreators() {
-	//OpenAI
-	f.creators["1"] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
+	f.creators[ModelTypeOpenAI] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
 		return NewOpenAIModel(ctx)
 	}
 
-	// 阿里百炼 RAG 模型
-	f.creators["2"] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
+	f.creators[ModelTypeRAG] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
 		username, ok := config["username"].(string)
 		if !ok {
 			return nil, fmt.Errorf("RAG model requires username")
@@ -46,8 +65,7 @@ func (f *AIModelFactory) registerCreators() {
 		return NewAliRAGModel(ctx, username)
 	}
 
-	// MCP 模型（集成MCP服务）
-	f.creators["3"] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
+	f.creators[ModelTypeMCP] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
 		username, ok := config["username"].(string)
 		if !ok {
 			return nil, fmt.Errorf("MCP model requires username")
@@ -55,8 +73,7 @@ func (f *AIModelFactory) registerCreators() {
 		return NewMCPModel(ctx, username)
 	}
 
-	//Ollama（目前提供接口实现，暂不提供应用，因为考虑到本地模型会占用很多空间）todo做
-	f.creators["4"] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
+	f.creators[ModelTypeOllama] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
 		baseURL, _ := config["baseURL"].(string)
 		modelName, ok := config["modelName"].(string)
 		if !ok {
@@ -64,11 +81,9 @@ func (f *AIModelFactory) registerCreators() {
 		}
 		return NewOllamaModel(ctx, baseURL, modelName)
 	}
-	// 阿里百炼 mcp 模型
-
 }
 
-// CreateAIModel 根据类型创建 AI 模型
+// CreateAIModel 根据模型类型创建 AI 模型。
 func (f *AIModelFactory) CreateAIModel(ctx context.Context, modelType string, config map[string]interface{}) (AIModel, error) {
 	creator, ok := f.creators[modelType]
 	if !ok {
@@ -77,7 +92,7 @@ func (f *AIModelFactory) CreateAIModel(ctx context.Context, modelType string, co
 	return creator(ctx, config)
 }
 
-// CreateAIHelper 一键创建 AIHelper
+// CreateAIHelper 一键创建带有指定模型的 AIHelper。
 func (f *AIModelFactory) CreateAIHelper(ctx context.Context, modelType string, SessionID string, config map[string]interface{}) (*AIHelper, error) {
 	model, err := f.CreateAIModel(ctx, modelType, config)
 	if err != nil {
@@ -86,7 +101,8 @@ func (f *AIModelFactory) CreateAIHelper(ctx context.Context, modelType string, S
 	return NewAIHelper(model, SessionID), nil
 }
 
-// RegisterModel 可扩展注册
+// RegisterModel 允许后续扩展注册新的模型类型。
 func (f *AIModelFactory) RegisterModel(modelType string, creator ModelCreator) {
 	f.creators[modelType] = creator
+	supportedModelTypes[modelType] = struct{}{}
 }

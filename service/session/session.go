@@ -45,6 +45,10 @@ func ensureOwnedSession(userName string, sessionID string) (*model.Session, code
 // getOrCreateHelperWithHistory 优先复用当前进程中的 helper；
 // 如果 helper 不存在，就从数据库回放历史消息，再把 helper 放回 manager 中缓存。
 func getOrCreateHelperWithHistory(userName string, sessionID string, modelType string) (*aihelper.AIHelper, code.Code) {
+	if !aihelper.IsSupportedModelType(modelType) {
+		return nil, code.CodeInvalidParams
+	}
+
 	manager := aihelper.GetGlobalManager()
 	if helper, exists := manager.GetAIHelper(userName, sessionID); exists {
 		return helper, code.CodeSuccess

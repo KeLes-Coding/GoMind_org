@@ -6,6 +6,8 @@ import (
 	"GopherAI/utils"
 	"context"
 	"sync"
+
+	"github.com/cloudwego/eino/schema"
 )
 
 // AIHelper 绑定一个具体会话的模型实例与消息上下文。
@@ -18,6 +20,8 @@ type AIHelper struct {
 	SessionID string
 	saveFunc  func(*model.Message) (*model.Message, error)
 }
+
+const maxContextMessages = 20
 
 // NewAIHelper 创建新的 AIHelper。
 func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
@@ -83,14 +87,26 @@ func (a *AIHelper) GetMessages() []*model.Message {
 	return out
 }
 
+// buildModelMessages 把当前会话消息裁剪成适合发送给模型的上下文窗口。
+// 我们保留完整历史用于回放和查询，但真正发给模型时只取最近 N 条，控制 token 成本和延迟。
+func (a *AIHelper) buildModelMessages() []*schema.Message {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	start := 0
+	if len(a.messages) > maxContextMessages {
+		start = len(a.messages) - maxContextMessages
+	}
+
+	return utils.ConvertToSchemaMessages(a.messages[start:])
+}
+
 // GenerateResponse 走同步模型调用。
 func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQuestion string) (*model.Message, error) {
 	// 先把用户本轮问题写入上下文，保证模型能看到完整多轮历史。
 	a.AddMessage(userQuestion, userName, true, true)
 
-	a.mu.RLock()
-	messages := utils.ConvertToSchemaMessages(a.messages)
-	a.mu.RUnlock()
+	messages := a.buildModelMessages()
 
 	schemaMsg, err := a.model.GenerateResponse(ctx, messages)
 	if err != nil {
@@ -110,9 +126,7 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 	// 流式场景也要先把用户问题放入上下文，否则模型拿不到当前轮问题。
 	a.AddMessage(userQuestion, userName, true, true)
 
-	a.mu.RLock()
-	messages := utils.ConvertToSchemaMessages(a.messages)
-	a.mu.RUnlock()
+	messages := a.buildModelMessages()
 
 	content, err := a.model.StreamResponse(ctx, messages, cb)
 	if err != nil {

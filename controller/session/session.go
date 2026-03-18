@@ -1,6 +1,7 @@
 package session
 
 import (
+	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
 	"GopherAI/controller"
 	"GopherAI/model"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// validateModelType 在协议层提前拦截非法模型类型。
+// 这样可以避免无效参数继续进入 service 和模型工厂。
+func validateModelType(modelType string) bool {
+	return aihelper.IsSupportedModelType(modelType)
+}
 
 type (
 	GetUserSessionsResponse struct {
@@ -70,6 +77,10 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
+	if !validateModelType(req.ModelType) {
+		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
+		return
+	}
 	//内部会创建会话并发送消息，并会将AI回答、当前会话返回
 	session_id, aiInformation, code_ := session.CreateSessionAndSendMessage(c.Request.Context(), userName, req.UserQuestion, req.ModelType)
 
@@ -88,6 +99,10 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 	req := new(CreateSessionAndSendMessageRequest)
 	userName := c.GetString("userName") // From JWT middleware
 	if err := c.ShouldBindJSON(req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
+		return
+	}
+	if !validateModelType(req.ModelType) {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
 	}
@@ -126,6 +141,10 @@ func ChatSend(c *gin.Context) {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
+	if !validateModelType(req.ModelType) {
+		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
+		return
+	}
 	// 发送消息，并会将AI回答返回
 	aiInformation, code_ := session.ChatSend(c.Request.Context(), userName, req.SessionID, req.UserQuestion, req.ModelType)
 
@@ -143,6 +162,10 @@ func ChatStreamSend(c *gin.Context) {
 	req := new(ChatSendRequest)
 	userName := c.GetString("userName") // From JWT middleware
 	if err := c.ShouldBindJSON(req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
+		return
+	}
+	if !validateModelType(req.ModelType) {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
 	}

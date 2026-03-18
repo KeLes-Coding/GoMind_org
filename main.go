@@ -31,7 +31,7 @@ func readDataFromDB() error {
 	for i := range msgs {
 		m := &msgs[i]
 		//默认openai模型
-		modelType := "1"
+		modelType := aihelper.ModelTypeOpenAI
 		config := make(map[string]interface{})
 
 		// 创建对应的 AIHelper

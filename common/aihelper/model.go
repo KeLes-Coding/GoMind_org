@@ -85,7 +85,7 @@ func (o *OpenAIModel) StreamResponse(ctx context.Context, messages []*schema.Mes
 	return fullResp.String(), nil //返回完整内容，方便后续存储
 }
 
-func (o *OpenAIModel) GetModelType() string { return "1" }
+func (o *OpenAIModel) GetModelType() string { return ModelTypeOpenAI }
 
 // =================== Ollama 实现 ===================
 
@@ -136,7 +136,7 @@ func (o *OllamaModel) StreamResponse(ctx context.Context, messages []*schema.Mes
 	return fullResp.String(), nil //返回完整内容，方便后续存储
 }
 
-func (o *OllamaModel) GetModelType() string { return "4" }
+func (o *OllamaModel) GetModelType() string { return ModelTypeOllama }
 
 // =================== RAG 实现 ===================
 type AliRAGModel struct {
@@ -303,7 +303,7 @@ func (o *AliRAGModel) streamWithoutRAG(ctx context.Context, messages []*schema.M
 	return fullResp.String(), nil
 }
 
-func (o *AliRAGModel) GetModelType() string { return "2" }
+func (o *AliRAGModel) GetModelType() string { return ModelTypeRAG }
 
 // =================== MCP 实现 ===================
 
@@ -638,7 +638,7 @@ func (m *MCPModel) extractCityFromResponse(response string) string {
 }
 
 // GetModelType 获取模型类型
-func (m *MCPModel) GetModelType() string { return "3" }
+func (m *MCPModel) GetModelType() string { return ModelTypeMCP }
 
 // Close 关闭MCP客户端
 func (m *MCPModel) Close() {
