@@ -26,6 +26,7 @@ type StreamCallback func(msg string)
 type AIModel interface {
 	GenerateResponse(ctx context.Context, messages []*schema.Message) (*schema.Message, error)
 	StreamResponse(ctx context.Context, messages []*schema.Message, cb StreamCallback) (string, error)
+	GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error)
 	GetModelType() string
 }
 
@@ -85,6 +86,10 @@ func (o *OpenAIModel) StreamResponse(ctx context.Context, messages []*schema.Mes
 	return fullResp.String(), nil //返回完整内容，方便后续存储
 }
 
+func (o *OpenAIModel) GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error) {
+	return generateSummaryWithLLM(ctx, o.llm, existingSummary, messages)
+}
+
 func (o *OpenAIModel) GetModelType() string { return ModelTypeOpenAI }
 
 // =================== Ollama 实现 ===================
@@ -134,6 +139,10 @@ func (o *OllamaModel) StreamResponse(ctx context.Context, messages []*schema.Mes
 		}
 	}
 	return fullResp.String(), nil //返回完整内容，方便后续存储
+}
+
+func (o *OllamaModel) GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error) {
+	return generateSummaryWithLLM(ctx, o.llm, existingSummary, messages)
 }
 
 func (o *OllamaModel) GetModelType() string { return ModelTypeOllama }
@@ -301,6 +310,10 @@ func (o *AliRAGModel) streamWithoutRAG(ctx context.Context, messages []*schema.M
 	}
 
 	return fullResp.String(), nil
+}
+
+func (o *AliRAGModel) GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error) {
+	return generateSummaryWithLLM(ctx, o.llm, existingSummary, messages)
 }
 
 func (o *AliRAGModel) GetModelType() string { return ModelTypeRAG }
@@ -638,11 +651,66 @@ func (m *MCPModel) extractCityFromResponse(response string) string {
 }
 
 // GetModelType 获取模型类型
+func (m *MCPModel) GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error) {
+	return generateSummaryWithLLM(ctx, m.llm, existingSummary, messages)
+}
+
 func (m *MCPModel) GetModelType() string { return ModelTypeMCP }
 
 // Close 关闭MCP客户端
 func (m *MCPModel) Close() {
 	if m.mcpClient != nil {
 		m.mcpClient.Close()
+	}
+}
+
+// generateSummaryWithLLM 使用底层通用 LLM 生成“旧摘要 + 新增旧消息”的合并摘要。
+// 这里刻意绕过 RAG / MCP 的业务逻辑，让摘要行为保持稳定、可控和低耦合。
+func generateSummaryWithLLM(ctx context.Context, llm model.ToolCallingChatModel, existingSummary string, messages []*schema.Message) (string, error) {
+	if len(messages) == 0 {
+		return strings.TrimSpace(existingSummary), nil
+	}
+
+	resp, err := llm.Generate(ctx, buildSummaryRequestMessages(existingSummary, messages))
+	if err != nil {
+		return "", fmt.Errorf("generate summary failed: %v", err)
+	}
+
+	return strings.TrimSpace(resp.Content), nil
+}
+
+// buildSummaryRequestMessages 构造摘要请求，要求模型把较早历史压缩成稳定、精炼的中文摘要。
+func buildSummaryRequestMessages(existingSummary string, messages []*schema.Message) []*schema.Message {
+	var conversation strings.Builder
+	for _, msg := range messages {
+		role := "AI"
+		if msg.Role == schema.User {
+			role = "用户"
+		}
+		conversation.WriteString(role)
+		conversation.WriteString(": ")
+		conversation.WriteString(msg.Content)
+		conversation.WriteString("\n")
+	}
+
+	prompt := "请把下面这段多轮对话压缩成中文摘要，用于后续继续对话时恢复上下文。" +
+		"要求：保留用户目标、约束、关键事实、已做结论、未完成事项；避免寒暄；不要编造信息；输出尽量精炼。\n\n"
+
+	if strings.TrimSpace(existingSummary) != "" {
+		prompt += "已有历史摘要如下，请在此基础上合并更新，而不是重复抄写：\n" +
+			existingSummary + "\n\n"
+	}
+
+	prompt += "需要新增吸收进摘要的对话如下：\n" + conversation.String()
+
+	return []*schema.Message{
+		{
+			Role:    schema.System,
+			Content: "你是一个会话摘要助手。你的任务是把较早历史压缩成稳定、准确、可继续复用的中文摘要。",
+		},
+		{
+			Role:    schema.User,
+			Content: prompt,
+		},
 	}
 }

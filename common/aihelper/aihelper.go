@@ -1,4 +1,4 @@
-﻿package aihelper
+package aihelper
 
 import (
 	"GopherAI/common/rabbitmq"
@@ -19,6 +19,10 @@ type AIHelper struct {
 	// 一个 session 只绑定一个 AIHelper。
 	SessionID string
 	saveFunc  func(*model.Message) (*model.Message, error)
+	// contextSummary 持久化“较早历史”的摘要；
+	// summaryMessageCount 表示摘要已经覆盖了 messages 的前多少条。
+	contextSummary      string
+	summaryMessageCount int
 }
 
 const maxContextMessages = 20
@@ -43,10 +47,10 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save bool) {
 	userMsg := model.Message{
 		MessageKey: utils.GenerateUUID(),
-		SessionID: a.SessionID,
-		Content:   Content,
-		UserName:  UserName,
-		IsUser:    IsUser,
+		SessionID:  a.SessionID,
+		Content:    Content,
+		UserName:   UserName,
+		IsUser:     IsUser,
 	}
 
 	// 写切片时必须加锁；否则同一个 session 并发写入会有数据竞争风险。
@@ -78,6 +82,28 @@ func (a *AIHelper) SetSaveFunc(saveFunc func(*model.Message) (*model.Message, er
 	a.saveFunc = saveFunc
 }
 
+// SetSummaryState 用持久化层保存的摘要状态覆盖当前 helper。
+// 这让 helper 在重启、重建后也能继续复用已经生成过的摘要。
+func (a *AIHelper) SetSummaryState(summary string, summaryMessageCount int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.contextSummary = summary
+	if summaryMessageCount < 0 {
+		summaryMessageCount = 0
+	}
+	if summaryMessageCount > len(a.messages) {
+		summaryMessageCount = len(a.messages)
+	}
+	a.summaryMessageCount = summaryMessageCount
+}
+
+// GetSummaryState 返回当前 helper 的摘要快照，供 service 判断是否需要回写数据库。
+func (a *AIHelper) GetSummaryState() (string, int) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.contextSummary, a.summaryMessageCount
+}
+
 // GetMessages 返回当前会话的内存消息快照，避免外部直接修改内部切片。
 func (a *AIHelper) GetMessages() []*model.Message {
 	a.mu.RLock()
@@ -87,24 +113,73 @@ func (a *AIHelper) GetMessages() []*model.Message {
 	return out
 }
 
+// ensureContextSummary 保证“超过窗口之外的更早消息”都被压缩进摘要。
+// 这样 buildModelMessages 就可以稳定地发送“摘要 + 最近 N 条”。
+func (a *AIHelper) ensureContextSummary(ctx context.Context) error {
+	a.mu.RLock()
+	targetSummaryCount := len(a.messages) - maxContextMessages
+	if targetSummaryCount < 0 {
+		targetSummaryCount = 0
+	}
+	currentSummary := a.contextSummary
+	currentSummaryCount := a.summaryMessageCount
+	if targetSummaryCount <= currentSummaryCount {
+		a.mu.RUnlock()
+		return nil
+	}
+
+	messagesToSummarize := make([]*model.Message, targetSummaryCount-currentSummaryCount)
+	copy(messagesToSummarize, a.messages[currentSummaryCount:targetSummaryCount])
+	a.mu.RUnlock()
+
+	newSummary, err := a.model.GenerateSummary(ctx, currentSummary, utils.ConvertToSchemaMessages(messagesToSummarize))
+	if err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.summaryMessageCount != currentSummaryCount {
+		return nil
+	}
+
+	a.contextSummary = newSummary
+	a.summaryMessageCount = targetSummaryCount
+	return nil
+}
+
 // buildModelMessages 把当前会话消息裁剪成适合发送给模型的上下文窗口。
-// 我们保留完整历史用于回放和查询，但真正发给模型时只取最近 N 条，控制 token 成本和延迟。
+// 我们保留完整历史用于回放和查询，但真正发给模型时只发送“摘要 + 最近 N 条”，控制 token 成本和延迟。
 func (a *AIHelper) buildModelMessages() []*schema.Message {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	start := 0
-	if len(a.messages) > maxContextMessages {
+	start := a.summaryMessageCount
+	if len(a.messages)-start > maxContextMessages {
 		start = len(a.messages) - maxContextMessages
 	}
 
-	return utils.ConvertToSchemaMessages(a.messages[start:])
+	schemaMessages := make([]*schema.Message, 0, 1+len(a.messages[start:]))
+	if a.contextSummary != "" {
+		schemaMessages = append(schemaMessages, &schema.Message{
+			Role: schema.System,
+			Content: "以下是当前会话较早历史的摘要，请在回答时延续这些上下文信息：\n" +
+				a.contextSummary,
+		})
+	}
+
+	schemaMessages = append(schemaMessages, utils.ConvertToSchemaMessages(a.messages[start:])...)
+	return schemaMessages
 }
 
 // GenerateResponse 走同步模型调用。
 func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQuestion string) (*model.Message, error) {
 	// 先把用户本轮问题写入上下文，保证模型能看到完整多轮历史。
 	a.AddMessage(userQuestion, userName, true, true)
+
+	if err := a.ensureContextSummary(ctx); err != nil {
+		return nil, err
+	}
 
 	messages := a.buildModelMessages()
 
@@ -125,6 +200,10 @@ func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQu
 func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb StreamCallback, userQuestion string) (*model.Message, error) {
 	// 流式场景也要先把用户问题放入上下文，否则模型拿不到当前轮问题。
 	a.AddMessage(userQuestion, userName, true, true)
+
+	if err := a.ensureContextSummary(ctx); err != nil {
+		return nil, err
+	}
 
 	messages := a.buildModelMessages()
 

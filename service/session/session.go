@@ -1,4 +1,4 @@
-﻿package session
+package session
 
 import (
 	"GopherAI/common/aihelper"
@@ -42,15 +42,32 @@ func ensureOwnedSession(userName string, sessionID string) (*model.Session, code
 	return sess, code.CodeSuccess
 }
 
+// persistSummaryIfChanged 只在摘要确实变化时回写数据库，避免每轮请求都更新 session。
+func persistSummaryIfChanged(sessionID string, beforeSummary string, beforeCount int, helper *aihelper.AIHelper) code.Code {
+	afterSummary, afterCount := helper.GetSummaryState()
+	if beforeSummary == afterSummary && beforeCount == afterCount {
+		return code.CodeSuccess
+	}
+
+	if err := sessionDAO.UpdateSessionSummary(sessionID, afterSummary, afterCount); err != nil {
+		log.Println("persistSummaryIfChanged UpdateSessionSummary error:", err)
+		return code.CodeServerBusy
+	}
+
+	return code.CodeSuccess
+}
+
 // getOrCreateHelperWithHistory 优先复用当前进程中的 helper；
 // 如果 helper 不存在，就从数据库回放历史消息，再把 helper 放回 manager 中缓存。
-func getOrCreateHelperWithHistory(userName string, sessionID string, modelType string) (*aihelper.AIHelper, code.Code) {
+func getOrCreateHelperWithHistory(userName string, sess *model.Session, modelType string) (*aihelper.AIHelper, code.Code) {
 	if !aihelper.IsSupportedModelType(modelType) {
 		return nil, code.CodeInvalidParams
 	}
 
+	sessionID := sess.ID
 	manager := aihelper.GetGlobalManager()
 	if helper, exists := manager.GetAIHelper(userName, sessionID); exists {
+		helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
 		return helper, code.CodeSuccess
 	}
 
@@ -69,6 +86,7 @@ func getOrCreateHelperWithHistory(userName string, sessionID string, modelType s
 	if len(msgs) > 0 {
 		helper.LoadMessages(msgs)
 	}
+	helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
 
 	manager.SetAIHelper(userName, sessionID, helper)
 	return helper, code.CodeSuccess
@@ -107,15 +125,19 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userQuest
 		return "", "", code.CodeServerBusy
 	}
 
-	helper, code_ := getOrCreateHelperWithHistory(userName, createdSession.ID, modelType)
+	helper, code_ := getOrCreateHelperWithHistory(userName, createdSession, modelType)
 	if code_ != code.CodeSuccess {
 		return "", "", code_
 	}
 
+	beforeSummary, beforeCount := helper.GetSummaryState()
 	aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
 	if err != nil {
 		log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
 		return "", "", code.AIModelFail
+	}
+	if code_ = persistSummaryIfChanged(createdSession.ID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		return "", "", code_
 	}
 
 	return createdSession.ID, aiResponse.Content, code.CodeSuccess
@@ -145,11 +167,12 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		return code.CodeServerBusy
 	}
 
-	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+	sess, code_ := ensureOwnedSession(userName, sessionID)
+	if code_ != code.CodeSuccess {
 		return code_
 	}
 
-	helper, code_ := getOrCreateHelperWithHistory(userName, sessionID, modelType)
+	helper, code_ := getOrCreateHelperWithHistory(userName, sess, modelType)
 	if code_ != code.CodeSuccess {
 		return code_
 	}
@@ -164,9 +187,13 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		flusher.Flush()
 	}
 
+	beforeSummary, beforeCount := helper.GetSummaryState()
 	if _, err := helper.StreamResponse(userName, ctx, cb, userQuestion); err != nil {
 		log.Println("StreamMessageToExistingSession StreamResponse error:", err)
 		return code.AIModelFail
+	}
+	if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		return code_
 	}
 
 	if _, err := writer.Write([]byte("data: [DONE]\n\n")); err != nil {
@@ -195,19 +222,24 @@ func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, use
 
 // ChatSend 向已有会话发送同步消息。
 func ChatSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
-	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
-		return "", code_
-	}
-
-	helper, code_ := getOrCreateHelperWithHistory(userName, sessionID, modelType)
+	sess, code_ := ensureOwnedSession(userName, sessionID)
 	if code_ != code.CodeSuccess {
 		return "", code_
 	}
 
+	helper, code_ := getOrCreateHelperWithHistory(userName, sess, modelType)
+	if code_ != code.CodeSuccess {
+		return "", code_
+	}
+
+	beforeSummary, beforeCount := helper.GetSummaryState()
 	aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
 	if err != nil {
 		log.Println("ChatSend GenerateResponse error:", err)
 		return "", code.AIModelFail
+	}
+	if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		return "", code_
 	}
 
 	return aiResponse.Content, code.CodeSuccess

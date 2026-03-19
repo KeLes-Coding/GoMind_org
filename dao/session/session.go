@@ -1,4 +1,4 @@
-﻿package session
+package session
 
 import (
 	"GopherAI/common/mysql"
@@ -24,4 +24,15 @@ func GetSessionByID(sessionID string) (*model.Session, error) {
 	var session model.Session
 	err := mysql.DB.Where("id = ?", sessionID).First(&session).Error
 	return &session, err
+}
+
+// UpdateSessionSummary 持久化会话摘要状态。
+// summary_message_count 表示当前摘要已经覆盖了前多少条历史消息。
+func UpdateSessionSummary(sessionID string, summary string, summaryMessageCount int) error {
+	return mysql.DB.Model(&model.Session{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]interface{}{
+			"context_summary":       summary,
+			"summary_message_count": summaryMessageCount,
+		}).Error
 }
