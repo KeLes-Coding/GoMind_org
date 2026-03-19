@@ -1,6 +1,7 @@
-﻿package rabbitmq
+package rabbitmq
 
 import (
+	"GopherAI/common/observability"
 	"GopherAI/config"
 	"fmt"
 	"log"
@@ -107,6 +108,7 @@ func (r *RabbitMQ) Publish(message []byte) error {
 	defer r.publishMu.Unlock()
 
 	if _, err := r.ensureQueue(r.publishChannel); err != nil {
+		observability.RecordMQPublish(false)
 		return err
 	}
 
@@ -118,19 +120,24 @@ func (r *RabbitMQ) Publish(message []byte) error {
 			Timestamp:    time.Now(),
 		},
 	); err != nil {
+		observability.RecordMQPublish(false)
 		return err
 	}
 
 	select {
 	case confirm, ok := <-r.confirmChan:
 		if !ok {
+			observability.RecordMQPublish(false)
 			return fmt.Errorf("rabbitmq confirm channel closed")
 		}
 		if !confirm.Ack {
+			observability.RecordMQPublish(false)
 			return fmt.Errorf("rabbitmq broker nack message")
 		}
+		observability.RecordMQPublish(true)
 		return nil
 	case <-time.After(5 * time.Second):
+		observability.RecordMQPublish(false)
 		return fmt.Errorf("rabbitmq publish confirm timeout")
 	}
 }
@@ -151,12 +158,16 @@ func (r *RabbitMQ) Consume(handle func(msg *amqp.Delivery) error) {
 	for msg := range msgs {
 		if err := handle(&msg); err != nil {
 			log.Println("rabbitmq consume handle error:", err)
+			observability.RecordMQConsume(false)
+			observability.RecordMQNack()
 			_ = msg.Nack(false, true)
 			continue
 		}
+		observability.RecordMQConsume(true)
 
 		if err := msg.Ack(false); err != nil {
 			log.Println("rabbitmq ack error:", err)
+			observability.RecordMQAckFail()
 		}
 	}
 }

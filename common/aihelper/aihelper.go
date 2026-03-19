@@ -1,11 +1,13 @@
 package aihelper
 
 import (
+	"GopherAI/common/observability"
 	"GopherAI/common/rabbitmq"
 	"GopherAI/model"
 	"GopherAI/utils"
 	"context"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -132,10 +134,15 @@ func (a *AIHelper) ensureContextSummary(ctx context.Context) error {
 	copy(messagesToSummarize, a.messages[currentSummaryCount:targetSummaryCount])
 	a.mu.RUnlock()
 
+	summaryStart := time.Now()
 	newSummary, err := a.model.GenerateSummary(ctx, currentSummary, utils.ConvertToSchemaMessages(messagesToSummarize))
 	if err != nil {
+		observability.RecordSummaryRefresh(false)
+		observability.RecordModelCall("summary", a.model.GetModelType(), false, time.Since(summaryStart), len(messagesToSummarize), currentSummary != "")
 		return err
 	}
+	observability.RecordSummaryRefresh(true)
+	observability.RecordModelCall("summary", a.model.GetModelType(), true, time.Since(summaryStart), len(messagesToSummarize), currentSummary != "")
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -182,11 +189,18 @@ func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQu
 	}
 
 	messages := a.buildModelMessages()
+	callStart := time.Now()
+	usedSummary := false
+	if summary, _ := a.GetSummaryState(); summary != "" {
+		usedSummary = true
+	}
 
 	schemaMsg, err := a.model.GenerateResponse(ctx, messages)
 	if err != nil {
+		observability.RecordModelCall("generate", a.model.GetModelType(), false, time.Since(callStart), len(messages), usedSummary)
 		return nil, err
 	}
+	observability.RecordModelCall("generate", a.model.GetModelType(), true, time.Since(callStart), len(messages), usedSummary)
 
 	modelMsg := utils.ConvertToModelMessage(a.SessionID, userName, schemaMsg)
 
@@ -206,11 +220,18 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 	}
 
 	messages := a.buildModelMessages()
+	callStart := time.Now()
+	usedSummary := false
+	if summary, _ := a.GetSummaryState(); summary != "" {
+		usedSummary = true
+	}
 
 	content, err := a.model.StreamResponse(ctx, messages, cb)
 	if err != nil {
+		observability.RecordModelCall("stream", a.model.GetModelType(), false, time.Since(callStart), len(messages), usedSummary)
 		return nil, err
 	}
+	observability.RecordModelCall("stream", a.model.GetModelType(), true, time.Since(callStart), len(messages), usedSummary)
 
 	modelMsg := &model.Message{
 		SessionID: a.SessionID,

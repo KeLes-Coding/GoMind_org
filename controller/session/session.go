@@ -3,6 +3,7 @@ package session
 import (
 	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
+	"GopherAI/common/observability"
 	"GopherAI/controller"
 	"GopherAI/model"
 	"GopherAI/service/session"
@@ -51,6 +52,10 @@ type (
 	ChatHistoryResponse struct {
 		History []model.History `json:"history"`
 		controller.Response
+	}
+	AIObservabilityResponse struct {
+		controller.Response
+		Data observability.AISnapshot `json:"data"`
 	}
 )
 
@@ -177,7 +182,6 @@ func ChatStreamSend(c *gin.Context) {
 	c.Header("Access-Control-Allow-Origin", "*")
 	c.Header("X-Accel-Buffering", "no") // 禁止代理缓存
 
-
 	code_ := session.ChatStreamSend(c.Request.Context(), userName, req.SessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
 	if code_ != code.CodeSuccess {
 		c.SSEvent("error", gin.H{"message": "Failed to send message"})
@@ -202,5 +206,12 @@ func ChatHistory(c *gin.Context) {
 
 	res.Success()
 	res.History = history
+	c.JSON(http.StatusOK, res)
+}
+
+func GetAIObservability(c *gin.Context) {
+	res := new(AIObservabilityResponse)
+	res.Success()
+	res.Data = observability.SnapshotAI()
 	c.JSON(http.StatusOK, res)
 }

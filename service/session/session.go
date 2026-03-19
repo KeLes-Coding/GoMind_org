@@ -3,6 +3,7 @@ package session
 import (
 	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
+	"GopherAI/common/observability"
 	messageDAO "GopherAI/dao/message"
 	sessionDAO "GopherAI/dao/session"
 	"GopherAI/model"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -113,6 +115,7 @@ func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
 
 // CreateSessionAndSendMessage 创建新会话并发送第一条消息。
 func CreateSessionAndSendMessage(ctx context.Context, userName string, userQuestion string, modelType string) (string, string, code.Code) {
+	requestStart := time.Now()
 	newSession := &model.Session{
 		ID:       uuid.New().String(),
 		UserName: userName,
@@ -122,11 +125,13 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userQuest
 	createdSession, err := sessionDAO.CreateSession(newSession)
 	if err != nil {
 		log.Println("CreateSessionAndSendMessage CreateSession error:", err)
+		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
 		return "", "", code.CodeServerBusy
 	}
 
 	helper, code_ := getOrCreateHelperWithHistory(userName, createdSession, modelType)
 	if code_ != code.CodeSuccess {
+		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
 		return "", "", code_
 	}
 
@@ -134,11 +139,14 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userQuest
 	aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
 	if err != nil {
 		log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
+		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
 		return "", "", code.AIModelFail
 	}
 	if code_ = persistSummaryIfChanged(createdSession.ID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
 		return "", "", code_
 	}
+	observability.RecordRequest("create_sync", modelType, true, time.Since(requestStart))
 
 	return createdSession.ID, aiResponse.Content, code.CodeSuccess
 }
@@ -161,19 +169,26 @@ func CreateStreamSessionOnly(userName string, userQuestion string) (string, code
 
 // StreamMessageToExistingSession 向已有会话发送一条流式消息。
 func StreamMessageToExistingSession(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
+	requestStart := time.Now()
+	observability.RecordStreamActiveDelta(1)
+	defer observability.RecordStreamActiveDelta(-1)
+
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
 		log.Println("StreamMessageToExistingSession: streaming unsupported")
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
 		return code.CodeServerBusy
 	}
 
 	sess, code_ := ensureOwnedSession(userName, sessionID)
 	if code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
 		return code_
 	}
 
 	helper, code_ := getOrCreateHelperWithHistory(userName, sess, modelType)
 	if code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
 		return code_
 	}
 
@@ -190,17 +205,27 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 	beforeSummary, beforeCount := helper.GetSummaryState()
 	if _, err := helper.StreamResponse(userName, ctx, cb, userQuestion); err != nil {
 		log.Println("StreamMessageToExistingSession StreamResponse error:", err)
+		if ctx.Err() != nil {
+			observability.RecordStreamDisconnect()
+		}
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
 		return code.AIModelFail
 	}
 	if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
 		return code_
 	}
 
 	if _, err := writer.Write([]byte("data: [DONE]\n\n")); err != nil {
 		log.Println("StreamMessageToExistingSession write DONE error:", err)
+		if ctx.Err() != nil {
+			observability.RecordStreamDisconnect()
+		}
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
 		return code.AIModelFail
 	}
 	flusher.Flush()
+	observability.RecordRequest("chat_stream", modelType, true, time.Since(requestStart))
 
 	return code.CodeSuccess
 }
@@ -222,13 +247,16 @@ func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, use
 
 // ChatSend 向已有会话发送同步消息。
 func ChatSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
+	requestStart := time.Now()
 	sess, code_ := ensureOwnedSession(userName, sessionID)
 	if code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
 		return "", code_
 	}
 
 	helper, code_ := getOrCreateHelperWithHistory(userName, sess, modelType)
 	if code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
 		return "", code_
 	}
 
@@ -236,11 +264,14 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 	aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
 	if err != nil {
 		log.Println("ChatSend GenerateResponse error:", err)
+		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
 		return "", code.AIModelFail
 	}
 	if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
 		return "", code_
 	}
+	observability.RecordRequest("chat_sync", modelType, true, time.Since(requestStart))
 
 	return aiResponse.Content, code.CodeSuccess
 }
