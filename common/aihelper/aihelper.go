@@ -115,6 +115,90 @@ func (a *AIHelper) GetMessages() []*model.Message {
 	return out
 }
 
+// GetLatestMessage 返回当前 helper 里最新的一条消息快照。
+// 如果当前没有任何消息，则返回 nil。
+func (a *AIHelper) GetLatestMessage() *model.Message {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.messages) == 0 {
+		return nil
+	}
+
+	latest := *a.messages[len(a.messages)-1]
+	return &latest
+}
+
+// GetLatestPersistedMessage 返回当前 helper 中“已经成功落过库”的最后一条消息。
+// 这里通过 Message.ID>0 判断消息是否来自数据库持久化记录。
+func (a *AIHelper) GetLatestPersistedMessage() *model.Message {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	for i := len(a.messages) - 1; i >= 0; i-- {
+		if a.messages[i].ID > 0 {
+			msg := *a.messages[i]
+			return &msg
+		}
+	}
+	return nil
+}
+
+// GetPersistedMessageCount 返回当前 helper 中来自数据库持久化记录的消息数量。
+func (a *AIHelper) GetPersistedMessageCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	count := 0
+	for _, msg := range a.messages {
+		if msg.ID > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+// HasMessageKey 判断当前 helper 是否已经持有某条指定消息。
+func (a *AIHelper) HasMessageKey(messageKey string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	for _, msg := range a.messages {
+		if msg.MessageKey == messageKey {
+			return true
+		}
+	}
+	return false
+}
+
+// ReconcileMessages 用数据库消息作为持久化基底，再把本地独有的未落库消息追加回去。
+// 这样既不会让 DB 反向覆盖本地最新 buffer，也能在本地缺消息时补回。
+func (a *AIHelper) ReconcileMessages(dbMessages []model.Message) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	dbMessageKeySet := make(map[string]struct{}, len(dbMessages))
+	mergedMessages := make([]*model.Message, 0, len(dbMessages)+len(a.messages))
+
+	for i := range dbMessages {
+		msg := dbMessages[i]
+		msg.SessionID = a.SessionID
+		dbMessageKeySet[msg.MessageKey] = struct{}{}
+		mergedMessages = append(mergedMessages, &msg)
+	}
+
+	// 本地独有消息通常是“已进入 buffer、但 MQ 异步落库还没追上”的尾部消息。
+	for _, msg := range a.messages {
+		if _, exists := dbMessageKeySet[msg.MessageKey]; exists {
+			continue
+		}
+		localMsg := *msg
+		localMsg.SessionID = a.SessionID
+		mergedMessages = append(mergedMessages, &localMsg)
+	}
+
+	a.messages = mergedMessages
+}
+
 // ensureContextSummary 保证“超过窗口之外的更早消息”都被压缩进摘要。
 // 这样 buildModelMessages 就可以稳定地发送“摘要 + 最近 N 条”。
 func (a *AIHelper) ensureContextSummary(ctx context.Context) error {

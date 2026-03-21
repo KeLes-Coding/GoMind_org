@@ -1,12 +1,10 @@
 package main
 
 import (
-	"GopherAI/common/aihelper"
 	"GopherAI/common/mysql"
 	"GopherAI/common/rabbitmq"
 	"GopherAI/common/redis"
 	"GopherAI/config"
-	"GopherAI/dao/message"
 	"GopherAI/router"
 	"fmt"
 	"log"
@@ -14,60 +12,30 @@ import (
 
 func StartServer(addr string, port int) error {
 	r := router.InitRouter()
-	//服务器静态资源路径映射关系，这里目前不需要
+	// 目前静态资源映射不在这轮改造范围内，先保持现状。
 	// r.Static(config.GetConfig().HttpFilePath, config.GetConfig().MusicFilePath)
 	return r.Run(fmt.Sprintf("%s:%d", addr, port))
-}
-
-// 从数据库加载消息并初始化 AIHelperManager
-func readDataFromDB() error {
-	manager := aihelper.GetGlobalManager()
-	// 从数据库读取所有消息
-	msgs, err := message.GetAllMessages()
-	if err != nil {
-		return err
-	}
-	// 遍历数据库消息
-	for i := range msgs {
-		m := &msgs[i]
-		//默认openai模型
-		modelType := aihelper.ModelTypeOpenAI
-		config := make(map[string]interface{})
-
-		// 创建对应的 AIHelper
-		helper, err := manager.GetOrCreateAIHelper(m.UserName, m.SessionID, modelType, config)
-		if err != nil {
-			log.Printf("[readDataFromDB] failed to create helper for user=%s session=%s: %v", m.UserName, m.SessionID, err)
-			continue
-		}
-		log.Println("readDataFromDB init:  ", helper.SessionID)
-		// 添加消息到内存中(不开启存储功能)
-		helper.AddMessage(m.Content, m.UserName, m.IsUser, false)
-	}
-
-	log.Println("AIHelperManager init success ")
-	return nil
 }
 
 func main() {
 	conf := config.GetConfig()
 	host := conf.MainConfig.Host
 	port := conf.MainConfig.Port
-	//初始化mysql
+
+	// 这里只初始化基础设施本身，不再在启动期把全部历史消息预热进本地 helper。
+	// 会话上下文改为在真正访问某个 session 时再按需恢复和对齐。
 	if err := mysql.InitMysql(); err != nil {
 		log.Println("InitMysql error , " + err.Error())
 		return
 	}
-	//初始化AIHelperManager
-	readDataFromDB()
 
-	//初始化redis
 	redis.Init()
-	log.Println("redis init success  ")
-	rabbitmq.InitRabbitMQ()
-	log.Println("rabbitmq init success  ")
+	log.Println("redis init success")
 
-	err := StartServer(host, port) // 启动 HTTP 服务
+	rabbitmq.InitRabbitMQ()
+	log.Println("rabbitmq init success")
+
+	err := StartServer(host, port)
 	if err != nil {
 		panic(err)
 	}

@@ -59,9 +59,96 @@ func persistSummaryIfChanged(sessionID string, beforeSummary string, beforeCount
 	return code.CodeSuccess
 }
 
-// getOrCreateHelperWithHistory 优先复用当前进程中的 helper；
-// 如果 helper 不存在，就从数据库回放历史消息，再把 helper 放回 manager 中缓存。
-func getOrCreateHelperWithHistory(userName string, sess *model.Session, modelType string) (*aihelper.AIHelper, code.Code) {
+// syncHelperWithDatabase 在“继续某个会话前”校准本地 helper 与数据库消息状态。
+// 规则是：
+// 1. DB 最新消息已经在本地：说明本地至少不落后于 DB，保留本地 buffer。
+// 2. 本地最新消息已落库，但 DB 最新消息不在本地：说明本地缺消息，按 DB 补回。
+// 3. 本地最新消息未落库：说明本地可能领先；只有当 DB 最新消息也越过了本地最后一条已持久化消息时，才做保守重构。
+func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Code {
+	latestDBMessage, err := messageDAO.GetLatestMessageBySessionID(sessionID)
+	if err != nil {
+		if messageDAO.IsMessageNotFoundError(err) {
+			return code.CodeSuccess
+		}
+		log.Println("syncHelperWithDatabase GetLatestMessageBySessionID error:", err)
+		return code.CodeServerBusy
+	}
+
+	// DB 最新消息已在本地，说明本地没有落后于数据库，不需要拿 DB 反向覆盖本地 buffer。
+	if helper.HasMessageKey(latestDBMessage.MessageKey) {
+		dbMessageCount, err := messageDAO.GetMessageCountBySessionID(sessionID)
+		if err != nil {
+			log.Println("syncHelperWithDatabase GetMessageCountBySessionID error:", err)
+			return code.CodeServerBusy
+		}
+
+		// 即使“最后一条消息”对上了，也不代表中间没有缺口。
+		// 如果本地已持久化消息数比 DB 少，仍然要做一次保守对齐。
+		if int64(helper.GetPersistedMessageCount()) < dbMessageCount {
+			dbMessages, err := messageDAO.GetMessagesBySessionID(sessionID)
+			if err != nil {
+				log.Println("syncHelperWithDatabase hole reconcile GetMessagesBySessionID error:", err)
+				return code.CodeServerBusy
+			}
+			helper.ReconcileMessages(dbMessages)
+		}
+		return code.CodeSuccess
+	}
+
+	localLatestMessage := helper.GetLatestMessage()
+	if localLatestMessage == nil {
+		dbMessages, err := messageDAO.GetMessagesBySessionID(sessionID)
+		if err != nil {
+			log.Println("syncHelperWithDatabase GetMessagesBySessionID error:", err)
+			return code.CodeServerBusy
+		}
+		helper.LoadMessages(dbMessages)
+		return code.CodeSuccess
+	}
+
+	localLatestPersistedMessage := helper.GetLatestPersistedMessage()
+	if localLatestPersistedMessage == nil {
+		// 本地只有尚未落库的消息时，不能让 DB 反向覆盖本地。
+		return code.CodeSuccess
+	}
+
+	localLatestExistsInDB, err := messageDAO.ExistsMessageKey(localLatestMessage.MessageKey)
+	if err != nil {
+		log.Println("syncHelperWithDatabase ExistsMessageKey latest local error:", err)
+		return code.CodeServerBusy
+	}
+
+	// 本地最新消息已经在 DB，但 DB 最新消息却不在本地，说明本地 helper 缺了后续消息。
+	if localLatestExistsInDB {
+		dbMessages, err := messageDAO.GetMessagesBySessionID(sessionID)
+		if err != nil {
+			log.Println("syncHelperWithDatabase full DB reload error:", err)
+			return code.CodeServerBusy
+		}
+		helper.ReconcileMessages(dbMessages)
+		return code.CodeSuccess
+	}
+
+	// 走到这里说明：本地最新消息尚未落库，本地 buffer 领先于 DB。
+	// 这时只有当 DB 最新消息已经不是“本地最后一条已持久化消息”时，
+	// 才说明两边可能都各自缺了一部分，需要做保守重构。
+	if localLatestPersistedMessage.MessageKey == latestDBMessage.MessageKey {
+		return code.CodeSuccess
+	}
+
+	dbMessages, err := messageDAO.GetMessagesBySessionID(sessionID)
+	if err != nil {
+		log.Println("syncHelperWithDatabase final reconcile GetMessagesBySessionID error:", err)
+		return code.CodeServerBusy
+	}
+	helper.ReconcileMessages(dbMessages)
+	return code.CodeSuccess
+}
+
+// getOrSyncHelperWithHistory 优先复用当前进程中的 helper；
+// 如果 helper 不存在，就从数据库回放历史消息；
+// 如果 helper 已存在，就在继续会话前做一次本地/DB 的安全对齐。
+func getOrSyncHelperWithHistory(userName string, sess *model.Session, modelType string) (*aihelper.AIHelper, code.Code) {
 	if !aihelper.IsSupportedModelType(modelType) {
 		return nil, code.CodeInvalidParams
 	}
@@ -70,6 +157,9 @@ func getOrCreateHelperWithHistory(userName string, sess *model.Session, modelTyp
 	manager := aihelper.GetGlobalManager()
 	if helper, exists := manager.GetAIHelper(userName, sessionID); exists {
 		helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
+		if code_ := syncHelperWithDatabase(sessionID, helper); code_ != code.CodeSuccess {
+			return nil, code_
+		}
 		return helper, code.CodeSuccess
 	}
 
@@ -129,7 +219,7 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userQuest
 		return "", "", code.CodeServerBusy
 	}
 
-	helper, code_ := getOrCreateHelperWithHistory(userName, createdSession, modelType)
+	helper, code_ := getOrSyncHelperWithHistory(userName, createdSession, modelType)
 	if code_ != code.CodeSuccess {
 		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
 		return "", "", code_
@@ -186,7 +276,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		return code_
 	}
 
-	helper, code_ := getOrCreateHelperWithHistory(userName, sess, modelType)
+	helper, code_ := getOrSyncHelperWithHistory(userName, sess, modelType)
 	if code_ != code.CodeSuccess {
 		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
 		return code_
@@ -254,7 +344,7 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 		return "", code_
 	}
 
-	helper, code_ := getOrCreateHelperWithHistory(userName, sess, modelType)
+	helper, code_ := getOrSyncHelperWithHistory(userName, sess, modelType)
 	if code_ != code.CodeSuccess {
 		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
 		return "", code_
