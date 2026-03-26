@@ -6,6 +6,7 @@ import (
 	"GopherAI/model"
 	"GopherAI/utils"
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -25,6 +26,9 @@ type AIHelper struct {
 	// summaryMessageCount 表示摘要已经覆盖了 messages 的前多少条。
 	contextSummary      string
 	summaryMessageCount int
+	// version 用于给“共享热状态快照”打版本号。
+	// 这样后续把状态同步到 Redis 时，可以知道这是哪一次会话推进之后产生的新快照。
+	version int64
 }
 
 const maxContextMessages = 20
@@ -41,6 +45,7 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 			return msg, err
 		},
 		SessionID: SessionID,
+		version:   1,
 	}
 }
 
@@ -58,10 +63,78 @@ func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save
 	// 写切片时必须加锁；否则同一个 session 并发写入会有数据竞争风险。
 	a.mu.Lock()
 	a.messages = append(a.messages, &userMsg)
+	a.version++
 	a.mu.Unlock()
 
 	if Save {
 		a.saveFunc(&userMsg)
+	}
+}
+
+// LoadHotState 用共享热状态快照恢复 helper。
+// 这一步不替代数据库真相，只是尽量减少“每次都全量读 DB 回放”的成本。
+func (a *AIHelper) LoadHotState(state *model.SessionHotState) {
+	if state == nil {
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.messages = make([]*model.Message, 0, len(state.RecentMessages))
+	for i := range state.RecentMessages {
+		msg := state.RecentMessages[i]
+		modelMsg := &model.Message{
+			ID:         msg.ID,
+			MessageKey: msg.MessageKey,
+			SessionID:  msg.SessionID,
+			UserName:   msg.UserName,
+			Content:    msg.Content,
+			IsUser:     msg.IsUser,
+			CreatedAt:  msg.CreatedAt,
+		}
+		a.messages = append(a.messages, modelMsg)
+	}
+
+	a.contextSummary = state.ContextSummary
+	a.summaryMessageCount = state.SummaryMessageCount
+	if state.Version > 0 {
+		a.version = state.Version
+	}
+}
+
+// ExportHotState 把 helper 当前“适合共享”的状态导出成快照。
+// 这里刻意只保留最近窗口消息，而不导出整个 messages 切片，
+// 是为了让 Redis 保持轻量，避免共享状态无限膨胀。
+func (a *AIHelper) ExportHotState() *model.SessionHotState {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	start := 0
+	if len(a.messages) > maxContextMessages {
+		start = len(a.messages) - maxContextMessages
+	}
+
+	recentMessages := make([]model.SessionHotMessage, 0, len(a.messages[start:]))
+	for _, msg := range a.messages[start:] {
+		recentMessages = append(recentMessages, model.SessionHotMessage{
+			ID:         msg.ID,
+			MessageKey: msg.MessageKey,
+			SessionID:  msg.SessionID,
+			UserName:   msg.UserName,
+			Content:    msg.Content,
+			IsUser:     msg.IsUser,
+			CreatedAt:  msg.CreatedAt,
+		})
+	}
+
+	return &model.SessionHotState{
+		SessionID:           a.SessionID,
+		Version:             a.version,
+		UpdatedAt:           time.Now(),
+		ContextSummary:      a.contextSummary,
+		SummaryMessageCount: a.summaryMessageCount,
+		RecentMessages:      recentMessages,
 	}
 }
 
@@ -77,6 +150,7 @@ func (a *AIHelper) LoadMessages(messages []model.Message) {
 		msg.SessionID = a.SessionID
 		a.messages = append(a.messages, &msg)
 	}
+	a.version++
 }
 
 // SetSaveFunc 允许外部注入消息持久化策略，便于测试或切换持久化实现。
@@ -97,6 +171,7 @@ func (a *AIHelper) SetSummaryState(summary string, summaryMessageCount int) {
 		summaryMessageCount = len(a.messages)
 	}
 	a.summaryMessageCount = summaryMessageCount
+	a.version++
 }
 
 // GetSummaryState 返回当前 helper 的摘要快照，供 service 判断是否需要回写数据库。
@@ -197,6 +272,7 @@ func (a *AIHelper) ReconcileMessages(dbMessages []model.Message) {
 	}
 
 	a.messages = mergedMessages
+	a.version++
 }
 
 // ensureContextSummary 保证“超过窗口之外的更早消息”都被压缩进摘要。
@@ -219,6 +295,12 @@ func (a *AIHelper) ensureContextSummary(ctx context.Context) error {
 	a.mu.RUnlock()
 
 	summaryStart := time.Now()
+	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
+	if err != nil {
+		return fmt.Errorf("summary concurrency limited: %w", err)
+	}
+	defer releasePermit()
+
 	newSummary, err := a.model.GenerateSummary(ctx, currentSummary, utils.ConvertToSchemaMessages(messagesToSummarize))
 	if err != nil {
 		observability.RecordSummaryRefresh(false)
@@ -236,6 +318,7 @@ func (a *AIHelper) ensureContextSummary(ctx context.Context) error {
 
 	a.contextSummary = newSummary
 	a.summaryMessageCount = targetSummaryCount
+	a.version++
 	return nil
 }
 
@@ -279,6 +362,14 @@ func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQu
 		usedSummary = true
 	}
 
+	// 真正的模型调用前先申请并发令牌。
+	// 这样即使外层接口层没有足够细的限流，实例内部也不会无限制地把请求全部压给模型。
+	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
+	if err != nil {
+		return nil, fmt.Errorf("model concurrency limited: %w", err)
+	}
+	defer releasePermit()
+
 	schemaMsg, err := a.model.GenerateResponse(ctx, messages)
 	if err != nil {
 		observability.RecordModelCall("generate", a.model.GetModelType(), false, time.Since(callStart), len(messages), usedSummary)
@@ -309,6 +400,12 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 	if summary, _ := a.GetSummaryState(); summary != "" {
 		usedSummary = true
 	}
+
+	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
+	if err != nil {
+		return nil, fmt.Errorf("model concurrency limited: %w", err)
+	}
+	defer releasePermit()
 
 	content, err := a.model.StreamResponse(ctx, messages, cb)
 	if err != nil {

@@ -19,3 +19,13 @@ func GenerateIndexNamePrefix(filename string) string {
 	prefix := fmt.Sprintf(config.DefaultRedisKeyConfig.IndexNamePrefix, filename)
 	return prefix
 }
+
+// GenerateSessionLockKey 为 session 维度的分布式锁生成 Redis key。
+func GenerateSessionLockKey(sessionID string) string {
+	return fmt.Sprintf("ai:session:lock:%s", sessionID)
+}
+
+// GenerateSessionHotStateKey 为 session 热状态快照生成 Redis key。
+func GenerateSessionHotStateKey(sessionID string) string {
+	return fmt.Sprintf("ai:session:hot:%s", sessionID)
+}

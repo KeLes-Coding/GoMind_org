@@ -4,6 +4,7 @@ import (
 	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
 	"GopherAI/common/observability"
+	myredis "GopherAI/common/redis"
 	messageDAO "GopherAI/dao/message"
 	sessionDAO "GopherAI/dao/session"
 	"GopherAI/model"
@@ -57,6 +58,18 @@ func persistSummaryIfChanged(sessionID string, beforeSummary string, beforeCount
 	}
 
 	return code.CodeSuccess
+}
+
+// persistHelperHotState 把 helper 当前的轻量热状态快照写入 Redis。
+// 这里故意不把 Redis 当真相源，所以写失败只记日志，不阻断主聊天链路。
+func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
+	if helper == nil {
+		return
+	}
+
+	if err := myredis.SaveSessionHotState(ctx, helper.ExportHotState()); err != nil {
+		log.Println("persistHelperHotState SaveSessionHotState error:", err)
+	}
 }
 
 // syncHelperWithDatabase 在“继续某个会话前”校准本地 helper 与数据库消息状态。
@@ -178,7 +191,19 @@ func getOrSyncHelperWithHistory(userName string, sess *model.Session, modelType 
 	if len(msgs) > 0 {
 		helper.LoadMessages(msgs)
 	}
+
+	// 第二轮升级里引入 Redis 热状态快照，但这里仍然保留 DB 回放作为兜底真相恢复。
+	// 也就是说：先保证“至少能恢复”，再用 Redis 热快照把最近窗口状态补回来。
+	hotState, err := myredis.GetSessionHotState(context.Background(), sessionID)
+	if err != nil {
+		log.Println("getOrCreateHelperWithHistory GetSessionHotState error:", err)
+	} else if hotState != nil {
+		helper.LoadHotState(hotState)
+	}
 	helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
+	if code_ := syncHelperWithDatabase(sessionID, helper); code_ != code.CodeSuccess {
+		return nil, code_
+	}
 
 	manager.SetAIHelper(userName, sessionID, helper)
 	return helper, code.CodeSuccess
@@ -206,6 +231,11 @@ func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
 // CreateSessionAndSendMessage 创建新会话并发送第一条消息。
 func CreateSessionAndSendMessage(ctx context.Context, userName string, userQuestion string, modelType string) (string, string, code.Code) {
 	requestStart := time.Now()
+	if !allowChatRateLimit(ctx, userName) {
+		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
+		return "", "", code.CodeTooManyRequests
+	}
+
 	newSession := &model.Session{
 		ID:       uuid.New().String(),
 		UserName: userName,
@@ -219,26 +249,44 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userQuest
 		return "", "", code.CodeServerBusy
 	}
 
-	helper, code_ := getOrSyncHelperWithHistory(userName, createdSession, modelType)
-	if code_ != code.CodeSuccess {
-		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
-		return "", "", code_
-	}
+	result := withSessionExecutionGuard(ctx, createdSession.ID, func() codeExecutorResult {
+		helper, code_ := getOrSyncHelperWithHistory(userName, createdSession, modelType)
+		if code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
 
-	beforeSummary, beforeCount := helper.GetSummaryState()
-	aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
-	if err != nil {
-		log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
+		beforeSummary, beforeCount := helper.GetSummaryState()
+		aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
+		if err != nil {
+			log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
+			return codeExecutorResult{code: code.AIModelFail}
+		}
+		if code_ = persistSummaryIfChanged(createdSession.ID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+
+		persistHelperHotState(ctx, helper)
+		return codeExecutorResult{
+			code:       code.CodeSuccess,
+			aiResponse: aiResponse.Content,
+		}
+	})
+	if result.err != nil {
+		log.Println("CreateSessionAndSendMessage execution guard error:", result.err)
 		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
-		return "", "", code.AIModelFail
+		return "", "", code.CodeServerBusy
 	}
-	if code_ = persistSummaryIfChanged(createdSession.ID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+	if result.busy {
 		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
-		return "", "", code_
+		return "", "", code.CodeTooManyRequests
+	}
+	if result.code != code.CodeSuccess {
+		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
+		return "", "", result.code
 	}
 	observability.RecordRequest("create_sync", modelType, true, time.Since(requestStart))
 
-	return createdSession.ID, aiResponse.Content, code.CodeSuccess
+	return createdSession.ID, result.aiResponse, code.CodeSuccess
 }
 
 // CreateStreamSessionOnly 只创建会话，不发送消息。
@@ -262,6 +310,10 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 	requestStart := time.Now()
 	observability.RecordStreamActiveDelta(1)
 	defer observability.RecordStreamActiveDelta(-1)
+	if !allowChatRateLimit(ctx, userName) {
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		return code.CodeTooManyRequests
+	}
 
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
@@ -275,6 +327,66 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
 		return code_
 	}
+
+	// 从这里开始走新的“会话执行保护 + 热状态回写”链路。
+	// 旧代码仍然保留在文件里，主要是为了减少这次改造对原有结构的破坏；
+	// 真正运行时会在这里提前 return，不再落到后面的旧分支。
+	result := withSessionExecutionGuard(ctx, sessionID, func() codeExecutorResult {
+		helper, code_ := getOrSyncHelperWithHistory(userName, sess, modelType)
+		if code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+
+		cb := func(msg string) {
+			// SSE 协议要求每个片段都按 data 行输出，并在每次写入后立刻 flush。
+			_, err := writer.Write([]byte("data: " + msg + "\n\n"))
+			if err != nil {
+				log.Println("StreamMessageToExistingSession Write error:", err)
+				return
+			}
+			flusher.Flush()
+		}
+
+		beforeSummary, beforeCount := helper.GetSummaryState()
+		if _, err := helper.StreamResponse(userName, ctx, cb, userQuestion); err != nil {
+			log.Println("StreamMessageToExistingSession StreamResponse error:", err)
+			if ctx.Err() != nil {
+				observability.RecordStreamDisconnect()
+			}
+			return codeExecutorResult{code: code.AIModelFail}
+		}
+		if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+
+		persistHelperHotState(ctx, helper)
+		return codeExecutorResult{code: code.CodeSuccess}
+	})
+	if result.err != nil {
+		log.Println("StreamMessageToExistingSession execution guard error:", result.err)
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		return code.CodeServerBusy
+	}
+	if result.busy {
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		return code.CodeTooManyRequests
+	}
+	if result.code != code.CodeSuccess {
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		return result.code
+	}
+
+	if _, err := writer.Write([]byte("data: [DONE]\n\n")); err != nil {
+		log.Println("StreamMessageToExistingSession write DONE error:", err)
+		if ctx.Err() != nil {
+			observability.RecordStreamDisconnect()
+		}
+		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		return code.AIModelFail
+	}
+	flusher.Flush()
+	observability.RecordRequest("chat_stream", modelType, true, time.Since(requestStart))
+	return code.CodeSuccess
 
 	helper, code_ := getOrSyncHelperWithHistory(userName, sess, modelType)
 	if code_ != code.CodeSuccess {
@@ -338,11 +450,55 @@ func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, use
 // ChatSend 向已有会话发送同步消息。
 func ChatSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
 	requestStart := time.Now()
+	if !allowChatRateLimit(ctx, userName) {
+		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
+		return "", code.CodeTooManyRequests
+	}
+
 	sess, code_ := ensureOwnedSession(userName, sessionID)
 	if code_ != code.CodeSuccess {
 		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
 		return "", code_
 	}
+
+	// 新链路在这里提前返回，后面的旧逻辑仅保留作对照，实际不会再走到。
+	result := withSessionExecutionGuard(ctx, sessionID, func() codeExecutorResult {
+		helper, code_ := getOrSyncHelperWithHistory(userName, sess, modelType)
+		if code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+
+		beforeSummary, beforeCount := helper.GetSummaryState()
+		aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
+		if err != nil {
+			log.Println("ChatSend GenerateResponse error:", err)
+			return codeExecutorResult{code: code.AIModelFail}
+		}
+		if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+
+		persistHelperHotState(ctx, helper)
+		return codeExecutorResult{
+			code:       code.CodeSuccess,
+			aiResponse: aiResponse.Content,
+		}
+	})
+	if result.err != nil {
+		log.Println("ChatSend execution guard error:", result.err)
+		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
+		return "", code.CodeServerBusy
+	}
+	if result.busy {
+		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
+		return "", code.CodeTooManyRequests
+	}
+	if result.code != code.CodeSuccess {
+		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
+		return "", result.code
+	}
+	observability.RecordRequest("chat_sync", modelType, true, time.Since(requestStart))
+	return result.aiResponse, code.CodeSuccess
 
 	helper, code_ := getOrSyncHelperWithHistory(userName, sess, modelType)
 	if code_ != code.CodeSuccess {
