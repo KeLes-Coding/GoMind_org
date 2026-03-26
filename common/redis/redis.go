@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	redisCli "github.com/redis/go-redis/v9"
@@ -14,8 +15,9 @@ import (
 var Rdb *redisCli.Client
 
 var ctx = context.Background()
+var redisAvailable atomic.Bool
 
-func Init() {
+func Init() error {
 	conf := config.GetConfig()
 	host := conf.RedisConfig.RedisHost
 	port := conf.RedisConfig.RedisPort
@@ -27,65 +29,94 @@ func Init() {
 		Addr:     addr,
 		Password: password,
 		DB:       db,
-		Protocol: 2, // 使用 Protocol 2 避免 maint_notifications 警告
+		Protocol: 2,
 	})
 
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	if err := Rdb.Ping(pingCtx).Err(); err != nil {
+		redisAvailable.Store(false)
+		return err
+	}
+
+	// 只要启动期探活成功，就允许业务优先走 Redis。
+	redisAvailable.Store(true)
+	return nil
+}
+
+func IsAvailable() bool {
+	return Rdb != nil && redisAvailable.Load()
 }
 
 func SetCaptchaForEmail(email, captcha string) error {
+	if !IsAvailable() {
+		return fmt.Errorf("redis unavailable")
+	}
+
 	key := GenerateCaptcha(email)
 	expire := 2 * time.Minute
-	return Rdb.Set(ctx, key, captcha, expire).Err()
+	if err := Rdb.Set(ctx, key, captcha, expire).Err(); err != nil {
+		// 运行期一旦发现 Redis 失败，后续请求直接走降级分支，避免每次阻塞等待。
+		redisAvailable.Store(false)
+		return err
+	}
+	return nil
 }
 
-func CheckCaptchaForEmail(email, userInput string) (bool, error) {
-	key := GenerateCaptcha(email)
+func ValidateCaptchaForEmail(email, userInput string) (bool, error) {
+	if !IsAvailable() {
+		return false, fmt.Errorf("redis unavailable")
+	}
 
+	key := GenerateCaptcha(email)
 	storedCaptcha, err := Rdb.Get(ctx, key).Result()
 	if err != nil {
 		if err == redisCli.Nil {
-
 			return false, nil
 		}
 
+		// 区分“验证码不存在”和“Redis 不可用”，让上层决定是否回退数据库。
+		redisAvailable.Store(false)
 		return false, err
 	}
 
-	if strings.EqualFold(storedCaptcha, userInput) {
-
-		// 验证成功后删除 key
-		if err := Rdb.Del(ctx, key).Err(); err != nil {
-
-		} else {
-
-		}
-		return true, nil
-	}
-
-	return false, nil
+	return strings.EqualFold(storedCaptcha, userInput), nil
 }
 
-// InitRedisIndex 初始化 Redis 索引，支持按文件名区分
-func InitRedisIndex(ctx context.Context, filename string, dimension int) error {
-	indexName := GenerateIndexName(filename)
+func DeleteCaptchaForEmail(email string) error {
+	if !IsAvailable() {
+		return fmt.Errorf("redis unavailable")
+	}
 
-	// 检查索引是否存在
+	key := GenerateCaptcha(email)
+	if err := Rdb.Del(ctx, key).Err(); err != nil {
+		redisAvailable.Store(false)
+		return err
+	}
+	return nil
+}
+
+func InitRedisIndex(ctx context.Context, filename string, dimension int) error {
+	if !IsAvailable() {
+		return fmt.Errorf("redis unavailable")
+	}
+
+	indexName := GenerateIndexName(filename)
 	_, err := Rdb.Do(ctx, "FT.INFO", indexName).Result()
 	if err == nil {
-		fmt.Println("索引已存在，跳过创建")
+		fmt.Println("redis index already exists, skip create")
 		return nil
 	}
 
-	// 如果索引不存在，创建新索引
 	if !strings.Contains(err.Error(), "Unknown index name") {
-		return fmt.Errorf("检查索引失败: %w", err)
+		redisAvailable.Store(false)
+		return fmt.Errorf("check redis index failed: %w", err)
 	}
 
-	fmt.Println("正在创建 Redis 索引...")
+	fmt.Println("creating redis index")
 
 	prefix := GenerateIndexNamePrefix(filename)
-
-	// 创建索引
 	createArgs := []interface{}{
 		"FT.CREATE", indexName,
 		"ON", "HASH",
@@ -101,22 +132,25 @@ func InitRedisIndex(ctx context.Context, filename string, dimension int) error {
 	}
 
 	if err := Rdb.Do(ctx, createArgs...).Err(); err != nil {
-		return fmt.Errorf("创建索引失败: %w", err)
+		redisAvailable.Store(false)
+		return fmt.Errorf("create redis index failed: %w", err)
 	}
 
-	fmt.Println("索引创建成功！")
+	fmt.Println("redis index created")
 	return nil
 }
 
-// DeleteRedisIndex 删除 Redis 索引，支持按文件名区分
 func DeleteRedisIndex(ctx context.Context, filename string) error {
-	indexName := GenerateIndexName(filename)
-
-	// 删除索引
-	if err := Rdb.Do(ctx, "FT.DROPINDEX", indexName).Err(); err != nil {
-		return fmt.Errorf("删除索引失败: %w", err)
+	if !IsAvailable() {
+		return fmt.Errorf("redis unavailable")
 	}
 
-	fmt.Println("索引删除成功！")
+	indexName := GenerateIndexName(filename)
+	if err := Rdb.Do(ctx, "FT.DROPINDEX", indexName).Err(); err != nil {
+		redisAvailable.Store(false)
+		return fmt.Errorf("delete redis index failed: %w", err)
+	}
+
+	fmt.Println("redis index deleted")
 	return nil
 }

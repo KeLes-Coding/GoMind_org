@@ -29,8 +29,11 @@ func main() {
 		return
 	}
 
-	redis.Init()
-	log.Println("redis init success")
+	if err := redis.Init(); err != nil {
+		log.Println("redis init degraded, fallback to database for captcha flow:", err)
+	} else {
+		log.Println("redis init success")
+	}
 
 	rabbitmq.InitRabbitMQ()
 	log.Println("rabbitmq init success")

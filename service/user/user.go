@@ -2,17 +2,22 @@ package user
 
 import (
 	"log"
+	"time"
 
 	"GopherAI/common/code"
 	myemail "GopherAI/common/email"
 	myredis "GopherAI/common/redis"
+	captchaDAO "GopherAI/dao/captcha"
 	"GopherAI/dao/user"
 	"GopherAI/model"
 	"GopherAI/utils"
 	"GopherAI/utils/myjwt"
 )
 
-const maxUsernameRetry = 5
+const (
+	maxUsernameRetry      = 5
+	captchaExpireDuration = 2 * time.Minute
+)
 
 func Login(username, password string) (string, code.Code) {
 	userInformation, err := user.GetByUsername(username)
@@ -23,12 +28,10 @@ func Login(username, password string) (string, code.Code) {
 		return "", code.CodeUserNotExist
 	}
 
-	// 登录优先校验 bcrypt；如果命中历史 MD5，则在成功登录后自动升级。
 	passwordMatched := utils.VerifyPassword(userInformation.Password, password)
 	if !passwordMatched && userInformation.Password == utils.MD5(password) {
 		passwordMatched = true
 		if passwordHash, err := utils.HashPassword(password); err == nil {
-			// 这里只做平滑升级，不影响本次登录结果。
 			_ = user.UpdatePasswordHash(userInformation.ID, passwordHash)
 		}
 	}
@@ -52,26 +55,25 @@ func Register(email, password, captcha string) (string, code.Code) {
 		return "", code.CodeUserExist
 	}
 
-	// 业务错误和基础设施错误分开处理，避免 Redis 故障被误报成验证码错误。
-	if ok, err := myredis.CheckCaptchaForEmail(email, captcha); err != nil {
+	// Redis 可用时优先走 Redis；Redis 故障时回退到 MySQL 保底验证码记录。
+	ok, err := verifyCaptcha(email, captcha)
+	if err != nil {
 		return "", code.CodeServerBusy
-	} else if !ok {
+	}
+	if !ok {
 		return "", code.CodeInvalidCaptcha
 	}
 
-	// 新注册用户统一写入 bcrypt 哈希，不再继续写 MD5。
 	passwordHash, err := utils.HashPassword(password)
 	if err != nil {
 		return "", code.CodeServerBusy
 	}
 
-	// 随机用户名有碰撞概率，这里做有限重试，避免一次碰撞就直接注册失败。
 	var userInformation *model.User
 	for i := 0; i < maxUsernameRetry; i++ {
 		username := utils.GetRandomNumbers(11)
 		userInformation, err = user.CreateUser(username, email, passwordHash)
 		if err == nil {
-			// 邮件发送属于附属通知链路，失败记录日志即可，不影响注册成功。
 			if mailErr := myemail.SendCaptcha(email, username, user.UserNameMsg); mailErr != nil {
 				log.Printf("[register] user created but failed to send username email, email=%s username=%s err=%v", email, username, mailErr)
 			}
@@ -86,6 +88,12 @@ func Register(email, password, captcha string) (string, code.Code) {
 		return "", code.CodeServerBusy
 	}
 
+	// 注册完成后再消费验证码，避免验证码被重复使用。
+	if err := consumeCaptcha(email); err != nil {
+		log.Printf("[register] user created but failed to consume captcha, email=%s err=%v", email, err)
+		return "", code.CodeServerBusy
+	}
+
 	token, err := myjwt.GenerateToken(userInformation.ID, userInformation.Username)
 	if err != nil {
 		return "", code.CodeServerBusy
@@ -96,9 +104,20 @@ func Register(email, password, captcha string) (string, code.Code) {
 
 func SendCaptcha(email string) code.Code {
 	sendCode := utils.GetRandomNumbers(6)
-	// 先写 Redis，再发邮件，保证后续注册时有可校验的验证码。
-	if err := myredis.SetCaptchaForEmail(email, sendCode); err != nil {
+
+	codeHash, err := utils.HashPassword(sendCode)
+	if err != nil {
 		return code.CodeServerBusy
+	}
+
+	expiresAt := time.Now().Add(captchaExpireDuration)
+	if err := captchaDAO.SaveCaptcha(email, codeHash, expiresAt); err != nil {
+		return code.CodeServerBusy
+	}
+
+	// MySQL 是保底真相源；Redis 这里只做高频读取加速，失败不阻断发码。
+	if err := myredis.SetCaptchaForEmail(email, sendCode); err != nil {
+		log.Printf("[captcha] redis unavailable, fallback to mysql only, email=%s err=%v", email, err)
 	}
 
 	if err := myemail.SendCaptcha(email, sendCode, myemail.CodeMsg); err != nil {
@@ -106,4 +125,38 @@ func SendCaptcha(email string) code.Code {
 	}
 
 	return code.CodeSuccess
+}
+
+func verifyCaptcha(email, input string) (bool, error) {
+	// 读路径先尝试 Redis，命中时不打数据库；只有 Redis 不可用时才降级。
+	if ok, err := myredis.ValidateCaptchaForEmail(email, input); err == nil {
+		return ok, nil
+	}
+
+	record, err := captchaDAO.GetActiveCaptchaByEmail(email, time.Now())
+	if err != nil {
+		if captchaDAO.IsCaptchaNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return utils.VerifyPassword(record.CodeHash, input), nil
+}
+
+func consumeCaptcha(email string) error {
+	// Redis 删除失败不影响主流程，MySQL 的 used 标记才是最终约束。
+	if err := myredis.DeleteCaptchaForEmail(email); err != nil {
+		log.Printf("[captcha] delete redis captcha skipped, email=%s err=%v", email, err)
+	}
+
+	record, err := captchaDAO.GetActiveCaptchaByEmail(email, time.Now())
+	if err != nil {
+		if captchaDAO.IsCaptchaNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	return captchaDAO.MarkCaptchaUsed(record.ID, time.Now())
 }

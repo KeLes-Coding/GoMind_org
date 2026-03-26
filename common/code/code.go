@@ -1,6 +1,6 @@
 package code
 
-//code响应状态码
+// code response status
 
 type Code int64
 
@@ -17,6 +17,7 @@ const (
 	CodeInvalidCaptcha   Code = 2008
 	CodeRecordNotFound   Code = 2009
 	CodeIllegalPassword  Code = 2010
+	CodeTooManyRequests  Code = 2011
 
 	CodeForbidden Code = 3001
 
@@ -33,7 +34,7 @@ var msg = map[Code]string{
 	CodeSuccess: "success",
 
 	CodeInvalidParams:    "请求参数错误",
-	CodeUserExist:        "用户名已存在",
+	CodeUserExist:        "用户已存在",
 	CodeUserNotExist:     "用户不存在",
 	CodeInvalidPassword:  "用户名或密码错误",
 	CodeNotMatchPassword: "两次密码不一致",
@@ -42,6 +43,7 @@ var msg = map[Code]string{
 	CodeInvalidCaptcha:   "验证码错误",
 	CodeRecordNotFound:   "记录不存在",
 	CodeIllegalPassword:  "密码不合法",
+	CodeTooManyRequests:  "请求过于频繁",
 
 	CodeForbidden: "权限不足",
 
@@ -57,7 +59,6 @@ func (code Code) Code() int64 {
 	return int64(code)
 }
 
-// Msg 获取响应消息
 func (code Code) Msg() string {
 	if m, ok := msg[code]; ok {
 		return m

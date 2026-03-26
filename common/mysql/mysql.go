@@ -61,6 +61,7 @@ func InitMysql() error {
 func migration() error {
 	return DB.AutoMigrate(
 		new(model.User),
+		new(model.EmailCaptcha),
 		new(model.Session),
 		new(model.Message),
 	)
