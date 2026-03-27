@@ -23,6 +23,8 @@ import (
 type RAGIndexer struct {
 	embedding embedding.Embedder
 	indexer   *redisIndexer.Indexer
+	ownerID   int64
+	kbID      string
 }
 
 type RAGQuery struct {
@@ -30,9 +32,20 @@ type RAGQuery struct {
 	retriever retriever.Retriever
 }
 
+// NewRAGIndexerWithPermission 创建带权限信息的索引器
+func NewRAGIndexerWithPermission(filename, embeddingModel string, ownerID int64, kbID string) (*RAGIndexer, error) {
+	indexer, err := NewRAGIndexer(filename, embeddingModel)
+	if err != nil {
+		return nil, err
+	}
+	indexer.ownerID = ownerID
+	indexer.kbID = kbID
+	return indexer, nil
+}
+
 // 构建知识库索引
 // 专业说法：文本解析、文本切块、向量化、存储向量
-// 通俗理解：把“人能读的文档”，转换成“AI 能按语义搜索的格式”，并存起来
+// 通俗理解：把”人能读的文档”，转换成”AI 能按语义搜索的格式”，并存起来
 func NewRAGIndexer(filename, embeddingModel string) (*RAGIndexer, error) {
 
 	// 用于控制整个初始化流程（超时 / 取消等），这里先用默认背景即可
@@ -150,9 +163,12 @@ func (r *RAGIndexer) IndexFile(ctx context.Context, filePath string) error {
 			ID:      fmt.Sprintf("chunk_%d", i), // chunk ID
 			Content: chunk,
 			MetaData: map[string]any{
-				"source":      filePath,
-				"chunk_index": i,
+				"source":       filePath,
+				"chunk_index":  i,
 				"total_chunks": len(chunks),
+				"owner_id":     fmt.Sprintf("%d", r.ownerID), // 权限字段：文件所有者ID
+				"kb_id":        r.kbID,                       // 权限字段：知识库ID
+				"status":       "ready",                      // 权限字段：文件状态
 			},
 		}
 		docs = append(docs, doc)
@@ -226,7 +242,7 @@ func (r *RAGQuery) RetrieveFromUserFiles(ctx context.Context, userID int64, quer
 	return r.RetrieveFromFile(ctx, query, storageFileName)
 }
 
-// RetrieveFromFile 从指定文件检索文档（新增方法，支持多文件场景）
+// RetrieveFromFile 从指定文件检索文档（新增方法，支持多文件场景，带权限过滤）
 func (r *RAGQuery) RetrieveFromFile(ctx context.Context, query, storageFileName string) ([]*schema.Document, error) {
 	rdb := redisPkg.Rdb
 	indexName := redis.GenerateIndexName(storageFileName)
@@ -235,7 +251,7 @@ func (r *RAGQuery) RetrieveFromFile(ctx context.Context, query, storageFileName 
 		Client:       rdb,
 		Index:        indexName,
 		Dialect:      2,
-		ReturnFields: []string{"content", "metadata", "distance"},
+		ReturnFields: []string{"content", "metadata", "owner_id", "kb_id", "status", "distance"},
 		TopK:         5,
 		VectorField:  "vector",
 		DocumentConverter: func(ctx context.Context, doc redisCli.Document) (*schema.Document, error) {
@@ -261,7 +277,20 @@ func (r *RAGQuery) RetrieveFromFile(ctx context.Context, query, storageFileName 
 		return nil, fmt.Errorf("failed to create retriever: %w", err)
 	}
 
-	return rtr.Retrieve(ctx, query)
+	docs, err := rtr.Retrieve(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	// 权限过滤：只返回 status = ready 的文档
+	filtered := make([]*schema.Document, 0, len(docs))
+	for _, doc := range docs {
+		if status, ok := doc.MetaData["status"].(string); ok && status == "ready" {
+			filtered = append(filtered, doc)
+		}
+	}
+
+	return filtered, nil
 }
 
 // BuildRAGPrompt 构建包含检索文档的提示词

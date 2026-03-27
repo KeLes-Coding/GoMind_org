@@ -49,6 +49,24 @@ func IsAvailable() bool {
 	return Rdb != nil && redisAvailable.Load()
 }
 
+// AcquireLock 获取分布式锁
+func AcquireLock(ctx context.Context, key string, expiration time.Duration) (bool, error) {
+	if !IsAvailable() {
+		return false, fmt.Errorf("redis not available")
+	}
+	// 使用 SET NX EX 实现分布式锁
+	result, err := Rdb.SetNX(ctx, key, "locked", expiration).Result()
+	return result, err
+}
+
+// ReleaseLock 释放分布式锁
+func ReleaseLock(ctx context.Context, key string) error {
+	if !IsAvailable() {
+		return nil
+	}
+	return Rdb.Del(ctx, key).Err()
+}
+
 func SetCaptchaForEmail(email, captcha string) error {
 	if !IsAvailable() {
 		return fmt.Errorf("redis unavailable")

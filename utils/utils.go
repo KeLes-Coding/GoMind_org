@@ -100,8 +100,16 @@ func RemoveAllFilesInDir(dir string) error {
 	return nil
 }
 
+const MaxFileSize = 10 * 1024 * 1024 // 10MB
+
 // ValidateFile 校验上传文件是否为允许的文本文件，目前只接受 .md 和 .txt。
 func ValidateFile(file *multipart.FileHeader) error {
+	// 校验文件大小
+	if file.Size > MaxFileSize {
+		return fmt.Errorf("文件过大，最大允许 10MB，当前文件: %.2fMB", float64(file.Size)/(1024*1024))
+	}
+
+	// 校验文件类型
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if ext != ".md" && ext != ".txt" {
 		return fmt.Errorf("文件类型不正确，只允许 .md 或 .txt 文件，当前扩展名: %s", ext)

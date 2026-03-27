@@ -351,8 +351,6 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 	}
 
 	// 从这里开始走新的“会话执行保护 + 热状态回写”链路。
-	// 旧代码仍然保留在文件里，主要是为了减少这次改造对原有结构的破坏；
-	// 真正运行时会在这里提前 return，不再落到后面的旧分支。
 	result := withSessionExecutionGuard(ctx, sessionID, func() codeExecutorResult {
 		helper, code_ := getOrSyncHelperWithHistory(ctx, userName, sess, modelType)
 		if code_ != code.CodeSuccess {

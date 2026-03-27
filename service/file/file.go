@@ -1,11 +1,12 @@
 package file
 
 import (
+	"GopherAI/common/metrics"
 	"GopherAI/common/mysql"
 	"GopherAI/common/rag"
-	"GopherAI/config"
 	"GopherAI/dao"
 	"GopherAI/model"
+	"GopherAI/service/task"
 	"GopherAI/utils"
 	"context"
 	"crypto/sha256"
@@ -111,35 +112,17 @@ func UploadRagFile(userID int64, username string, file *multipart.FileHeader) (s
 		return "", err
 	}
 
-	// 同步向量化（第一阶段暂时保留同步逻辑，后续改为异步任务）
-	if err := vectorizeFile(ctx, fileID, storageFileName, filePath, fileDAO); err != nil {
-		log.Printf("Failed to vectorize file: %v", err)
-		fileDAO.UpdateFileStatus(ctx, fileID, model.FileStatusFailed, err.Error())
-		return "", err
+	// 记录上传指标
+	metrics.File.IncrUploaded()
+
+	// 异步向量化：投递任务到 RabbitMQ（第二阶段改造）
+	if err := task.PublishVectorizeTask(ctx, fileID, 1); err != nil {
+		log.Printf("Failed to publish vectorize task: %v", err)
+		// 任务投递失败不影响上传成功，后续可以手动重试
 	}
 
-	log.Printf("File indexed successfully: %s", fileID)
+	log.Printf("File uploaded and task published: %s", fileID)
 	return filePath, nil
-}
-
-// vectorizeFile 向量化文件（内部函数）
-func vectorizeFile(ctx context.Context, fileID, storageFileName, filePath string, fileDAO *dao.FileDAO) error {
-	// 更新状态为向量化中
-	fileDAO.UpdateFileStatus(ctx, fileID, model.FileStatusVectorizing)
-
-	// 创建 RAG 索引器
-	indexer, err := rag.NewRAGIndexer(storageFileName, config.GetConfig().RagModelConfig.RagEmbeddingModel)
-	if err != nil {
-		return fmt.Errorf("failed to create RAG indexer: %w", err)
-	}
-
-	// 读取文件内容并创建向量索引
-	if err := indexer.IndexFile(ctx, filePath); err != nil {
-		return fmt.Errorf("failed to index file: %w", err)
-	}
-
-	// 更新状态为就绪
-	return fileDAO.UpdateFileStatus(ctx, fileID, model.FileStatusReady)
 }
 
 // ListUserFiles 查询用户的所有文件
