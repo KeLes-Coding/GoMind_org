@@ -1,4 +1,4 @@
-﻿package aihelper
+package aihelper
 
 import (
 	"context"
@@ -58,11 +58,11 @@ func (f *AIModelFactory) registerCreators() {
 	}
 
 	f.creators[ModelTypeRAG] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
-		username, ok := config["username"].(string)
+		userID, ok := config["userID"].(int64)
 		if !ok {
-			return nil, fmt.Errorf("RAG model requires username")
+			return nil, fmt.Errorf("RAG model requires userID")
 		}
-		return NewAliRAGModel(ctx, username)
+		return NewAliRAGModel(ctx, userID)
 	}
 
 	f.creators[ModelTypeMCP] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
@@ -98,7 +98,19 @@ func (f *AIModelFactory) CreateAIHelper(ctx context.Context, modelType string, S
 	if err != nil {
 		return nil, err
 	}
-	return NewAIHelper(model, SessionID), nil
+
+	helper := NewAIHelper(model, SessionID)
+
+	// 这轮先不动 RAG 相关链路，所以这里只给“非 OpenAI 且非 RAG”的模型挂一个轻量备用模型。
+	// 这样 MCP / Ollama 下游抖动时，至少还能退回普通聊天，保证主链路可用。
+	if modelType != ModelTypeOpenAI && modelType != ModelTypeRAG {
+		fallbackModel, fallbackErr := f.CreateAIModel(ctx, ModelTypeOpenAI, config)
+		if fallbackErr == nil {
+			helper.SetFallbackModel(fallbackModel)
+		}
+	}
+
+	return helper, nil
 }
 
 // RegisterModel 允许后续扩展注册新的模型类型。

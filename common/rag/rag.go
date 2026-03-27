@@ -1,12 +1,15 @@
 package rag
 
 import (
+	"GopherAI/common/mysql"
 	"GopherAI/common/redis"
+	"GopherAI/dao"
 	redisPkg "GopherAI/common/redis"
 	"GopherAI/config"
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	embeddingArk "github.com/cloudwego/eino-ext/components/embedding/ark"
 	redisIndexer "github.com/cloudwego/eino-ext/components/indexer/redis"
@@ -129,7 +132,7 @@ func NewRAGIndexer(filename, embeddingModel string) (*RAGIndexer, error) {
 	}, nil
 }
 
-// IndexFile 读取文件内容并创建向量索引
+// IndexFile 读取文件内容并创建向量索引（已升级：支持 chunk 切分）
 func (r *RAGIndexer) IndexFile(ctx context.Context, filePath string) error {
 	// 读取文件内容
 	content, err := os.ReadFile(filePath)
@@ -137,20 +140,28 @@ func (r *RAGIndexer) IndexFile(ctx context.Context, filePath string) error {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// 将文件内容转换为文档
-	// TODO: 这里可以根据需要进行文本切块，目前简单处理为一个文档
-	doc := &schema.Document{
-		ID:      "doc_1", // 可以使用 UUID 或其他唯一标识
-		Content: string(content),
-		MetaData: map[string]any{
-			"source": filePath,
-		},
+	// 切分成多个 chunk
+	chunks := SplitTextIntoChunks(string(content), DefaultChunkConfig())
+
+	// 将每个 chunk 转换为文档
+	docs := make([]*schema.Document, 0, len(chunks))
+	for i, chunk := range chunks {
+		doc := &schema.Document{
+			ID:      fmt.Sprintf("chunk_%d", i), // chunk ID
+			Content: chunk,
+			MetaData: map[string]any{
+				"source":      filePath,
+				"chunk_index": i,
+				"total_chunks": len(chunks),
+			},
+		}
+		docs = append(docs, doc)
 	}
 
-	// 使用 indexer 存储文档（会自动进行向量化）
-	_, err = r.indexer.Store(ctx, []*schema.Document{doc})
+	// 批量存储文档（会自动进行向量化）
+	_, err = r.indexer.Store(ctx, docs)
 	if err != nil {
-		return fmt.Errorf("failed to store document: %w", err)
+		return fmt.Errorf("failed to store documents: %w", err)
 	}
 
 	return nil
@@ -165,7 +176,8 @@ func DeleteIndex(ctx context.Context, filename string) error {
 }
 
 // NewRAGQuery 创建 RAG 查询器（用于向量检索和问答）
-func NewRAGQuery(ctx context.Context, username string) (*RAGQuery, error) {
+// 已升级：从"按目录猜文件"改为"按用户ID查询所有ready文件"
+func NewRAGQuery(ctx context.Context, userID int64) (*RAGQuery, error) {
 	cfg := config.GetConfig()
 	apiKey := os.Getenv("OPENAI_API_KEY")
 
@@ -180,29 +192,44 @@ func NewRAGQuery(ctx context.Context, username string) (*RAGQuery, error) {
 		return nil, fmt.Errorf("failed to create embedder: %w", err)
 	}
 
-	// 获取用户上传的文件名（假设每个用户只有一个文件）
-	// 这里需要从用户目录读取文件名
-	userDir := fmt.Sprintf("uploads/%s", username)
-	files, err := os.ReadDir(userDir)
+	// TODO: 这里暂时返回基础查询器，后续需要根据用户的ready文件动态构建retriever
+	// 第一阶段先保持兼容，等多文件完全落地后再重构检索逻辑
+	return &RAGQuery{
+		embedding: embedder,
+		retriever: nil, // 暂时为空，需要在实际检索时动态创建
+	}, nil
+}
+
+// RetrieveDocuments 检索相关文档（从用户所有 ready 文件中检索）
+func (r *RAGQuery) RetrieveDocuments(ctx context.Context, query string) ([]*schema.Document, error) {
+	// 这里暂时使用旧逻辑兼容，后续需要重构为多文件检索
+	if r.retriever != nil {
+		return r.retriever.Retrieve(ctx, query)
+	}
+	return nil, fmt.Errorf("retriever not initialized")
+}
+
+// RetrieveFromUserFiles 从用户所有 ready 文件中检索文档（新增方法）
+func (r *RAGQuery) RetrieveFromUserFiles(ctx context.Context, userID int64, query string) ([]*schema.Document, error) {
+	// 1. 查询用户所有 ready 状态的文件
+	fileDAO := dao.NewFileDAO(mysql.DB)
+	files, err := fileDAO.GetReadyFilesByOwner(ctx, userID)
 	if err != nil || len(files) == 0 {
-		return nil, fmt.Errorf("no uploaded file found for user %s", username)
+		return nil, fmt.Errorf("no ready files found for user")
 	}
 
-	var filename string
-	for _, f := range files {
-		if !f.IsDir() {
-			filename = f.Name()
-			break
-		}
-	}
+	// 2. 从所有文件中检索（简化版：只从第一个文件检索）
+	// TODO: 后续优化为多文件并行检索并合并结果
+	firstFile := files[0]
+	storageFileName := filepath.Base(firstFile.StorageKey)
 
-	if filename == "" {
-		return nil, fmt.Errorf("no valid file found for user %s", username)
-	}
+	return r.RetrieveFromFile(ctx, query, storageFileName)
+}
 
-	// 创建 retriever
+// RetrieveFromFile 从指定文件检索文档（新增方法，支持多文件场景）
+func (r *RAGQuery) RetrieveFromFile(ctx context.Context, query, storageFileName string) ([]*schema.Document, error) {
 	rdb := redisPkg.Rdb
-	indexName := redis.GenerateIndexName(filename)
+	indexName := redis.GenerateIndexName(storageFileName)
 
 	retrieverConfig := &redisRetriever.RetrieverConfig{
 		Client:       rdb,
@@ -227,26 +254,14 @@ func NewRAGQuery(ctx context.Context, username string) (*RAGQuery, error) {
 			return resp, nil
 		},
 	}
-	retrieverConfig.Embedding = embedder
+	retrieverConfig.Embedding = r.embedding
 
 	rtr, err := redisRetriever.NewRetriever(ctx, retrieverConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create retriever: %w", err)
 	}
 
-	return &RAGQuery{
-		embedding: embedder,
-		retriever: rtr,
-	}, nil
-}
-
-// RetrieveDocuments 检索相关文档
-func (r *RAGQuery) RetrieveDocuments(ctx context.Context, query string) ([]*schema.Document, error) {
-	docs, err := r.retriever.Retrieve(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve documents: %w", err)
-	}
-	return docs, nil
+	return rtr.Retrieve(ctx, query)
 }
 
 // BuildRAGPrompt 构建包含检索文档的提示词

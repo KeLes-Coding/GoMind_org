@@ -149,11 +149,11 @@ func (o *OllamaModel) GetModelType() string { return ModelTypeOllama }
 
 // =================== RAG 实现 ===================
 type AliRAGModel struct {
-	llm      model.ToolCallingChatModel
-	username string // 用于获取用户的文档
+	llm    model.ToolCallingChatModel
+	userID int64 // 用于获取用户的文档
 }
 
-func NewAliRAGModel(ctx context.Context, username string) (*AliRAGModel, error) {
+func NewAliRAGModel(ctx context.Context, userID int64) (*AliRAGModel, error) {
 	key := os.Getenv("OPENAI_API_KEY")
 	conf := config.GetConfig()
 	modelName := conf.RagModelConfig.RagChatModelName
@@ -168,14 +168,14 @@ func NewAliRAGModel(ctx context.Context, username string) (*AliRAGModel, error) 
 		return nil, fmt.Errorf("create ali rag model failed: %v", err)
 	}
 	return &AliRAGModel{
-		llm:      llm,
-		username: username,
+		llm:    llm,
+		userID: userID,
 	}, nil
 }
 
 func (o *AliRAGModel) GenerateResponse(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
-	// 1. 创建 RAG 查询器
-	ragQuery, err := rag.NewRAGQuery(ctx, o.username)
+	// 1. 创建 RAG 查询器（改用 userID）
+	ragQuery, err := rag.NewRAGQuery(ctx, o.userID)
 	if err != nil {
 		log.Printf("Failed to create RAG query (user may not have uploaded file): %v", err)
 		// 如果用户没有上传文件，直接使用原始问题
@@ -225,8 +225,8 @@ func (o *AliRAGModel) GenerateResponse(ctx context.Context, messages []*schema.M
 }
 
 func (o *AliRAGModel) StreamResponse(ctx context.Context, messages []*schema.Message, cb StreamCallback) (string, error) {
-	// 1. 创建 RAG 查询器
-	ragQuery, err := rag.NewRAGQuery(ctx, o.username)
+	// 1. 创建 RAG 查询器（改用 userID）
+	ragQuery, err := rag.NewRAGQuery(ctx, o.userID)
 	if err != nil {
 		log.Printf("Failed to create RAG query (user may not have uploaded file): %v", err)
 		// 如果用户没有上传文件，直接使用原始问题

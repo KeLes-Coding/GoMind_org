@@ -64,6 +64,7 @@ func migration() error {
 		new(model.EmailCaptcha),
 		new(model.Session),
 		new(model.Message),
+		new(model.FileAsset), // 文件资产表
 	)
 }
 

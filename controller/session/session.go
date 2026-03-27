@@ -78,6 +78,7 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 	req := new(CreateSessionAndSendMessageRequest)
 	res := new(CreateSessionAndSendMessageResponse)
 	userName := c.GetString("userName") // From JWT middleware
+	userID := c.GetInt64("userID")      // From JWT middleware
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
@@ -87,7 +88,7 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 		return
 	}
 	//内部会创建会话并发送消息，并会将AI回答、当前会话返回
-	session_id, aiInformation, code_ := session.CreateSessionAndSendMessage(c.Request.Context(), userName, req.UserQuestion, req.ModelType)
+	session_id, aiInformation, code_ := session.CreateSessionAndSendMessage(c.Request.Context(), userName, userID, req.UserQuestion, req.ModelType)
 
 	if code_ != code.CodeSuccess {
 		c.JSON(http.StatusOK, res.CodeOf(code_))
@@ -103,6 +104,7 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 func CreateStreamSessionAndSendMessage(c *gin.Context) {
 	req := new(CreateSessionAndSendMessageRequest)
 	userName := c.GetString("userName") // From JWT middleware
+	userID := c.GetInt64("userID")      // From JWT middleware
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
@@ -120,7 +122,7 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no") // 禁止代理缓存
 
 	// 先创建会话并立即把 sessionId 下发给前端，随后再开始流式输出
-	sessionID, code_ := session.CreateStreamSessionOnly(userName, req.UserQuestion)
+	sessionID, code_ := session.CreateStreamSessionOnly(userName, userID, req.UserQuestion)
 	if code_ != code.CodeSuccess {
 		c.SSEvent("error", gin.H{"message": "Failed to create session"})
 		return

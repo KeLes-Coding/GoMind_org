@@ -2,9 +2,10 @@ package session
 
 import (
 	"GopherAI/common/code"
+	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
 	"context"
-	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -12,7 +13,7 @@ import (
 const (
 	// 这里先给聊天主链路一个较保守的本地固定窗口限流。
 	// 目标不是做最终形态的网关限流，而是先在应用层拦住明显异常流量。
-	defaultChatRateLimit      = 12
+	defaultChatRateLimit       = 12
 	defaultChatRateLimitWindow = 30 * time.Second
 )
 
@@ -97,14 +98,23 @@ func allowChatRateLimit(ctx context.Context, userName string) bool {
 // 3. 使用 defer 做统一释放，避免中途 return 时遗留锁。
 func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func() codeExecutorResult) codeExecutorResult {
 	localLock := globalSessionLocalLockManager.getLock(sessionID)
+	waitStart := time.Now()
 	localLock.Lock()
 	defer localLock.Unlock()
+	observability.RecordSessionWait(time.Since(waitStart))
 
 	distributedLock, err := myredis.AcquireSessionDistributedLock(ctx, sessionID)
 	if err != nil {
-		return codeExecutorResult{err: fmt.Errorf("acquire redis session lock failed: %w", err)}
+		// Redis 锁是多实例增强能力，不是单机正确性的唯一前提。
+		// 所以这里明确降级为“仅本地锁保护”，同时把事实打到日志和观测里。
+		observability.RecordSessionRedisLockDegrade()
+		logSessionTrace(ctx, "redis_lock_degrade", "err=%v", err)
+		log.Println("withSessionExecutionGuard acquire redis session lock degraded:", err)
+		return fn()
 	}
 	if distributedLock == nil && myredis.IsAvailable() {
+		observability.RecordSessionLockBusy()
+		logSessionTrace(ctx, "redis_lock_busy", "detail=distributed_lock_conflict")
 		return codeExecutorResult{busy: true}
 	}
 	if distributedLock != nil {
@@ -113,6 +123,7 @@ func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func() 
 		}()
 	}
 
+	logSessionTrace(ctx, "guard_enter", "detail=session_guard_entered")
 	return fn()
 }
 

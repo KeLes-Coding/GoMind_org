@@ -3,22 +3,29 @@ package aihelper
 import (
 	"GopherAI/common/observability"
 	"GopherAI/common/rabbitmq"
+	messageDAO "GopherAI/dao/message"
 	"GopherAI/model"
 	"GopherAI/utils"
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"gorm.io/gorm"
 )
 
 // AIHelper 绑定一个具体会话的模型实例与消息上下文。
 // 它是“运行时对象”，负责把当前会话组织成模型可消费的 message 列表。
 type AIHelper struct {
-	model    AIModel
-	messages []*model.Message
-	mu       sync.RWMutex
+	model AIModel
+	// fallbackModel 不是默认常驻主链路的模型，而是“主模型连续失败后”的兜底。
+	// 这样可以把平时成本和稳定性做拆分：正常走主模型，异常时优先保可用。
+	fallbackModel AIModel
+	messages      []*model.Message
+	mu            sync.RWMutex
 	// 一个 session 只绑定一个 AIHelper。
 	SessionID string
 	saveFunc  func(*model.Message) (*model.Message, error)
@@ -40,9 +47,24 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 		messages: make([]*model.Message, 0),
 		// 默认通过 RabbitMQ 异步落库，降低聊天主链路上的数据库写入压力。
 		saveFunc: func(msg *model.Message) (*model.Message, error) {
+			// 先尝试走 MQ，只有在 MQ 当前不可用或发布失败时，才退回同步落库。
+			// 这样主链路仍然以“异步削峰”为主，但在 MQ 故障场景下不会直接失去可用性。
 			data := rabbitmq.GenerateMessageMQParam(msg.MessageKey, msg.SessionID, msg.Content, msg.UserName, msg.IsUser)
-			err := rabbitmq.RMQMessage.Publish(data)
-			return msg, err
+			if rabbitmq.RMQMessage != nil {
+				if err := rabbitmq.RMQMessage.Publish(data); err == nil {
+					return msg, nil
+				}
+			}
+
+			observability.RecordMQFallback()
+			persistedMsg, err := messageDAO.CreateMessage(msg)
+			if err != nil && !errors.Is(err, gorm.ErrDuplicatedKey) {
+				return msg, err
+			}
+			if persistedMsg != nil {
+				*msg = *persistedMsg
+			}
+			return msg, nil
 		},
 		SessionID: SessionID,
 		version:   1,
@@ -67,7 +89,11 @@ func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save
 	a.mu.Unlock()
 
 	if Save {
-		a.saveFunc(&userMsg)
+		if _, err := a.saveFunc(&userMsg); err != nil {
+			// 持久化失败不应该把整个会话内存态直接回滚，否则会引入更复杂的上下文不一致。
+			// 这里先明确记日志，后续可以继续把失败消息做补偿扫描。
+			log.Println("AIHelper AddMessage persist message error:", err)
+		}
 	}
 }
 
@@ -156,6 +182,12 @@ func (a *AIHelper) LoadMessages(messages []model.Message) {
 // SetSaveFunc 允许外部注入消息持久化策略，便于测试或切换持久化实现。
 func (a *AIHelper) SetSaveFunc(saveFunc func(*model.Message) (*model.Message, error)) {
 	a.saveFunc = saveFunc
+}
+
+// SetFallbackModel 注入备用模型。
+// 备用模型只在主模型连续失败后使用，避免正常情况下平白增加额外调用成本。
+func (a *AIHelper) SetFallbackModel(fallbackModel AIModel) {
+	a.fallbackModel = fallbackModel
 }
 
 // SetSummaryState 用持久化层保存的摘要状态覆盖当前 helper。
@@ -303,11 +335,14 @@ func (a *AIHelper) ensureContextSummary(ctx context.Context) error {
 
 	newSummary, err := a.model.GenerateSummary(ctx, currentSummary, utils.ConvertToSchemaMessages(messagesToSummarize))
 	if err != nil {
-		observability.RecordSummaryRefresh(false)
+		// 摘要刷新失败时，不应把整个主链路直接打挂。
+		// 此时系统仍然可以继续使用“最近窗口消息”完成回答，只是上下文压缩收益暂时下降。
+		observability.RecordSummaryRefresh(false, time.Since(summaryStart))
 		observability.RecordModelCall("summary", a.model.GetModelType(), false, time.Since(summaryStart), len(messagesToSummarize), currentSummary != "")
-		return err
+		log.Println("AIHelper ensureContextSummary generate summary error:", err)
+		return nil
 	}
-	observability.RecordSummaryRefresh(true)
+	observability.RecordSummaryRefresh(true, time.Since(summaryStart))
 	observability.RecordModelCall("summary", a.model.GetModelType(), true, time.Since(summaryStart), len(messagesToSummarize), currentSummary != "")
 
 	a.mu.Lock()
@@ -346,6 +381,98 @@ func (a *AIHelper) buildModelMessages() []*schema.Message {
 	return schemaMessages
 }
 
+// generateWithRetryAndFallback 统一封装“同模型有限重试 + 备用模型降级”策略。
+// 这里不把所有错误都吞掉，而是优先做一次低成本重试；只有确认主模型连续失败时，才切备用模型。
+func (a *AIHelper) generateWithRetryAndFallback(
+	ctx context.Context,
+	operation string,
+	messages []*schema.Message,
+	usedSummary bool,
+	invoke func(model AIModel) (*schema.Message, error),
+) (*schema.Message, error) {
+	callStart := time.Now()
+	resp, err := invoke(a.model)
+	observability.RecordModelCall(operation, a.model.GetModelType(), err == nil, time.Since(callStart), len(messages), usedSummary)
+	if err == nil {
+		return resp, nil
+	}
+
+	if ctx.Err() != nil {
+		return nil, err
+	}
+
+	observability.RecordModelRetry()
+	retryStart := time.Now()
+	resp, retryErr := invoke(a.model)
+	observability.RecordModelCall(operation+"_retry", a.model.GetModelType(), retryErr == nil, time.Since(retryStart), len(messages), usedSummary)
+	if retryErr == nil {
+		return resp, nil
+	}
+
+	if a.fallbackModel == nil || ctx.Err() != nil {
+		return nil, retryErr
+	}
+
+	observability.RecordModelFallback()
+	fallbackStart := time.Now()
+	resp, fallbackErr := invoke(a.fallbackModel)
+	observability.RecordModelCall(operation+"_fallback", a.fallbackModel.GetModelType(), fallbackErr == nil, time.Since(fallbackStart), len(messages), usedSummary)
+	if fallbackErr == nil {
+		return resp, nil
+	}
+
+	return nil, fallbackErr
+}
+
+// streamWithRetryAndFallback 统一封装流式场景下的重试与降级策略。
+func (a *AIHelper) streamWithRetryAndFallback(
+	ctx context.Context,
+	operation string,
+	messages []*schema.Message,
+	usedSummary bool,
+	allowRetry func() bool,
+	invoke func(model AIModel) (string, error),
+) (string, error) {
+	callStart := time.Now()
+	content, err := invoke(a.model)
+	observability.RecordModelCall(operation, a.model.GetModelType(), err == nil, time.Since(callStart), len(messages), usedSummary)
+	if err == nil {
+		return content, nil
+	}
+
+	if ctx.Err() != nil {
+		return "", err
+	}
+
+	// 流式场景下，一旦已经向客户端输出了部分 token，就不能再重试或切模型，
+	// 否则前端会看到重复内容或语义断裂。
+	if allowRetry != nil && !allowRetry() {
+		return "", err
+	}
+
+	observability.RecordModelRetry()
+	retryStart := time.Now()
+	content, retryErr := invoke(a.model)
+	observability.RecordModelCall(operation+"_retry", a.model.GetModelType(), retryErr == nil, time.Since(retryStart), len(messages), usedSummary)
+	if retryErr == nil {
+		return content, nil
+	}
+
+	if a.fallbackModel == nil || ctx.Err() != nil {
+		return "", retryErr
+	}
+
+	observability.RecordModelFallback()
+	fallbackStart := time.Now()
+	content, fallbackErr := invoke(a.fallbackModel)
+	observability.RecordModelCall(operation+"_fallback", a.fallbackModel.GetModelType(), fallbackErr == nil, time.Since(fallbackStart), len(messages), usedSummary)
+	if fallbackErr == nil {
+		return content, nil
+	}
+
+	return "", fallbackErr
+}
+
 // GenerateResponse 走同步模型调用。
 func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQuestion string) (*model.Message, error) {
 	// 先把用户本轮问题写入上下文，保证模型能看到完整多轮历史。
@@ -356,7 +483,6 @@ func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQu
 	}
 
 	messages := a.buildModelMessages()
-	callStart := time.Now()
 	usedSummary := false
 	if summary, _ := a.GetSummaryState(); summary != "" {
 		usedSummary = true
@@ -370,12 +496,12 @@ func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQu
 	}
 	defer releasePermit()
 
-	schemaMsg, err := a.model.GenerateResponse(ctx, messages)
+	schemaMsg, err := a.generateWithRetryAndFallback(ctx, "generate", messages, usedSummary, func(model AIModel) (*schema.Message, error) {
+		return model.GenerateResponse(ctx, messages)
+	})
 	if err != nil {
-		observability.RecordModelCall("generate", a.model.GetModelType(), false, time.Since(callStart), len(messages), usedSummary)
 		return nil, err
 	}
-	observability.RecordModelCall("generate", a.model.GetModelType(), true, time.Since(callStart), len(messages), usedSummary)
 
 	modelMsg := utils.ConvertToModelMessage(a.SessionID, userName, schemaMsg)
 
@@ -395,7 +521,6 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 	}
 
 	messages := a.buildModelMessages()
-	callStart := time.Now()
 	usedSummary := false
 	if summary, _ := a.GetSummaryState(); summary != "" {
 		usedSummary = true
@@ -407,12 +532,18 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 	}
 	defer releasePermit()
 
-	content, err := a.model.StreamResponse(ctx, messages, cb)
+	emitted := false
+	content, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
+		return !emitted
+	}, func(model AIModel) (string, error) {
+		return model.StreamResponse(ctx, messages, func(msg string) {
+			emitted = true
+			cb(msg)
+		})
+	})
 	if err != nil {
-		observability.RecordModelCall("stream", a.model.GetModelType(), false, time.Since(callStart), len(messages), usedSummary)
 		return nil, err
 	}
-	observability.RecordModelCall("stream", a.model.GetModelType(), true, time.Since(callStart), len(messages), usedSummary)
 
 	modelMsg := &model.Message{
 		SessionID: a.SessionID,

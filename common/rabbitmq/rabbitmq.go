@@ -5,6 +5,7 @@ import (
 	"GopherAI/config"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -12,6 +13,14 @@ import (
 )
 
 var conn *amqp.Connection
+
+const (
+	// 主业务消息超过最大重试次数后，不再无限回队列，而是转入死信队列等待人工处理。
+	messageQueueName    = "Message"
+	messageDLQName      = "Message.dlq"
+	messageRetryHeader  = "x-retry-count"
+	messageMaxRetryTime = 3
+)
 
 func initConn() {
 	c := config.GetConfig()
@@ -37,6 +46,48 @@ type RabbitMQ struct {
 	publishMu      sync.Mutex
 	Exchange       string
 	Key            string
+}
+
+// retryCountFromHeaders 从消息头里提取当前已重试次数。
+// MQ Header 的数值类型在不同驱动和 broker 路径下可能表现成多种整数类型，
+// 这里统一做兼容转换，避免治理逻辑因为类型断言失败而失效。
+func retryCountFromHeaders(headers amqp.Table) int {
+	if headers == nil {
+		return 0
+	}
+
+	value, exists := headers[messageRetryHeader]
+	if !exists {
+		return 0
+	}
+
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int8:
+		return int(typed)
+	case int16:
+		return int(typed)
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case uint8:
+		return int(typed)
+	case uint16:
+		return int(typed)
+	case uint32:
+		return int(typed)
+	case uint64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(typed)
+		if err == nil {
+			return parsed
+		}
+	}
+
+	return 0
 }
 
 func NewRabbitMQ(exchange string, key string) *RabbitMQ {
@@ -92,13 +143,70 @@ func NewWorkRabbitMQ(queue string) *RabbitMQ {
 
 // ensureQueue 保证发布和消费看到的是同一个 durable queue。
 func (r *RabbitMQ) ensureQueue(channel *amqp.Channel) (amqp.Queue, error) {
-	return channel.QueueDeclare(
+	queue, err := channel.QueueDeclare(
 		r.Key,
 		true,
 		false,
 		false,
 		false,
 		nil,
+	)
+	if err != nil {
+		return amqp.Queue{}, err
+	}
+
+	// 每次声明/探活队列时顺手记录当前队列深度，代价低，但足够满足“可治理”阶段的巡检需求。
+	observability.RecordMQQueueDepth(observability.MQQueueMain, queue.Messages)
+	return queue, nil
+}
+
+// ensureDeadLetterQueue 保证死信队列存在。
+// 这一步先用最直接的独立队列方案，不引入额外 exchange 拓扑，保持当前项目接入成本最低。
+func (r *RabbitMQ) ensureDeadLetterQueue(channel *amqp.Channel) (amqp.Queue, error) {
+	queue, err := channel.QueueDeclare(
+		messageDLQName,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return amqp.Queue{}, err
+	}
+
+	observability.RecordMQQueueDepth(observability.MQQueueDLQ, queue.Messages)
+	return queue, nil
+}
+
+// publishWithHeaders 统一封装带 header 的持久化发布逻辑。
+// 重试次数、死信来源等治理信息都通过这里进入 MQ。
+func (r *RabbitMQ) publishWithHeaders(queueName string, message []byte, headers amqp.Table) error {
+	r.publishMu.Lock()
+	defer r.publishMu.Unlock()
+
+	queue, err := r.publishChannel.QueueDeclare(queueName, true, false, false, false, nil)
+	if err != nil {
+		return err
+	}
+	if queueName == messageDLQName {
+		observability.RecordMQQueueDepth(observability.MQQueueDLQ, queue.Messages)
+	} else if queueName == r.Key {
+		observability.RecordMQQueueDepth(observability.MQQueueMain, queue.Messages)
+	}
+
+	return r.publishChannel.Publish(
+		r.Exchange,
+		queueName,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			Body:         message,
+			DeliveryMode: amqp.Persistent,
+			Timestamp:    time.Now(),
+			Headers:      headers,
+		},
 	)
 }
 
@@ -149,6 +257,9 @@ func (r *RabbitMQ) Consume(handle func(msg *amqp.Delivery) error) {
 	if err != nil {
 		panic(err)
 	}
+	if _, err := r.ensureDeadLetterQueue(r.consumeChannel); err != nil {
+		panic(err)
+	}
 
 	msgs, err := r.consumeChannel.Consume(q.Name, "", false, false, false, false, nil)
 	if err != nil {
@@ -159,8 +270,45 @@ func (r *RabbitMQ) Consume(handle func(msg *amqp.Delivery) error) {
 		if err := handle(&msg); err != nil {
 			log.Println("rabbitmq consume handle error:", err)
 			observability.RecordMQConsume(false)
-			observability.RecordMQNack()
-			_ = msg.Nack(false, true)
+
+			retryCount := retryCountFromHeaders(msg.Headers)
+			nextRetryCount := retryCount + 1
+			headers := amqp.Table{}
+			for key, value := range msg.Headers {
+				headers[key] = value
+			}
+			headers[messageRetryHeader] = nextRetryCount
+
+			// 这里不再直接无限 requeue。
+			// 原因是无限重回主队列会形成“毒消息风暴”，让积压越来越深，而且很难观测。
+			if nextRetryCount > messageMaxRetryTime {
+				if publishErr := r.publishWithHeaders(messageDLQName, msg.Body, headers); publishErr != nil {
+					log.Println("rabbitmq publish dead letter error:", publishErr)
+					observability.RecordMQNack()
+					_ = msg.Nack(false, true)
+					continue
+				}
+
+				observability.RecordMQDeadLetter()
+				if ackErr := msg.Ack(false); ackErr != nil {
+					log.Println("rabbitmq ack after dead letter error:", ackErr)
+					observability.RecordMQAckFail()
+				}
+				continue
+			}
+
+			if publishErr := r.publishWithHeaders(r.Key, msg.Body, headers); publishErr != nil {
+				log.Println("rabbitmq republish retry error:", publishErr)
+				observability.RecordMQNack()
+				_ = msg.Nack(false, true)
+				continue
+			}
+
+			observability.RecordMQRetry()
+			if ackErr := msg.Ack(false); ackErr != nil {
+				log.Println("rabbitmq ack after republish error:", ackErr)
+				observability.RecordMQAckFail()
+			}
 			continue
 		}
 		observability.RecordMQConsume(true)
