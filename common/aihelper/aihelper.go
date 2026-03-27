@@ -49,7 +49,7 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 		saveFunc: func(msg *model.Message) (*model.Message, error) {
 			// 先尝试走 MQ，只有在 MQ 当前不可用或发布失败时，才退回同步落库。
 			// 这样主链路仍然以“异步削峰”为主，但在 MQ 故障场景下不会直接失去可用性。
-			data := rabbitmq.GenerateMessageMQParam(msg.MessageKey, msg.SessionID, msg.Content, msg.UserName, msg.IsUser)
+			data := rabbitmq.GenerateMessageMQParam(msg.MessageKey, msg.SessionID, msg.Content, msg.UserName, msg.IsUser, string(msg.Status))
 			if rabbitmq.RMQMessage != nil {
 				if err := rabbitmq.RMQMessage.Publish(data); err == nil {
 					return msg, nil
@@ -74,12 +74,20 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 // AddMessage 把一条消息加入当前会话的内存上下文。
 // Save=true 时继续走异步持久化；Save=false 时只做内存回放，不重复入库。
 func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save bool) {
+	a.AddMessageWithStatus(Content, UserName, IsUser, Save, model.MessageStatusCompleted)
+}
+
+// AddMessageWithStatus 把一条消息写入当前 helper，并带上明确状态。
+// 之所以新增这个方法，而不是继续只保留 AddMessage，是因为 stop / timeout / partial
+// 这类中断场景需要把“消息内容”和“消息最终状态”一起落到持久化层。
+func (a *AIHelper) AddMessageWithStatus(Content string, UserName string, IsUser bool, Save bool, status model.MessageStatus) *model.Message {
 	userMsg := model.Message{
 		MessageKey: utils.GenerateUUID(),
 		SessionID:  a.SessionID,
 		Content:    Content,
 		UserName:   UserName,
 		IsUser:     IsUser,
+		Status:     status,
 	}
 
 	// 写切片时必须加锁；否则同一个 session 并发写入会有数据竞争风险。
@@ -95,6 +103,8 @@ func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save
 			log.Println("AIHelper AddMessage persist message error:", err)
 		}
 	}
+
+	return &userMsg
 }
 
 // LoadHotState 用共享热状态快照恢复 helper。

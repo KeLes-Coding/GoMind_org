@@ -507,6 +507,7 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 		history = append(history, model.History{
 			IsUser:  msg.IsUser,
 			Content: msg.Content,
+			Status:  msg.Status,
 		})
 	}
 

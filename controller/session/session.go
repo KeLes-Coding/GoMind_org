@@ -7,14 +7,16 @@ import (
 	"GopherAI/controller"
 	"GopherAI/model"
 	"GopherAI/service/session"
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// validateModelType 在协议层提前拦截非法模型类型。
-// 这样可以避免无效参数继续进入 service 和模型工厂。
+// validateModelType 在 controller 层提前拦截非法模型类型。
+// 这样可以避免无效参数继续进入 service 和模型工厂，减少无意义的资源消耗。
 func validateModelType(modelType string) bool {
 	return aihelper.IsSupportedModelType(modelType)
 }
@@ -25,32 +27,39 @@ type (
 		Sessions []model.SessionInfo `json:"sessions,omitempty"`
 	}
 	CreateSessionAndSendMessageRequest struct {
-		UserQuestion string `json:"question" binding:"required"`  // 用户问题;
-		ModelType    string `json:"modelType" binding:"required"` // 模型类型;
+		UserQuestion string `json:"question" binding:"required"`
+		ModelType    string `json:"modelType" binding:"required"`
 	}
 
 	CreateSessionAndSendMessageResponse struct {
-		AiInformation string `json:"Information,omitempty"` // AI回答
-		SessionID     string `json:"sessionId,omitempty"`   // 当前会话ID
+		AiInformation string `json:"Information,omitempty"`
+		SessionID     string `json:"sessionId,omitempty"`
 		controller.Response
 	}
 
 	ChatSendRequest struct {
-		UserQuestion string `json:"question" binding:"required"`            // 用户问题;
-		ModelType    string `json:"modelType" binding:"required"`           // 模型类型;
-		SessionID    string `json:"sessionId,omitempty" binding:"required"` // 当前会话ID
+		UserQuestion string `json:"question" binding:"required"`
+		ModelType    string `json:"modelType" binding:"required"`
+		SessionID    string `json:"sessionId,omitempty" binding:"required"`
 	}
 
 	ChatSendResponse struct {
-		AiInformation string `json:"Information,omitempty"` // AI回答
+		AiInformation string `json:"Information,omitempty"`
 		controller.Response
 	}
 
 	ChatHistoryRequest struct {
-		SessionID string `json:"sessionId,omitempty" binding:"required"` // 当前会话ID
+		SessionID string `json:"sessionId,omitempty" binding:"required"`
 	}
 	ChatHistoryResponse struct {
 		History []model.History `json:"history"`
+		controller.Response
+	}
+	StopStreamRequest struct {
+		SessionID string `json:"sessionId" binding:"required"`
+	}
+	StopStreamResponse struct {
+		PartialContent string `json:"partialContent,omitempty"`
 		controller.Response
 	}
 	AIObservabilityResponse struct {
@@ -59,9 +68,31 @@ type (
 	}
 )
 
+const (
+	// syncChatTimeout 控制同步聊天接口的最长执行时间。
+	// 同步接口没有流式回传，用户感知的是一次完整等待，因此超时值可以相对短一些。
+	syncChatTimeout = 90 * time.Second
+	// streamChatTimeout 控制流式聊天接口的最长执行时间。
+	// 流式请求本身会持续输出，因此这里给比同步请求更宽松的窗口，避免正常长回答被过早中断。
+	streamChatTimeout = 3 * time.Minute
+)
+
+// buildChatTimeoutContext 给聊天请求统一挂上 timeout。
+// 这样 controller 层就能提供清晰的超时边界，不再完全依赖下游模型或网络层自己结束。
+func buildChatTimeoutContext(c *gin.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(c.Request.Context(), timeout)
+}
+
+// writeSSEError 用统一 JSON 结构把错误写回流式前端。
+// 这里不用普通 JSON 响应，是因为流式接口已经进入 SSE 协议，前端需要继续按 data: 行解析。
+func writeSSEError(c *gin.Context, code_ code.Code) {
+	_, _ = c.Writer.WriteString(fmt.Sprintf("data: {\"type\":\"error\",\"status_code\":%d,\"message\":\"%s\"}\n\n", code_, code_.Msg()))
+	c.Writer.Flush()
+}
+
 func GetUserSessionsByUserName(c *gin.Context) {
 	res := new(GetUserSessionsResponse)
-	userName := c.GetString("userName") // From JWT middleware
+	userName := c.GetString("userName")
 
 	userSessions, err := session.GetUserSessionsByUserName(userName)
 	if err != nil {
@@ -77,8 +108,8 @@ func GetUserSessionsByUserName(c *gin.Context) {
 func CreateSessionAndSendMessage(c *gin.Context) {
 	req := new(CreateSessionAndSendMessageRequest)
 	res := new(CreateSessionAndSendMessageResponse)
-	userName := c.GetString("userName") // From JWT middleware
-	userID := c.GetInt64("userID")      // From JWT middleware
+	userName := c.GetString("userName")
+	userID := c.GetInt64("userID")
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
@@ -87,9 +118,11 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
-	//内部会创建会话并发送消息，并会将AI回答、当前会话返回
-	session_id, aiInformation, code_ := session.CreateSessionAndSendMessage(c.Request.Context(), userName, userID, req.UserQuestion, req.ModelType)
 
+	ctx, cancel := buildChatTimeoutContext(c, syncChatTimeout)
+	defer cancel()
+
+	sessionID, aiInformation, code_ := session.CreateSessionAndSendMessageWithControl(ctx, userName, userID, req.UserQuestion, req.ModelType)
 	if code_ != code.CodeSuccess {
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
@@ -97,14 +130,14 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 
 	res.Success()
 	res.AiInformation = aiInformation
-	res.SessionID = session_id
+	res.SessionID = sessionID
 	c.JSON(http.StatusOK, res)
 }
 
 func CreateStreamSessionAndSendMessage(c *gin.Context) {
 	req := new(CreateSessionAndSendMessageRequest)
-	userName := c.GetString("userName") // From JWT middleware
-	userID := c.GetInt64("userID")      // From JWT middleware
+	userName := c.GetString("userName")
+	userID := c.GetInt64("userID")
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
@@ -114,28 +147,27 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 		return
 	}
 
-	// 设置SSE头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("Access-Control-Allow-Origin", "*")
-	c.Header("X-Accel-Buffering", "no") // 禁止代理缓存
+	c.Header("X-Accel-Buffering", "no")
 
-	// 先创建会话并立即把 sessionId 下发给前端，随后再开始流式输出
+	ctx, cancel := buildChatTimeoutContext(c, streamChatTimeout)
+	defer cancel()
+
 	sessionID, code_ := session.CreateStreamSessionOnly(userName, userID, req.UserQuestion)
 	if code_ != code.CodeSuccess {
-		c.SSEvent("error", gin.H{"message": "Failed to create session"})
+		writeSSEError(c, code_)
 		return
 	}
 
-	// 先把 sessionId 通过 data 事件发送给前端，前端据此绑定当前会话，侧边栏即可出现新标签
-	c.Writer.WriteString(fmt.Sprintf("data: {\"sessionId\": \"%s\"}\n\n", sessionID))
+	_, _ = c.Writer.WriteString(fmt.Sprintf("data: {\"sessionId\": \"%s\"}\n\n", sessionID))
 	c.Writer.Flush()
 
-	// 然后开始把本次回答进行流式发送（包含最后的 [DONE]）
-	code_ = session.StreamMessageToExistingSession(c.Request.Context(), userName, sessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
+	code_ = session.ChatStreamSendWithControl(ctx, userName, sessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
 	if code_ != code.CodeSuccess {
-		c.SSEvent("error", gin.H{"message": "Failed to send message"})
+		writeSSEError(c, code_)
 		return
 	}
 }
@@ -143,7 +175,7 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 func ChatSend(c *gin.Context) {
 	req := new(ChatSendRequest)
 	res := new(ChatSendResponse)
-	userName := c.GetString("userName") // From JWT middleware
+	userName := c.GetString("userName")
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
@@ -152,9 +184,11 @@ func ChatSend(c *gin.Context) {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
-	// 发送消息，并会将AI回答返回
-	aiInformation, code_ := session.ChatSend(c.Request.Context(), userName, req.SessionID, req.UserQuestion, req.ModelType)
 
+	ctx, cancel := buildChatTimeoutContext(c, syncChatTimeout)
+	defer cancel()
+
+	aiInformation, code_ := session.ChatSendWithControl(ctx, userName, req.SessionID, req.UserQuestion, req.ModelType)
 	if code_ != code.CodeSuccess {
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
@@ -167,7 +201,7 @@ func ChatSend(c *gin.Context) {
 
 func ChatStreamSend(c *gin.Context) {
 	req := new(ChatSendRequest)
-	userName := c.GetString("userName") // From JWT middleware
+	userName := c.GetString("userName")
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
@@ -177,25 +211,46 @@ func ChatStreamSend(c *gin.Context) {
 		return
 	}
 
-	// 设置SSE头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("Access-Control-Allow-Origin", "*")
-	c.Header("X-Accel-Buffering", "no") // 禁止代理缓存
+	c.Header("X-Accel-Buffering", "no")
 
-	code_ := session.ChatStreamSend(c.Request.Context(), userName, req.SessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
+	ctx, cancel := buildChatTimeoutContext(c, streamChatTimeout)
+	defer cancel()
+
+	code_ := session.ChatStreamSendWithControl(ctx, userName, req.SessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
 	if code_ != code.CodeSuccess {
-		c.SSEvent("error", gin.H{"message": "Failed to send message"})
+		writeSSEError(c, code_)
+		return
+	}
+}
+
+func StopStream(c *gin.Context) {
+	req := new(StopStreamRequest)
+	res := new(StopStreamResponse)
+	userName := c.GetString("userName")
+	if err := c.ShouldBindJSON(req); err != nil {
+		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
 
+	partialContent, code_ := session.StopStreamGeneration(userName, req.SessionID)
+	if code_ != code.CodeSuccess {
+		c.JSON(http.StatusOK, res.CodeOf(code_))
+		return
+	}
+
+	res.Success()
+	res.PartialContent = partialContent
+	c.JSON(http.StatusOK, res)
 }
 
 func ChatHistory(c *gin.Context) {
 	req := new(ChatHistoryRequest)
 	res := new(ChatHistoryResponse)
-	userName := c.GetString("userName") // From JWT middleware
+	userName := c.GetString("userName")
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return

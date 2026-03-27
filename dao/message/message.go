@@ -24,10 +24,13 @@ func GetMessagesBySessionIDs(sessionIDs []string) ([]model.Message, error) {
 }
 
 func CreateMessage(message *model.Message) (*model.Message, error) {
+	// 这里使用 message_key 做幂等 upsert，而不是简单忽略重复写入。
+	// 原因是当前消息已经引入 status 字段，同一条消息后续可能需要回写最新内容和状态。
+	// 例如流式中断后回写 partial，或者补偿链路里把旧状态更新为最终状态，都依赖这一步可覆盖。
 	// 以 message_key 作为幂等键；如果消息因为 MQ 重投被重复消费，这里直接忽略重复写入。
 	err := mysql.DB.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "message_key"}},
-		DoNothing: true,
+		DoUpdates: clause.AssignmentColumns([]string{"content", "is_user", "status", "updated_at"}),
 	}).Create(message).Error
 	return message, err
 }

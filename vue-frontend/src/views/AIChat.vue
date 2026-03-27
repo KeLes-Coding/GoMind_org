@@ -1,10 +1,9 @@
-<template>
+﻿<template>
   <div class="ai-chat-container">
-    <!-- 左侧会话列表 -->
-    <div class="session-list">
+    <aside class="session-list">
       <div class="session-list-header">
         <span>会话列表</span>
-        <button class="new-chat-btn" @click="createNewSession">＋ 新聊天</button>
+        <button class="new-chat-btn" @click="createNewSession">+ 新聊天</button>
       </div>
       <ul class="session-list-ul">
         <li
@@ -16,24 +15,27 @@
           {{ session.name || `会话 ${session.id}` }}
         </li>
       </ul>
-    </div>
+    </aside>
 
-    <!-- 右侧聊天区域 -->
-    <div class="chat-section">
+    <section class="chat-section">
       <div class="top-bar">
-        <button class="back-btn" @click="$router.push('/menu')">← 返回</button>
-        <button class="sync-btn" @click="syncHistory" :disabled="!currentSessionId || tempSession">同步历史数据</button>
+        <button class="back-btn" @click="$router.push('/menu')">返回</button>
+        <button class="sync-btn" @click="syncHistory" :disabled="!currentSessionId || tempSession || loading">同步历史</button>
+        <button class="stop-btn" @click="stopCurrentStream" :disabled="!loading || !isStreaming">停止生成</button>
+
         <label for="modelType">选择模型：</label>
-        <select id="modelType" v-model="selectedModel" class="model-select">
+        <select id="modelType" v-model="selectedModel" class="model-select" :disabled="loading">
           <option value="1">阿里百炼</option>
           <option value="2">阿里百炼 RAG</option>
           <option value="3">阿里百炼 MCP</option>
         </select>
-        <label for="streamingMode" style="margin-left: 20px;">
-          <input type="checkbox" id="streamingMode" v-model="isStreaming" />
+
+        <label class="streaming-mode" for="streamingMode">
+          <input id="streamingMode" v-model="isStreaming" type="checkbox" :disabled="loading" />
           流式响应
         </label>
-        <button class="upload-btn" @click="triggerFileUpload" :disabled="uploading">📎 上传文档(.md/.txt)</button>
+
+        <button class="upload-btn" @click="triggerFileUpload" :disabled="uploading || loading">上传文档(.md/.txt)</button>
         <input
           ref="fileInput"
           type="file"
@@ -51,8 +53,16 @@
         >
           <div class="message-header">
             <b>{{ message.role === 'user' ? '你' : 'AI' }}:</b>
-            <button v-if="message.role === 'assistant'" class="tts-btn" @click="playTTS(message.content)">🔊</button>
-            <span v-if="message.meta && message.meta.status === 'streaming'" class="streaming-indicator"> ··</span>
+            <button
+              v-if="message.role === 'assistant' && message.content"
+              class="tts-btn"
+              @click="playTTS(message.content)"
+            >
+              语音
+            </button>
+            <span v-if="message.meta?.status" :class="['message-status', `status-${message.meta.status}`]">
+              {{ getMessageStatusLabel(message.meta.status) }}
+            </span>
           </div>
           <div class="message-content" v-html="renderMarkdown(message.content)"></div>
         </div>
@@ -76,21 +86,20 @@
           {{ loading ? '发送中...' : '发送' }}
         </button>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
 <script>
-
-
-import { ref, nextTick, computed, onMounted } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../utils/api'
+
+const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'timeout', 'failed', 'partial'])
 
 export default {
   name: 'AIChat',
   setup() {
-
     const sessions = ref({})
     const currentSessionId = ref(null)
     const tempSession = ref(false)
@@ -104,6 +113,18 @@ export default {
     const uploading = ref(false)
     const fileInput = ref(null)
 
+    // activeAbortController 用于前端主动中断当前 fetch 流。
+    // 之所以保留在组件级，而不是函数局部变量，是因为 Stop 按钮需要跨函数访问同一个 controller。
+    const activeAbortController = ref(null)
+    // activeStreamingSessionId 记录当前流式请求对应的会话 ID。
+    // 新会话场景下，一开始还是 temp，会在服务端下发 sessionId 后再回填成真实 ID。
+    const activeStreamingSessionId = ref(null)
+    // activeAssistantIndex 指向当前正在生成的 assistant 消息。
+    // 这样 stop / timeout / error 场景都能准确更新正确那一条消息的状态，而不是模糊修改最后一条。
+    const activeAssistantIndex = ref(-1)
+    // manualStopRequested 用于区分“用户主动停止”和“网络/模型异常”。
+    // 如果只是看 fetch 抛出来的 AbortError，前端无法知道这是用户点击 Stop，还是其他地方触发了 abort。
+    const manualStopRequested = ref(false)
 
     const renderMarkdown = (text) => {
       if (!text && text !== '') return ''
@@ -114,60 +135,124 @@ export default {
         .replace(/\n/g, '<br>')
     }
 
+    // normalizeMessageStatus 统一兼容后端返回和前端运行时的各种状态值。
+    // 老数据没有 status 时，默认视为 completed，避免历史消息全部显示成未知状态。
+    const normalizeMessageStatus = (status) => {
+      if (!status) return 'completed'
+      const normalized = String(status).toLowerCase()
+      return TERMINAL_STATUSES.has(normalized) || normalized === 'streaming' ? normalized : 'completed'
+    }
+
+    const buildMessageMeta = (status) => ({ status: normalizeMessageStatus(status) })
+
+    const mapHistoryItemToMessage = (item) => ({
+      role: item.is_user ? 'user' : 'assistant',
+      content: item.content || '',
+      meta: buildMessageMeta(item.status)
+    })
+
+    const getMessageStatusLabel = (status) => {
+      switch (normalizeMessageStatus(status)) {
+      case 'streaming':
+        return '生成中'
+      case 'cancelled':
+        return '已停止'
+      case 'timeout':
+        return '已超时'
+      case 'failed':
+        return '失败'
+      case 'partial':
+        return '部分结果'
+      default:
+        return '已完成'
+      }
+    }
+
+    const scrollToBottom = () => {
+      if (messagesRef.value) {
+        try {
+          messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+        } catch (error) {
+          console.error('Scroll error:', error)
+        }
+      }
+    }
+
+    const syncSessionMessagesFromCurrent = async () => {
+      if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]) {
+        sessions.value[currentSessionId.value].messages = [...currentMessages.value]
+      }
+      await nextTick()
+      scrollToBottom()
+    }
+
+    const setAssistantStatus = async (status) => {
+      if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
+        return
+      }
+      currentMessages.value[activeAssistantIndex.value].meta = buildMessageMeta(status)
+      currentMessages.value = [...currentMessages.value]
+      await syncSessionMessagesFromCurrent()
+    }
+
+    const appendAssistantChunk = async (chunk) => {
+      if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
+        return
+      }
+      currentMessages.value[activeAssistantIndex.value].content += chunk
+      currentMessages.value = [...currentMessages.value]
+      await syncSessionMessagesFromCurrent()
+    }
+
+    const clearActiveStreamState = () => {
+      activeAbortController.value = null
+      activeStreamingSessionId.value = null
+      activeAssistantIndex.value = -1
+      manualStopRequested.value = false
+    }
+
     const playTTS = async (text) => {
       try {
-        // 创建TTS任务
         const createResponse = await api.post('/AI/chat/tts', { text })
         if (createResponse.data && createResponse.data.status_code === 1000 && createResponse.data.task_id) {
           const taskId = createResponse.data.task_id
-          
-          // 先等待5秒钟再开始轮询
           await new Promise(resolve => setTimeout(resolve, 5000))
-          
-          // 轮询查询任务结果
+
           const maxAttempts = 30
           const pollInterval = 2000
           let attempts = 0
-          
+
           const pollResult = async () => {
             const queryResponse = await api.get('/AI/chat/tts/query', { params: { task_id: taskId } })
-            
             if (queryResponse.data && queryResponse.data.status_code === 1000) {
               const taskStatus = queryResponse.data.task_status
-                
               if (taskStatus === 'Success' && queryResponse.data.task_result) {
-                // 任务完成，播放音频
-                // 后端返回的 task_result 是直接的 URL 字符串
                 const audio = new Audio(queryResponse.data.task_result)
                 audio.play()
                 return true
-              } else if (taskStatus === 'Running' ||taskStatus === 'Created' ) {
-                // 任务进行中，继续轮询
+              }
+              if (taskStatus === 'Running' || taskStatus === 'Created') {
                 attempts++
                 if (attempts < maxAttempts) {
                   await new Promise(resolve => setTimeout(resolve, pollInterval))
-                  return await pollResult()
-                } else {
-                  ElMessage.error('语音合成超时')
-                  return true
+                  return pollResult()
                 }
-              } else {
-                // 其他状态（如失败）
-                ElMessage.error('语音合成失败')
+                ElMessage.error('语音合成超时')
                 return true
               }
+              ElMessage.error('语音合成失败')
+              return true
             }
-            
+
             attempts++
             if (attempts < maxAttempts) {
               await new Promise(resolve => setTimeout(resolve, pollInterval))
-              return await pollResult()
-            } else {
-              ElMessage.error('语音合成超时')
-              return true
+              return pollResult()
             }
+            ElMessage.error('语音合成超时')
+            return true
           }
-          
+
           await pollResult()
         } else {
           ElMessage.error('无法创建语音合成任务')
@@ -183,12 +268,12 @@ export default {
         const response = await api.get('/AI/chat/sessions')
         if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.sessions)) {
           const sessionMap = {}
-          response.data.sessions.forEach(s => {
-            const sid = String(s.sessionId)
+          response.data.sessions.forEach((sessionItem) => {
+            const sid = String(sessionItem.sessionId)
             sessionMap[sid] = {
               id: sid,
-              name: s.name || `会话 ${sid}`,
-              messages: [] // lazy load
+              name: sessionItem.name || `会话 ${sid}`,
+              messages: []
             }
           })
           sessions.value = sessionMap
@@ -198,41 +283,40 @@ export default {
       }
     }
 
+    const loadHistoryIntoSession = async (sessionId) => {
+      const response = await api.post('/AI/chat/history', { sessionId })
+      if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.history)) {
+        sessions.value[sessionId].messages = response.data.history.map(mapHistoryItemToMessage)
+        return
+      }
+      throw new Error(response.data?.status_msg || '无法加载会话历史')
+    }
+
     const createNewSession = () => {
       currentSessionId.value = 'temp'
       tempSession.value = true
       currentMessages.value = []
-      // focus input
       nextTick(() => {
         if (messageInput.value) messageInput.value.focus()
       })
     }
 
     const switchSession = async (sessionId) => {
-      if (!sessionId) return
+      if (!sessionId || loading.value) return
       currentSessionId.value = String(sessionId)
       tempSession.value = false
 
-      // lazy load history if not present
-      if (!sessions.value[sessionId].messages || sessions.value[sessionId].messages.length === 0) {
-        try {
-          const response = await api.post('/AI/chat/history', { sessionId: currentSessionId.value })
-          if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.history)) {
-            const messages = response.data.history.map(item => ({
-              role: item.is_user ? 'user' : 'assistant',
-              content: item.content
-            }))
-            sessions.value[sessionId].messages = messages
-          }
-        } catch (err) {
-          console.error('Load history error:', err)
+      try {
+        if (!sessions.value[sessionId].messages || sessions.value[sessionId].messages.length === 0) {
+          await loadHistoryIntoSession(sessionId)
         }
+        currentMessages.value = [...(sessions.value[sessionId].messages || [])]
+        await nextTick()
+        scrollToBottom()
+      } catch (error) {
+        console.error('Load history error:', error)
+        ElMessage.error('加载历史失败')
       }
-
-
-      currentMessages.value = [...(sessions.value[sessionId].messages || [])]
-      await nextTick()
-      scrollToBottom()
     }
 
     const syncHistory = async () => {
@@ -241,25 +325,42 @@ export default {
         return
       }
       try {
-        const response = await api.post('/AI/chat/history', { sessionId: currentSessionId.value })
-        if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.history)) {
-          const messages = response.data.history.map(item => ({
-            role: item.is_user ? 'user' : 'assistant',
-            content: item.content
-          }))
-          sessions.value[currentSessionId.value].messages = messages
-          currentMessages.value = [...messages]
-          await nextTick()
-          scrollToBottom()
-        } else {
-          ElMessage.error('无法获取历史数据')
-        }
-      } catch (err) {
-        console.error('Sync history error:', err)
+        await loadHistoryIntoSession(currentSessionId.value)
+        currentMessages.value = [...sessions.value[currentSessionId.value].messages]
+        await nextTick()
+        scrollToBottom()
+      } catch (error) {
+        console.error('Sync history error:', error)
         ElMessage.error('请求历史数据失败')
       }
     }
 
+    const stopCurrentStream = async () => {
+      if (!loading.value || !isStreaming.value) return
+
+      manualStopRequested.value = true
+      const targetSessionId = activeStreamingSessionId.value && activeStreamingSessionId.value !== 'temp'
+        ? activeStreamingSessionId.value
+        : (!tempSession.value ? currentSessionId.value : null)
+
+      try {
+        if (targetSessionId) {
+          const response = await api.post('/AI/chat/stop', { sessionId: targetSessionId })
+          if (response.data?.status_code !== 1000 && response.data?.status_code !== 2012) {
+            throw new Error(response.data?.status_msg || '停止失败')
+          }
+        }
+      } catch (error) {
+        console.error('Stop stream error:', error)
+      } finally {
+        if (activeAbortController.value) {
+          activeAbortController.value.abort()
+        }
+        loading.value = false
+        await setAssistantStatus('cancelled')
+        ElMessage.success('已停止当前生成')
+      }
+    }
 
     const sendMessage = async () => {
       if (!inputMessage.value || !inputMessage.value.trim()) {
@@ -267,35 +368,30 @@ export default {
         return
       }
 
+      const currentInput = inputMessage.value.trim()
       const userMessage = {
         role: 'user',
-        content: inputMessage.value
+        content: currentInput,
+        meta: buildMessageMeta('completed')
       }
-      const currentInput = inputMessage.value
       inputMessage.value = ''
 
-
       currentMessages.value.push(userMessage)
-      await nextTick()
-      scrollToBottom()
+      await syncSessionMessagesFromCurrent()
 
       try {
         loading.value = true
         if (isStreaming.value) {
-
           await handleStreaming(currentInput)
         } else {
-
           await handleNormal(currentInput)
         }
-      } catch (err) {
-        console.error('Send message error:', err)
-        ElMessage.error('发送失败，请重试')
+      } catch (error) {
+        console.error('Send message error:', error)
+        ElMessage.error(error.message || '发送失败，请重试')
 
-        if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value] && sessions.value[currentSessionId.value].messages) {
-
-          const sessionArr = sessions.value[currentSessionId.value].messages
-          if (sessionArr && sessionArr.length) sessionArr.pop()
+        if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]?.messages?.length) {
+          sessions.value[currentSessionId.value].messages.pop()
         }
         currentMessages.value.pop()
       } finally {
@@ -307,209 +403,169 @@ export default {
       }
     }
 
-
     async function handleStreaming(question) {
-
       const aiMessage = {
         role: 'assistant',
         content: '',
-        meta: { status: 'streaming' } // mark streaming
+        meta: buildMessageMeta('streaming')
       }
 
-
-      const aiMessageIndex = currentMessages.value.length
+      activeAssistantIndex.value = currentMessages.value.length
       currentMessages.value.push(aiMessage)
+      await syncSessionMessagesFromCurrent()
 
-      if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]) {
-        if (!sessions.value[currentSessionId.value].messages) sessions.value[currentSessionId.value].messages = []
-        sessions.value[currentSessionId.value].messages.push({ role: 'assistant', content: '' })
-      }
-
-
-      const url = tempSession.value
-        ? '/api/AI/chat/send-stream-new-session'  
-        : '/api/AI/chat/send-stream'           
-
+      const url = tempSession.value ? '/api/AI/chat/send-stream-new-session' : '/api/AI/chat/send-stream'
       const headers = {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+        Authorization: `Bearer ${localStorage.getItem('token') || ''}`
       }
-
       const body = tempSession.value
-        ? { question: question, modelType: selectedModel.value }
-        : { question: question, modelType: selectedModel.value, sessionId: currentSessionId.value }
+        ? { question, modelType: selectedModel.value }
+        : { question, modelType: selectedModel.value, sessionId: currentSessionId.value }
+
+      const controller = new AbortController()
+      activeAbortController.value = controller
+      activeStreamingSessionId.value = tempSession.value ? 'temp' : currentSessionId.value
+      manualStopRequested.value = false
+
+      let doneReceived = false
 
       try {
-        // 创建 fetch 连接读取 SSE 流
         const response = await fetch(url, {
           method: 'POST',
           headers,
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          signal: controller.signal
         })
 
-        if (!response.ok) {
-          loading.value = false
-          throw new Error('Network response was not ok')
+        if (!response.ok || !response.body) {
+          throw new Error('网络请求失败')
         }
 
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
 
-        // 读取流数据
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
 
-          const chunk = decoder.decode(value, { stream: true })
-          buffer += chunk
-
-          // 按行分割
+          buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split('\n')
-          buffer = lines.pop() || '' // 保留未完成的行
+          buffer = lines.pop() || ''
 
           for (const line of lines) {
             const trimmedLine = line.trim()
-            if (!trimmedLine) continue
+            if (!trimmedLine || !trimmedLine.startsWith('data:')) continue
+            const data = trimmedLine.slice(5).trim()
 
-            // 处理 SSE 格式：data: <content>
-            if (trimmedLine.startsWith('data:')) {
-              const data = trimmedLine.slice(5).trim()
-              console.log('[SSE] Received:', data) // 调试日志
+            if (data === '[DONE]') {
+              doneReceived = true
+              loading.value = false
+              await setAssistantStatus('completed')
+              continue
+            }
 
-              if (data === '[DONE]') {
-                // 流结束
-                console.log('[SSE] Stream done')
-                loading.value = false
-                currentMessages.value[aiMessageIndex].meta = { status: 'done' }
-                currentMessages.value = [...currentMessages.value]
-              } else if (data.startsWith('{')) {
-                // 尝试解析 JSON（如 sessionId）
-                try {
-                  const parsed = JSON.parse(data)
-                  if (parsed.sessionId) {
-                    const newSid = String(parsed.sessionId)
-                    console.log('[SSE] Session ID:', newSid)
-                    if (tempSession.value) {
-                      sessions.value[newSid] = {
-                        id: newSid,
-                        name: '新会话',
-                        messages: [...currentMessages.value]
-                      }
-                      currentSessionId.value = newSid
-                      tempSession.value = false
+            if (data.startsWith('{')) {
+              try {
+                const parsed = JSON.parse(data)
+                if (parsed.sessionId) {
+                  const newSid = String(parsed.sessionId)
+                  activeStreamingSessionId.value = newSid
+                  if (tempSession.value) {
+                    sessions.value[newSid] = {
+                      id: newSid,
+                      name: '新会话',
+                      messages: [...currentMessages.value]
                     }
+                    currentSessionId.value = newSid
+                    tempSession.value = false
                   }
-                } catch (e) {
-                  // 不是 JSON，当作普通文本处理
-                  currentMessages.value[aiMessageIndex].content += data
-                  console.log('[SSE] Content updated:', currentMessages.value[aiMessageIndex].content.length)
+                  continue
                 }
-              } else {
-                // 普通文本数据，直接追加
-                // 使用数组索引直接更新，强制 Vue 响应式系统检测变化
-                currentMessages.value[aiMessageIndex].content += data
-                console.log('[SSE] Content updated:', currentMessages.value[aiMessageIndex].content.length)
+                if (parsed.type === 'error') {
+                  const error = new Error(parsed.message || '流式发送失败')
+                  error.serverCode = parsed.status_code
+                  throw error
+                }
+              } catch (parseError) {
+                if (parseError.serverCode) {
+                  throw parseError
+                }
               }
-
-              // 每收到一条数据就立即更新 DOM
-              // 强制更新整个数组以触发响应式
-              currentMessages.value = [...currentMessages.value]
-              
-              // 使用 requestAnimationFrame 强制浏览器重排
-              await new Promise(resolve => {
-                requestAnimationFrame(() => {
-                  scrollToBottom()
-                  resolve()
-                })
-              })
             }
+
+            await appendAssistantChunk(data)
           }
         }
 
-        // 流读取完成后的处理
         loading.value = false
-        currentMessages.value[aiMessageIndex].meta = { status: 'done' }
-        currentMessages.value = [...currentMessages.value]
-
-        // 同步到 sessions 存储
-        if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]) {
-          const sessMsgs = sessions.value[currentSessionId.value].messages
-          if (Array.isArray(sessMsgs) && sessMsgs.length) {
-            const lastIndex = sessMsgs.length - 1
-            if (sessMsgs[lastIndex] && sessMsgs[lastIndex].role === 'assistant') {
-              sessMsgs[lastIndex].content = currentMessages.value[aiMessageIndex].content
-            }
-          }
+        if (!doneReceived) {
+          await setAssistantStatus(manualStopRequested.value ? 'cancelled' : 'partial')
         }
-      } catch (err) {
-        console.error('Stream error:', err)
+      } catch (error) {
+        console.error('Stream error:', error)
         loading.value = false
-        currentMessages.value[aiMessageIndex].meta = { status: 'error' }
-        currentMessages.value = [...currentMessages.value]
-        ElMessage.error('流式传输出错')
+
+        if (manualStopRequested.value || error.name === 'AbortError' || error.serverCode === 5004) {
+          await setAssistantStatus('cancelled')
+        } else if (error.serverCode === 4002) {
+          await setAssistantStatus('timeout')
+          ElMessage.error(error.message || '请求超时')
+        } else {
+          await setAssistantStatus('failed')
+          ElMessage.error(error.message || '流式传输出错')
+        }
+      } finally {
+        clearActiveStreamState()
       }
     }
 
-
     async function handleNormal(question) {
       if (tempSession.value) {
-
         const response = await api.post('/AI/chat/send-new-session', {
-          question: question,
+          question,
           modelType: selectedModel.value
         })
         if (response.data && response.data.status_code === 1000) {
           const sessionId = String(response.data.sessionId)
           const aiMessage = {
             role: 'assistant',
-            content: response.data.Information || ''
+            content: response.data.Information || '',
+            meta: buildMessageMeta('completed')
           }
 
           sessions.value[sessionId] = {
             id: sessionId,
             name: '新会话',
-            messages: [ { role: 'user', content: question }, aiMessage ]
+            messages: [{ role: 'user', content: question, meta: buildMessageMeta('completed') }, aiMessage]
           }
           currentSessionId.value = sessionId
           tempSession.value = false
           currentMessages.value = [...sessions.value[sessionId].messages]
         } else {
-          ElMessage.error(response.data?.status_msg || '发送失败')
-
-          currentMessages.value.pop()
+          throw new Error(response.data?.status_msg || '发送失败')
         }
       } else {
-
-        const sessionMsgs = sessions.value[currentSessionId.value].messages
-
-        sessionMsgs.push({ role: 'user', content: question })
+        const sessionMsgs = sessions.value[currentSessionId.value].messages || []
+        sessionMsgs.push({ role: 'user', content: question, meta: buildMessageMeta('completed') })
+        sessions.value[currentSessionId.value].messages = sessionMsgs
 
         const response = await api.post('/AI/chat/send', {
-          question: question,
+          question,
           modelType: selectedModel.value,
           sessionId: currentSessionId.value
         })
         if (response.data && response.data.status_code === 1000) {
-          const aiMessage = { role: 'assistant', content: response.data.Information || '' }
-          sessionMsgs.push(aiMessage)
+          sessionMsgs.push({
+            role: 'assistant',
+            content: response.data.Information || '',
+            meta: buildMessageMeta('completed')
+          })
           currentMessages.value = [...sessionMsgs]
         } else {
-          ElMessage.error(response.data?.status_msg || '发送失败')
-          sessionMsgs.pop() // rollback
-          currentMessages.value.pop()
-        }
-      }
-    }
-
-
-    const scrollToBottom = () => {
-      if (messagesRef.value) {
-        try {
-          messagesRef.value.scrollTop = messagesRef.value.scrollHeight
-        } catch (e) {
-          // ignore
+          sessionMsgs.pop()
+          throw new Error(response.data?.status_msg || '发送失败')
         }
       }
     }
@@ -524,11 +580,9 @@ export default {
       const file = event.target.files[0]
       if (!file) return
 
-      // 前端校验：只允许.md或.txt文件
       const fileName = file.name.toLowerCase()
       if (!fileName.endsWith('.md') && !fileName.endsWith('.txt')) {
         ElMessage.error('只允许上传 .md 或 .txt 文件')
-        // 清空文件输入
         if (fileInput.value) {
           fileInput.value.value = ''
         }
@@ -547,7 +601,7 @@ export default {
         })
 
         if (response.data && response.data.status_code === 1000) {
-          ElMessage.success(`文件上传成功`)
+          ElMessage.success('文件上传成功')
         } else {
           ElMessage.error(response.data?.status_msg || '上传失败')
         }
@@ -556,7 +610,6 @@ export default {
         ElMessage.error('文件上传失败')
       } finally {
         uploading.value = false
-        // 清空文件输入
         if (fileInput.value) {
           fileInput.value.value = ''
         }
@@ -567,7 +620,6 @@ export default {
       loadSessions()
     })
 
-    // expose to template
     return {
       sessions: computed(() => Object.values(sessions.value)),
       currentSessionId,
@@ -582,10 +634,12 @@ export default {
       uploading,
       fileInput,
       renderMarkdown,
+      getMessageStatusLabel,
       playTTS,
       createNewSession,
       switchSession,
       syncHistory,
+      stopCurrentStream,
       sendMessage,
       triggerFileUpload,
       handleFileUpload
@@ -599,89 +653,70 @@ export default {
   height: 100vh;
   display: flex;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  position: relative;
-  overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial;
   color: #222;
-}
-
-.ai-chat-container::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="20" cy="20" r="2" fill="rgba(255,255,255,0.08)"/><circle cx="80" cy="80" r="2" fill="rgba(255,255,255,0.08)"/><circle cx="40" cy="60" r="1" fill="rgba(255,255,255,0.06)"/><circle cx="60" cy="30" r="1.5" fill="rgba(255,255,255,0.06)"/></svg>');
-  animation: float 20s ease-in-out infinite;
-  opacity: 0.25;
-}
-
-@keyframes float {
-  0%, 100% { transform: translateY(0px) rotate(0deg); }
-  50% { transform: translateY(-20px) rotate(180deg); }
 }
 
 .session-list {
   width: 280px;
-  height: 100vh;
-  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(15px);
   border-right: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 2px 0 20px rgba(0, 0, 0, 0.08);
-  position: relative;
-  z-index: 2;
 }
 
 .session-list-header {
   padding: 20px;
-  text-align: center;
-  font-weight: 600;
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.06) 0%, rgba(103, 194, 58, 0.06) 100%);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   gap: 12px;
-  align-items: center;
-}
-
-.new-chat-btn {
-  width: 100%;
-  padding: 12px 0;
-  cursor: pointer;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border: none;
-  border-radius: 12px;
-  font-size: 14px;
   font-weight: 600;
-  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.28);
-  transition: all 0.25s ease;
-  position: relative;
-  overflow: hidden;
 }
 
-.new-chat-btn::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
-  transition: left 0.5s;
+.new-chat-btn,
+.sync-btn,
+.stop-btn,
+.upload-btn,
+.back-btn,
+.send-btn,
+.tts-btn {
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  color: #fff;
 }
 
-.new-chat-btn:hover::before {
-  left: 100%;
+.new-chat-btn,
+.send-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 }
 
-.new-chat-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(102, 126, 234, 0.36);
+.sync-btn {
+  background: linear-gradient(135deg, #67c23a 0%, #409eff 100%);
+}
+
+.stop-btn {
+  background: linear-gradient(135deg, #f56c6c 0%, #e67e22 100%);
+}
+
+.upload-btn {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+.back-btn {
+  background: #5b6c8f;
+}
+
+.tts-btn {
+  padding: 4px 8px;
+  background: #409eff;
+}
+
+.new-chat-btn,
+.sync-btn,
+.stop-btn,
+.upload-btn,
+.back-btn {
+  padding: 8px 14px;
 }
 
 .session-list-ul {
@@ -693,305 +728,147 @@ export default {
 }
 
 .session-item {
-  padding: 15px 20px;
+  padding: 14px 20px;
   cursor: pointer;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.03);
-  transition: all 0.2s ease;
-  position: relative;
-  color: #2c3e50;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
 }
 
 .session-item.active {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  color: #fff;
   font-weight: 600;
-  box-shadow: inset 0 0 20px rgba(102, 126, 234, 0.2);
 }
 
-.session-item:hover {
-  background: rgba(102, 126, 234, 0.06);
-  transform: translateX(4px);
-}
-
-/* chat section */
 .chat-section {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  position: relative;
-  z-index: 1;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
 }
 
 .top-bar {
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(10px);
-  color: #2c3e50;
   display: flex;
   align-items: center;
-  padding: 12px 24px;
-  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.06);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   gap: 12px;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  flex-wrap: wrap;
 }
 
-.back-btn {
-  background: rgba(255, 255, 255, 0.22);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  color: #2c3e50;
-  padding: 8px 14px;
-  border-radius: 10px;
-  cursor: pointer;
-  font-weight: 600;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-}
-
-.back-btn:hover {
-  background: rgba(255, 255, 255, 0.32);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
-}
-
-.sync-btn {
-  background: linear-gradient(135deg, #67c23a 0%, #409eff 100%);
-  color: white;
-  padding: 8px 14px;
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  box-shadow: 0 4px 12px rgba(103, 194, 58, 0.2);
-  transition: all 0.2s ease;
-}
-
-.sync-btn:disabled {
-  background: #ccc;
-  box-shadow: none;
-  cursor: not-allowed;
+.streaming-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .model-select {
-  margin-left: 6px;
   padding: 6px 10px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: 8px;
-  background: white;
-  color: #2c3e50;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.upload-btn {
-  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-  color: white;
-  padding: 8px 14px;
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  box-shadow: 0 4px 12px rgba(245, 87, 108, 0.2);
-  transition: all 0.2s ease;
-}
-
-.upload-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(245, 87, 108, 0.3);
-}
-
-.upload-btn:disabled {
-  background: #ccc;
-  box-shadow: none;
-  cursor: not-allowed;
+  border: 1px solid rgba(0, 0, 0, 0.12);
 }
 
 .chat-messages {
   flex: 1;
-  min-height: 0;
   overflow-y: auto;
-  padding: 30px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  position: relative;
-  z-index: 1;
-}
-
-/* scrollbar */
-.chat-messages::-webkit-scrollbar {
-  width: 8px;
-}
-.chat-messages::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,0.12);
-  border-radius: 8px;
-}
-.chat-messages::-webkit-scrollbar-track {
-  background: transparent;
+  gap: 16px;
 }
 
 .message {
-  max-width: 70%;
+  max-width: 72%;
   padding: 14px 18px;
-  border-radius: 18px;
+  border-radius: 16px;
   line-height: 1.6;
-  word-wrap: break-word;
-  position: relative;
-  animation: messageSlideIn 0.28s ease-out;
-  font-size: 15px;
-  box-sizing: border-box;
-}
-
-@keyframes messageSlideIn {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+  word-break: break-word;
 }
 
 .user-message {
   align-self: flex-end;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.16);
-}
-
-.user-message::after {
-  content: '';
-  position: absolute;
-  bottom: -6px;
-  right: 18px;
-  width: 0;
-  height: 0;
-  border-left: 8px solid transparent;
-  border-right: 8px solid transparent;
-  border-top: 8px solid #764ba2;
+  color: #fff;
 }
 
 .ai-message {
   align-self: flex-start;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(4px);
+  background: rgba(255, 255, 255, 0.96);
   color: #2c3e50;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-}
-
-.ai-message::after {
-  content: '';
-  position: absolute;
-  bottom: -6px;
-  left: 18px;
-  width: 0;
-  height: 0;
-  border-left: 8px solid transparent;
-  border-right: 8px solid transparent;
-  border-top: 8px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
 }
 
 .message-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
-.message-header b {
-  font-weight: 600;
-}
-
-.tts-btn {
-  padding: 6px 10px;
-  border-radius: 8px;
+.message-status {
+  padding: 2px 8px;
+  border-radius: 999px;
   font-size: 12px;
-  cursor: pointer;
-  background: linear-gradient(135deg, #67c23a 0%, #409eff 100%);
-  color: white;
-  border: none;
-  transition: all 0.18s ease;
-  box-shadow: 0 2px 8px rgba(103, 194, 58, 0.18);
-}
-
-.tts-btn:hover {
-  transform: scale(1.05);
-  box-shadow: 0 4px 12px rgba(103, 194, 58, 0.25);
-}
-
-.streaming-indicator {
-  color: #999;
   font-weight: 600;
-  margin-left: 6px;
 }
 
-/* message content */
+.status-streaming {
+  background: rgba(64, 158, 255, 0.12);
+  color: #409eff;
+}
+
+.status-completed {
+  background: rgba(103, 194, 58, 0.12);
+  color: #67c23a;
+}
+
+.status-cancelled {
+  background: rgba(230, 126, 34, 0.14);
+  color: #e67e22;
+}
+
+.status-timeout,
+.status-failed,
+.status-partial {
+  background: rgba(245, 108, 108, 0.12);
+  color: #f56c6c;
+}
+
 .message-content {
   white-space: pre-wrap;
-  word-break: break-word;
 }
 
-/* input area */
 .chat-input {
-  padding: 24px;
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(8px);
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
   position: relative;
-  z-index: 1;
+  padding: 20px;
+  background: rgba(255, 255, 255, 0.96);
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .chat-input textarea {
   width: 100%;
-  resize: none;
-  border: 2px solid rgba(0, 0, 0, 0.06);
-  border-radius: 12px;
-  padding: 14px 16px;
-  font-size: 15px;
-  outline: none;
-  background: rgba(255,255,255,0.96);
-  color: #2c3e50;
-  transition: all 0.18s ease;
-  min-height: 20px;
+  min-height: 52px;
   max-height: 160px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.04);
-}
-
-.chat-input textarea:focus {
-  border-color: #409eff;
-  box-shadow: 0 8px 30px rgba(64,158,255,0.06);
-  transform: translateY(-1px);
+  resize: none;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  padding: 14px 16px;
+  box-sizing: border-box;
 }
 
 .send-btn {
   position: absolute;
-  right: 36px;
+  right: 32px;
   bottom: 30px;
-  padding: 12px 22px;
-  border: none;
-  border-radius: 50px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 6px 20px rgba(102,126,234,0.18);
-  transition: all 0.18s ease;
+  padding: 10px 18px;
 }
 
-.send-btn:hover:not(:disabled) {
-  transform: translateY(-3px) scale(1.02);
-}
-
+.new-chat-btn:disabled,
+.sync-btn:disabled,
+.stop-btn:disabled,
+.upload-btn:disabled,
 .send-btn:disabled {
-  background: #ccc;
-  box-shadow: none;
+  background: #c0c4cc;
   cursor: not-allowed;
 }
 </style>
