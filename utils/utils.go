@@ -117,3 +117,20 @@ func ValidateFile(file *multipart.FileHeader) error {
 
 	return nil
 }
+
+// ValidateFileMeta 为“直传初始化”场景提供元信息校验。
+// 这个路径下后端拿不到 multipart 文件流，因此需要把原先基于 FileHeader 的校验拆成可复用版本。
+func ValidateFileMeta(fileName string, fileSize int64) error {
+	if fileSize <= 0 {
+		return fmt.Errorf("文件大小必须大于 0")
+	}
+	if fileSize > MaxFileSize {
+		return fmt.Errorf("文件过大，最大允许 10MB，当前文件 %.2fMB", float64(fileSize)/(1024*1024))
+	}
+
+	ext := strings.ToLower(filepath.Ext(fileName))
+	if ext != ".md" && ext != ".txt" {
+		return fmt.Errorf("文件类型不正确，只允许 .md 或 .txt 文件，当前扩展名: %s", ext)
+	}
+	return nil
+}

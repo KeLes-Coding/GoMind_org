@@ -44,3 +44,17 @@ charset =  "utf8mb4"
   [voiceServiceConfig]
   voiceServiceApiKey = "baiduApiKey"
   voiceServiceSecretKey ="baiduSecretKey"
+
+[storageConfig]
+provider = "local"
+basePath = "uploads"
+bucket = "gopherai"
+endpoint = "127.0.0.1:9000"
+accessKey = "minioadmin"
+secretKey = "minioadmin"
+useSSL = false
+region = "us-east-1"
+autoCreateBucket = true
+objectPrefix = ""
+uploadPresignExpirySeconds = 300
+presignExpirySeconds = 300

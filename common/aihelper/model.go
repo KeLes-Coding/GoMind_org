@@ -1,6 +1,7 @@
 package aihelper
 
 import (
+	"GopherAI/common/observability"
 	"GopherAI/common/rag"
 	"GopherAI/config"
 	"context"
@@ -178,6 +179,9 @@ func (o *AliRAGModel) GenerateResponse(ctx context.Context, messages []*schema.M
 	ragQuery, err := rag.NewRAGQuery(ctx, o.userID)
 	if err != nil {
 		log.Printf("Failed to create RAG query (user may not have uploaded file): %v", err)
+		// 这里单独记录 RAG fallback，而不是混在普通模型 fallback 里。
+		// 因为这类问题不是模型调用失败，而是检索链路没有建立起来。
+		observability.RecordRAGFallback()
 		// 如果用户没有上传文件，直接使用原始问题
 		resp, err := o.llm.Generate(ctx, messages)
 		if err != nil {
@@ -197,6 +201,7 @@ func (o *AliRAGModel) GenerateResponse(ctx context.Context, messages []*schema.M
 	docs, err := ragQuery.RetrieveDocuments(ctx, query)
 	if err != nil {
 		log.Printf("Failed to retrieve documents: %v", err)
+		observability.RecordRAGFallback()
 		// 检索失败，使用原始问题
 		resp, err := o.llm.Generate(ctx, messages)
 		if err != nil {
@@ -206,7 +211,9 @@ func (o *AliRAGModel) GenerateResponse(ctx context.Context, messages []*schema.M
 	}
 
 	// 4. 构建包含检索结果的提示词
-	ragPrompt := rag.BuildRAGPrompt(query, docs)
+	// 这里改成带来源引用信息的提示词版本。
+	// 这样模型回答时不仅能利用召回内容，还更容易把依据回指到具体片段。
+	ragPrompt := rag.BuildRAGPromptWithReferences(query, docs)
 
 	// 5. 替换最后一条消息为 RAG 提示词
 	ragMessages := make([]*schema.Message, len(messages))
@@ -229,6 +236,7 @@ func (o *AliRAGModel) StreamResponse(ctx context.Context, messages []*schema.Mes
 	ragQuery, err := rag.NewRAGQuery(ctx, o.userID)
 	if err != nil {
 		log.Printf("Failed to create RAG query (user may not have uploaded file): %v", err)
+		observability.RecordRAGFallback()
 		// 如果用户没有上传文件，直接使用原始问题
 		return o.streamWithoutRAG(ctx, messages, cb)
 	}
@@ -244,12 +252,14 @@ func (o *AliRAGModel) StreamResponse(ctx context.Context, messages []*schema.Mes
 	docs, err := ragQuery.RetrieveDocuments(ctx, query)
 	if err != nil {
 		log.Printf("Failed to retrieve documents: %v", err)
+		observability.RecordRAGFallback()
 		// 检索失败，使用原始问题
 		return o.streamWithoutRAG(ctx, messages, cb)
 	}
 
 	// 4. 构建包含检索结果的提示词
-	ragPrompt := rag.BuildRAGPrompt(query, docs)
+	// 流式场景同样使用带引用的提示词，保持同步和流式输出口径一致。
+	ragPrompt := rag.BuildRAGPromptWithReferences(query, docs)
 
 	// 5. 替换最后一条消息为 RAG 提示词
 	ragMessages := make([]*schema.Message, len(messages))

@@ -55,6 +55,14 @@ type AISnapshot struct {
 	MQMainQueueDepth             int64         `json:"mq_main_queue_depth"`
 	MQDLQDepth                   int64         `json:"mq_dlq_depth"`
 	MQQueueDepthMax              int64         `json:"mq_queue_depth_max"`
+	RAGQueryTotal                int64         `json:"rag_query_total"`
+	RAGHitTotal                  int64         `json:"rag_hit_total"`
+	RAGNoHitTotal                int64         `json:"rag_no_hit_total"`
+	RAGFallbackTotal             int64         `json:"rag_fallback_total"`
+	RAGRetrievedChunksTotal      int64         `json:"rag_retrieved_chunks_total"`
+	RAGRetrievedFilesTotal       int64         `json:"rag_retrieved_files_total"`
+	RAGRetrievedChunksMax        int64         `json:"rag_retrieved_chunks_max"`
+	RAGRetrievedFilesMax         int64         `json:"rag_retrieved_files_max"`
 }
 
 // RequestStat 是按“操作 + 模型类型”聚合后的请求统计。
@@ -144,6 +152,14 @@ type aiObserver struct {
 	mqMainQueueDepth             int64
 	mqDLQDepth                   int64
 	mqQueueDepthMax              int64
+	ragQueryTotal                int64
+	ragHitTotal                  int64
+	ragNoHitTotal                int64
+	ragFallbackTotal             int64
+	ragRetrievedChunksTotal      int64
+	ragRetrievedFilesTotal       int64
+	ragRetrievedChunksMax        int64
+	ragRetrievedFilesMax         int64
 }
 
 var globalAIObserver = &aiObserver{
@@ -415,6 +431,37 @@ func RecordMQQueueDepth(queue string, depth int) {
 	globalAIObserver.mqQueueDepthMax = maxInt64(globalAIObserver.mqQueueDepthMax, depth64)
 }
 
+// RecordRAGQuery 记录一次 RAG 检索结果。
+// 这里关心的不是模型最终回答得好不好，而是检索层本身有没有命中、命中了多少 chunk、涉及多少文件。
+// 这样后续排查“为什么这次像普通对话”“为什么召回质量差”时，至少先有基础观测抓手。
+func RecordRAGQuery(hit bool, retrievedChunks int, retrievedFiles int) {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.ragQueryTotal++
+	if hit {
+		globalAIObserver.ragHitTotal++
+	} else {
+		globalAIObserver.ragNoHitTotal++
+	}
+
+	chunks64 := int64(retrievedChunks)
+	files64 := int64(retrievedFiles)
+	globalAIObserver.ragRetrievedChunksTotal += chunks64
+	globalAIObserver.ragRetrievedFilesTotal += files64
+	globalAIObserver.ragRetrievedChunksMax = maxInt64(globalAIObserver.ragRetrievedChunksMax, chunks64)
+	globalAIObserver.ragRetrievedFilesMax = maxInt64(globalAIObserver.ragRetrievedFilesMax, files64)
+}
+
+// RecordRAGFallback 记录一次 RAG 降级成普通聊天。
+// 这里单独计数，是为了区分“这次没有命中任何资料”和“RAG 链路本身异常只能回退”这两类问题。
+func RecordRAGFallback() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.ragFallbackTotal++
+}
+
 // SnapshotAI 返回当前 AI 可观测性的完整快照。
 func SnapshotAI() AISnapshot {
 	globalAIObserver.mu.Lock()
@@ -486,5 +533,13 @@ func SnapshotAI() AISnapshot {
 		MQMainQueueDepth:             globalAIObserver.mqMainQueueDepth,
 		MQDLQDepth:                   globalAIObserver.mqDLQDepth,
 		MQQueueDepthMax:              globalAIObserver.mqQueueDepthMax,
+		RAGQueryTotal:                globalAIObserver.ragQueryTotal,
+		RAGHitTotal:                  globalAIObserver.ragHitTotal,
+		RAGNoHitTotal:                globalAIObserver.ragNoHitTotal,
+		RAGFallbackTotal:             globalAIObserver.ragFallbackTotal,
+		RAGRetrievedChunksTotal:      globalAIObserver.ragRetrievedChunksTotal,
+		RAGRetrievedFilesTotal:       globalAIObserver.ragRetrievedFilesTotal,
+		RAGRetrievedChunksMax:        globalAIObserver.ragRetrievedChunksMax,
+		RAGRetrievedFilesMax:         globalAIObserver.ragRetrievedFilesMax,
 	}
 }

@@ -15,10 +15,16 @@ import (
 var conn *amqp.Connection
 
 const (
-	// 主业务消息超过最大重试次数后，不再无限回队列，而是转入死信队列等待人工处理。
-	messageQueueName    = "Message"
-	messageDLQName      = "Message.dlq"
-	messageRetryHeader  = "x-retry-count"
+	// messageQueueName 是主业务消息队列。
+	// 当前它主要服务站内消息相关逻辑，不直接参与文件向量化，
+	// 但整个 RabbitMQ 基础设施是共享的，所以连接生命周期策略必须统一设计。
+	messageQueueName = "Message"
+	// messageDLQName 是主业务消息的死信队列。
+	// 当同一条消息超过最大重试次数后，会被投递到这里等待人工排查。
+	messageDLQName = "Message.dlq"
+	// messageRetryHeader 记录当前消息已重试的次数。
+	messageRetryHeader = "x-retry-count"
+	// messageMaxRetryTime 限制单条消息的最大自动重试次数，避免毒消息无限回队。
 	messageMaxRetryTime = 3
 )
 
@@ -36,8 +42,9 @@ func initConn() {
 	}
 }
 
-// RabbitMQ 同时维护发布和消费两个 channel。
-// 这样发布确认和消费确认就不会互相干扰。
+// RabbitMQ 同时维护发布和消费两条 channel。
+// 这样做的核心目的，是把“消息发布确认”和“消息消费确认”隔离开，
+// 避免两个职责互相干扰，也便于后续独立观察问题。
 type RabbitMQ struct {
 	conn           *amqp.Connection
 	publishChannel *amqp.Channel
@@ -48,9 +55,8 @@ type RabbitMQ struct {
 	Key            string
 }
 
-// retryCountFromHeaders 从消息头里提取当前已重试次数。
-// MQ Header 的数值类型在不同驱动和 broker 路径下可能表现成多种整数类型，
-// 这里统一做兼容转换，避免治理逻辑因为类型断言失败而失效。
+// retryCountFromHeaders 从消息头中解析当前已经重试的次数。
+// 之所以单独做兼容解析，是因为 RabbitMQ Header 在不同驱动/路径下可能反序列化成不同数值类型。
 func retryCountFromHeaders(headers amqp.Table) int {
 	if headers == nil {
 		return 0
@@ -94,20 +100,40 @@ func NewRabbitMQ(exchange string, key string) *RabbitMQ {
 	return &RabbitMQ{Exchange: exchange, Key: key}
 }
 
-// Destroy 关闭 channel 和 connection。
-func (r *RabbitMQ) Destroy() {
+// CloseChannels 只关闭当前实例自己打开的 channel。
+// 这是这次修复的关键点：
+// 1. 当前项目把 amqp.Connection 设计成包级共享单例；
+// 2. 文件上传发布任务时，会临时创建一个 RabbitMQ 实例；
+// 3. 如果该实例在请求结束时直接关闭共享 connection，就会把 worker 消费者的连接一起打断。
+// 因此短生命周期发布器只能调用 CloseChannels，不能直接 Destroy。
+func (r *RabbitMQ) CloseChannels() {
 	if r.publishChannel != nil {
 		_ = r.publishChannel.Close()
+		r.publishChannel = nil
 	}
 	if r.consumeChannel != nil {
 		_ = r.consumeChannel.Close()
+		r.consumeChannel = nil
 	}
+}
+
+// Destroy 用于销毁当前实例持有的全部资源。
+// 这个方法保留给真正拥有连接生命周期的场景，例如应用退出或统一资源清理。
+func (r *RabbitMQ) Destroy() {
+	r.CloseChannels()
 	if r.conn != nil {
 		_ = r.conn.Close()
+		if conn == r.conn {
+			conn = nil
+		}
+		r.conn = nil
 	}
 }
 
 // NewWorkRabbitMQ 创建 work queue 模式实例。
+// 这里继续沿用共享 connection + 独立 channel 的结构：
+// 1. 连接成本高，适合复用；
+// 2. channel 成本低，适合按实例拆分职责。
 func NewWorkRabbitMQ(queue string) *RabbitMQ {
 	rabbitmq := NewRabbitMQ("", queue)
 
@@ -127,13 +153,13 @@ func NewWorkRabbitMQ(queue string) *RabbitMQ {
 		panic(err.Error())
 	}
 
-	// 打开发布确认；只有 broker 确认收到消息后，Publish 才返回成功。
+	// 开启发布确认，只有 broker 确认收到消息后，Publish 才返回成功。
 	if err = rabbitmq.publishChannel.Confirm(false); err != nil {
 		panic(err.Error())
 	}
 	rabbitmq.confirmChan = rabbitmq.publishChannel.NotifyPublish(make(chan amqp.Confirmation, 1))
 
-	// 每次只预取一条，确保消费端只有在当前消息处理完成后才拿下一条。
+	// 每次只预取一条消息，确保消费端按“处理完成后再取下一条”的节奏前进。
 	if err = rabbitmq.consumeChannel.Qos(1, 0, false); err != nil {
 		panic(err.Error())
 	}
@@ -155,13 +181,12 @@ func (r *RabbitMQ) ensureQueue(channel *amqp.Channel) (amqp.Queue, error) {
 		return amqp.Queue{}, err
 	}
 
-	// 每次声明/探活队列时顺手记录当前队列深度，代价低，但足够满足“可治理”阶段的巡检需求。
+	// 每次声明/探活队列时顺手记录当前队列深度，满足基础观测需求。
 	observability.RecordMQQueueDepth(observability.MQQueueMain, queue.Messages)
 	return queue, nil
 }
 
 // ensureDeadLetterQueue 保证死信队列存在。
-// 这一步先用最直接的独立队列方案，不引入额外 exchange 拓扑，保持当前项目接入成本最低。
 func (r *RabbitMQ) ensureDeadLetterQueue(channel *amqp.Channel) (amqp.Queue, error) {
 	queue, err := channel.QueueDeclare(
 		messageDLQName,
@@ -180,7 +205,7 @@ func (r *RabbitMQ) ensureDeadLetterQueue(channel *amqp.Channel) (amqp.Queue, err
 }
 
 // publishWithHeaders 统一封装带 header 的持久化发布逻辑。
-// 重试次数、死信来源等治理信息都通过这里进入 MQ。
+// 消息重试次数等治理信息，都通过这个方法写回 MQ。
 func (r *RabbitMQ) publishWithHeaders(queueName string, message []byte, headers amqp.Table) error {
 	r.publishMu.Lock()
 	defer r.publishMu.Unlock()
@@ -251,7 +276,7 @@ func (r *RabbitMQ) Publish(message []byte) error {
 }
 
 // Consume 消费消息并使用手动 ack。
-// 只有 handle 成功返回后才确认消费，失败则重新入队。
+// 只有 handle 成功返回后才确认消费；失败则按有限重试策略重新投递，超过阈值后进入死信队列。
 func (r *RabbitMQ) Consume(handle func(msg *amqp.Delivery) error) {
 	q, err := r.ensureQueue(r.consumeChannel)
 	if err != nil {
@@ -279,8 +304,7 @@ func (r *RabbitMQ) Consume(handle func(msg *amqp.Delivery) error) {
 			}
 			headers[messageRetryHeader] = nextRetryCount
 
-			// 这里不再直接无限 requeue。
-			// 原因是无限重回主队列会形成“毒消息风暴”，让积压越来越深，而且很难观测。
+			// 不再对失败消息做无限 requeue，避免形成毒消息风暴。
 			if nextRetryCount > messageMaxRetryTime {
 				if publishErr := r.publishWithHeaders(messageDLQName, msg.Body, headers); publishErr != nil {
 					log.Println("rabbitmq publish dead letter error:", publishErr)

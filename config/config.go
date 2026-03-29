@@ -61,6 +61,24 @@ type VoiceServiceConfig struct {
 	VoiceServiceSecretKey string `toml:"voiceServiceSecretKey"`
 }
 
+// StorageConfig 统一描述文件本体的存储后端配置。
+// 这里既要覆盖 local 的单机默认模式，也要覆盖对象存储的分布式模式。
+// PresignExpirySeconds 是这轮新增的下载直链有效期配置，仅对象存储模式会使用。
+type StorageConfig struct {
+	Provider                   string `toml:"provider"`
+	BasePath                   string `toml:"basePath"`
+	Bucket                     string `toml:"bucket"`
+	Endpoint                   string `toml:"endpoint"`
+	AccessKey                  string `toml:"accessKey"`
+	SecretKey                  string `toml:"secretKey"`
+	UseSSL                     bool   `toml:"useSSL"`
+	Region                     string `toml:"region"`
+	AutoCreate                 bool   `toml:"autoCreateBucket"`
+	ObjectPrefix               string `toml:"objectPrefix"`
+	UploadPresignExpirySeconds int    `toml:"uploadPresignExpirySeconds"`
+	PresignExpirySeconds       int    `toml:"presignExpirySeconds"`
+}
+
 type Config struct {
 	EmailConfig        `toml:"emailConfig"`
 	RedisConfig        `toml:"redisConfig"`
@@ -70,6 +88,7 @@ type Config struct {
 	Rabbitmq           `toml:"rabbitmqConfig"`
 	RagModelConfig     `toml:"ragModelConfig"`
 	VoiceServiceConfig `toml:"voiceServiceConfig"`
+	StorageConfig      `toml:"storageConfig"`
 }
 
 type RedisKeyConfig struct {
@@ -86,9 +105,9 @@ var DefaultRedisKeyConfig = RedisKeyConfig{
 
 var config *Config
 
-// InitConfig 初始化项目配置
+// InitConfig 初始化项目配置。
+// 当前仍然使用 toml 文件直读，保持单机开发环境最小依赖。
 func InitConfig() error {
-	// 设置配置文件路径（相对于 main.go 所在的目录）
 	if _, err := toml.DecodeFile("config/config.toml", config); err != nil {
 		log.Fatal(err.Error())
 		return err

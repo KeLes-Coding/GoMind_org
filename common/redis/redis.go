@@ -116,11 +116,20 @@ func DeleteCaptchaForEmail(email string) error {
 }
 
 func InitRedisIndex(ctx context.Context, filename string, dimension int) error {
+	return initRedisIndexWithPrefix(ctx, GenerateIndexName(filename), GenerateIndexNamePrefix(filename), dimension)
+}
+
+// InitUnifiedRAGIndex 初始化统一检索入口使用的共享索引。
+// 这套索引和旧的“按文件一个索引”并存，便于新检索链路灰度切换时保留兼容兜底。
+func InitUnifiedRAGIndex(ctx context.Context, dimension int) error {
+	return initRedisIndexWithPrefix(ctx, GenerateUnifiedRAGIndexName(), GenerateUnifiedRAGIndexPrefix(), dimension)
+}
+
+func initRedisIndexWithPrefix(ctx context.Context, indexName, prefix string, dimension int) error {
 	if !IsAvailable() {
 		return fmt.Errorf("redis unavailable")
 	}
 
-	indexName := GenerateIndexName(filename)
 	_, err := Rdb.Do(ctx, "FT.INFO", indexName).Result()
 	if err == nil {
 		fmt.Println("redis index already exists, skip create")
@@ -134,7 +143,6 @@ func InitRedisIndex(ctx context.Context, filename string, dimension int) error {
 
 	fmt.Println("creating redis index")
 
-	prefix := GenerateIndexNamePrefix(filename)
 	createArgs := []interface{}{
 		"FT.CREATE", indexName,
 		"ON", "HASH",
@@ -142,6 +150,22 @@ func InitRedisIndex(ctx context.Context, filename string, dimension int) error {
 		"SCHEMA",
 		"content", "TEXT",
 		"metadata", "TEXT",
+		// 这些字段是这轮 RAG 配套升级新增的“文件资产元数据”。
+		// 设计目的有三个：
+		// 1. 让检索结果能直接带回 file_id / version / file_name 等信息；
+		// 2. 为后续统一索引 + 元数据过滤预留 schema；
+		// 3. 让引用、排障、reindex 这些动作不再只依赖文件名推断。
+		"file_id", "TAG",
+		"file_version", "NUMERIC",
+		"file_name", "TEXT",
+		"storage_key", "TEXT",
+		"content_sha256", "TAG",
+		"chunk_id", "TAG",
+		"chunk_index", "NUMERIC",
+		"total_chunks", "NUMERIC",
+		"owner_id", "NUMERIC",
+		"kb_id", "TAG",
+		"status", "TAG",
 		"vector", "VECTOR", "FLAT",
 		"6",
 		"TYPE", "FLOAT32",
@@ -165,10 +189,62 @@ func DeleteRedisIndex(ctx context.Context, filename string) error {
 
 	indexName := GenerateIndexName(filename)
 	if err := Rdb.Do(ctx, "FT.DROPINDEX", indexName).Err(); err != nil {
+		// 旧索引清理现在更多是“收尾治理动作”，并不适合把“索引本来就不存在”
+		// 当成 Redis 整体不可用来处理，否则会误伤后续真正需要走 Redis 的链路。
+		if strings.Contains(err.Error(), "Unknown index name") {
+			return nil
+		}
 		redisAvailable.Store(false)
 		return fmt.Errorf("delete redis index failed: %w", err)
 	}
 
 	fmt.Println("redis index deleted")
+	return nil
+}
+
+// SearchDocumentKeysByQuery 从指定索引里查出命中的 hash key 列表。
+// 这里专门用于统一索引的文档治理场景，例如按 file_id 删除某份文件的所有 chunk。
+func SearchDocumentKeysByQuery(ctx context.Context, indexName, query string, limit int) ([]string, error) {
+	if !IsAvailable() {
+		return nil, fmt.Errorf("redis unavailable")
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	result, err := Rdb.FTSearchWithArgs(ctx, indexName, query, &redisCli.FTSearchOptions{
+		NoContent:      true,
+		LimitOffset:    0,
+		Limit:          limit,
+		DialectVersion: 2,
+	}).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(result.Docs))
+	for _, doc := range result.Docs {
+		if doc.ID == "" {
+			continue
+		}
+		keys = append(keys, doc.ID)
+	}
+	return keys, nil
+}
+
+// DeleteKeys 批量删除指定 hash key。
+// 统一索引模式下，删除文件不再只是 drop 某个文件索引，而是需要显式清掉对应 chunk 文档。
+func DeleteKeys(ctx context.Context, keys []string) error {
+	if !IsAvailable() {
+		return fmt.Errorf("redis unavailable")
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	if err := Rdb.Del(ctx, keys...).Err(); err != nil {
+		redisAvailable.Store(false)
+		return err
+	}
 	return nil
 }
