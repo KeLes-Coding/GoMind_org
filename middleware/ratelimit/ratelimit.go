@@ -11,18 +11,25 @@ import (
 )
 
 type windowState struct {
+	// 当前统计窗口的起始时间。
 	windowStart time.Time
-	count       int
+	// 当前窗口内已通过的请求次数。
+	count int
 }
 
 type limiter struct {
-	limit  int
+	// 单个窗口内允许通过的最大请求数。
+	limit int
+	// 固定窗口大小，例如 1 分钟。
 	window time.Duration
 
-	mu     sync.Mutex
+	// 保护 states，避免并发访问 map 产生竞态。
+	mu sync.Mutex
+	// 按 key 保存每个限流对象对应的窗口状态。
 	states map[string]*windowState
 }
 
+// newLimiter 创建一个基于内存的固定窗口限流器。
 func newLimiter(limit int, window time.Duration) *limiter {
 	return &limiter{
 		limit:  limit,
@@ -31,6 +38,7 @@ func newLimiter(limit int, window time.Duration) *limiter {
 	}
 }
 
+// allow 判断指定 key 当前是否还允许继续通过请求。
 func (l *limiter) allow(key string) bool {
 	now := time.Now()
 
@@ -38,7 +46,7 @@ func (l *limiter) allow(key string) bool {
 	defer l.mu.Unlock()
 
 	for stateKey, state := range l.states {
-		// 惰性清理过期窗口，避免长时间运行后 map 无限制增长。
+		// 顺手清理过期窗口，避免服务长时间运行后 map 持续增长。
 		if now.Sub(state.windowStart) > 2*l.window {
 			delete(l.states, stateKey)
 		}
@@ -46,6 +54,7 @@ func (l *limiter) allow(key string) bool {
 
 	state, ok := l.states[key]
 	if !ok || now.Sub(state.windowStart) >= l.window {
+		// 首次访问，或旧窗口已过期，则开启一个新的统计窗口。
 		l.states[key] = &windowState{
 			windowStart: now,
 			count:       1,
@@ -57,24 +66,27 @@ func (l *limiter) allow(key string) bool {
 		return false
 	}
 
+	// 仍在当前窗口内且未达到阈值，请求计数加一并放行。
 	state.count++
 	return true
 }
 
 var (
-	// 这一版先做单机内存限流；如果后续是多实例部署，再迁到 Redis。
+	// 当前版本先使用单机内存限流；如果后续部署为多实例，再迁移到 Redis 等集中式方案。
 	loginIPLimiter   = newLimiter(10, time.Minute)
 	captchaIPLimiter = newLimiter(5, time.Minute)
 	chatIPLimiter    = newLimiter(30, time.Minute)
 	chatUserLimiter  = newLimiter(12, time.Minute)
 )
 
+// reject 返回“请求过多”响应，并中止后续中间件和处理函数。
 func reject(c *gin.Context) {
 	res := new(controller.Response)
 	c.JSON(http.StatusOK, res.CodeOf(code.CodeTooManyRequests))
 	c.Abort()
 }
 
+// LimitLoginByIP 按客户端 IP 限制登录接口访问频率。
 func LimitLoginByIP() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !loginIPLimiter.allow("login:" + c.ClientIP()) {
@@ -85,6 +97,7 @@ func LimitLoginByIP() gin.HandlerFunc {
 	}
 }
 
+// LimitCaptchaByIP 按客户端 IP 限制验证码接口访问频率。
 func LimitCaptchaByIP() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !captchaIPLimiter.allow("captcha:" + c.ClientIP()) {
@@ -95,6 +108,7 @@ func LimitCaptchaByIP() gin.HandlerFunc {
 	}
 }
 
+// LimitChatByIP 按客户端 IP 限制聊天接口访问频率。
 func LimitChatByIP() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !chatIPLimiter.allow("chat:" + c.ClientIP()) {
@@ -105,6 +119,7 @@ func LimitChatByIP() gin.HandlerFunc {
 	}
 }
 
+// LimitChatByUser 按登录用户名限制聊天接口访问频率。
 func LimitChatByUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userName := c.GetString("userName")
