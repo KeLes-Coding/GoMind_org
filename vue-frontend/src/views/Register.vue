@@ -1,11 +1,9 @@
 <template>
-  <div class="register-container">
-    <el-card class="register-card">
-      <template #header>
-        <div class="card-header">
-          <h2>注册</h2>
-        </div>
-      </template>
+  <div class="flex h-screen w-full items-center justify-center bg-bg-light dark:bg-bg-dark text-text-primary-light dark:text-text-primary-dark overflow-hidden relative">
+    <div class="w-[420px] bg-surface-light dark:bg-surface-dark rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.06)] dark:shadow-[0_20px_40px_rgba(0,0,0,0.2)] border border-border-light dark:border-border-dark relative z-10 p-8">
+      <div class="text-center pb-8">
+        <h2 class="text-2xl font-semibold m-0 tracking-tight">注册</h2>
+      </div>
       <el-form
         ref="registerFormRef"
         :model="registerForm"
@@ -16,34 +14,36 @@
           <el-input
             v-model="registerForm.username"
             placeholder="请输入用户名"
+            class="!rounded-lg"
           />
-          <div class="field-hint">4-20位，以字母开头，只能包含字母、数字和下划线</div>
+          <div class="mt-1.5 text-xs text-text-secondary-light dark:text-text-secondary-dark leading-relaxed">4-20位，以字母开头，只能包含字母、数字和下划线</div>
         </el-form-item>
         <el-form-item label="邮箱" prop="email">
           <el-input
             v-model="registerForm.email"
             placeholder="请输入邮箱"
             type="email"
+            class="!rounded-lg"
           />
         </el-form-item>
         <el-form-item label="验证码" prop="captcha">
-          <el-row :gutter="10">
-            <el-col :span="16">
+          <el-row :gutter="10" class="w-full m-0">
+            <el-col :span="16" class="!pl-0">
               <el-input
                 v-model="registerForm.captcha"
                 placeholder="请输入验证码"
+                class="!rounded-lg"
               />
             </el-col>
-            <el-col :span="8">
-              <el-button
-                type="primary"
-                :loading="codeLoading"
-                :disabled="countdown > 0"
+            <el-col :span="8" class="!pr-0">
+              <button
+                type="button"
+                :disabled="codeLoading || countdown > 0"
                 @click="sendCode"
-                style="width: 100%"
+                class="w-full h-[32px] rounded-lg text-sm font-medium border border-border-light dark:border-border-dark bg-transparent text-text-primary-light dark:text-text-primary-dark hover:border-accent-light dark:hover:border-accent-dark hover:text-accent-light dark:hover:text-accent-dark transition-colors disabled:opacity-50 cursor-pointer"
               >
                 {{ countdown > 0 ? `${countdown}s` : '发送验证码' }}
-              </el-button>
+              </button>
             </el-col>
           </el-row>
         </el-form-item>
@@ -53,37 +53,37 @@
             placeholder="请输入密码"
             type="password"
             show-password
+            class="!rounded-lg"
           />
         </el-form-item>
-        <el-form-item label="确认密码" prop="confirmPassword">
+        <el-form-item label="确认" prop="confirmPassword">
           <el-input
             v-model="registerForm.confirmPassword"
             placeholder="请再次输入密码"
             type="password"
             show-password
+            class="!rounded-lg"
           />
         </el-form-item>
-        <el-form-item>
-          <el-button
-            type="primary"
-            :loading="loading"
+        <div class="mt-8 space-y-4">
+          <button
+            type="button"
+            :disabled="loading"
             @click="handleRegister"
-            style="width: 100%"
+            class="w-full h-12 rounded-xl font-semibold bg-accent-light dark:bg-accent-dark border-none hover:opacity-90 transition-opacity text-white flex items-center justify-center disabled:opacity-50 cursor-pointer"
           >
-            注册
-          </el-button>
-        </el-form-item>
-        <el-form-item>
-          <el-button
-            type="text"
+            {{ loading ? '注册中...' : '注册' }}
+          </button>
+          <button
+            type="button"
             @click="$router.push('/login')"
-            style="width: 100%"
+            class="w-full h-10 text-sm text-text-secondary-light dark:text-text-secondary-dark hover:text-accent-light dark:hover:text-accent-dark transition-colors bg-transparent border-none cursor-pointer"
           >
             已有账号？去登录
-          </el-button>
-        </el-form-item>
+          </button>
+        </div>
       </el-form>
-    </el-card>
+    </div>
   </div>
 </template>
 
@@ -220,136 +220,5 @@ export default {
 </script>
 
 <style scoped>
-.register-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  position: relative;
-  overflow: hidden;
-}
-
-.register-container::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="20" cy="20" r="2" fill="rgba(255,255,255,0.1)"/><circle cx="80" cy="80" r="2" fill="rgba(255,255,255,0.1)"/><circle cx="40" cy="60" r="1" fill="rgba(255,255,255,0.1)"/><circle cx="60" cy="30" r="1.5" fill="rgba(255,255,255,0.1)"/></svg>');
-  animation: float 20s ease-in-out infinite;
-}
-
-@keyframes float {
-  0%, 100% { transform: translateY(0px) rotate(0deg); }
-  50% { transform: translateY(-20px) rotate(180deg); }
-}
-
-.register-card {
-  width: 420px;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(10px);
-  border-radius: 20px;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  animation: slideIn 0.8s ease-out;
-  position: relative;
-  z-index: 1;
-}
-
-.field-hint {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #6b7280;
-}
-
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateY(30px) scale(0.9);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.card-header {
-  text-align: center;
-  padding: 30px 0 20px 0;
-}
-
-.card-header h2 {
-  margin: 0;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  font-size: 28px;
-  font-weight: 600;
-  animation: glow 2s ease-in-out infinite alternate;
-}
-
-@keyframes glow {
-  from { filter: brightness(1); }
-  to { filter: brightness(1.2); }
-}
-
-.el-form-item {
-  margin-bottom: 20px;
-}
-
-.el-input {
-  transition: all 0.3s ease;
-}
-
-.el-input:focus-within {
-  transform: scale(1.02);
-}
-
-.el-row {
-  animation: fadeIn 0.6s ease-out 0.3s both;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.el-button {
-  height: 44px;
-  border-radius: 12px;
-  font-weight: 600;
-  transition: all 0.3s ease;
-  position: relative;
-  overflow: hidden;
-}
-
-.el-button::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-  transition: left 0.5s;
-}
-
-.el-button:hover::before {
-  left: 100%;
-}
-
-.el-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(64, 158, 255, 0.3);
-}
-
-.register-link {
-  text-align: center;
-  margin-top: 20px;
-  animation: fadeIn 1s ease-out 0.5s both;
-}
+/* Scoped styles removed in favor of Tailwind CSS classes */
 </style>

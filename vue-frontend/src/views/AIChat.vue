@@ -1,90 +1,132 @@
 <template>
-  <div class="ai-chat-container">
-    <aside class="session-list">
-      <div class="session-list-header">
-        <span>会话列表</span>
-        <button class="new-chat-btn" @click="createNewSession">+ 新建会话</button>
+  <div class="flex flex-row h-screen w-screen overflow-hidden bg-bg-light dark:bg-bg-dark text-text-primary-light dark:text-text-primary-dark">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-surface-light dark:bg-surface-dark border-r border-border-light dark:border-border-dark flex flex-col flex-shrink-0">
+      <div class="p-4 flex flex-col gap-4">
+        <span class="text-sm font-semibold tracking-wide text-text-secondary-light dark:text-text-secondary-dark uppercase pl-2">会话列表</span>
+        <button class="flex items-center justify-between w-full p-2.5 rounded-lg border border-border-light dark:border-border-dark bg-transparent hover:border-accent-light/50 dark:hover:border-accent-dark/50 hover:text-accent-light dark:hover:text-accent-dark transition-colors cursor-pointer text-sm font-medium" @click="createNewSession">
+          <span>+ 新建会话</span>
+          <kbd class="hidden md:inline-block px-1.5 py-0.5 text-xs text-text-secondary-light dark:text-text-secondary-dark bg-bg-light dark:bg-bg-dark rounded border border-border-light dark:border-border-dark font-mono">⌘K</kbd>
+        </button>
       </div>
-      <ul class="session-list-ul">
+      <ul class="flex-1 overflow-y-auto list-none m-0 p-2 space-y-1">
         <li
           v-for="session in sessions"
           :key="session.id"
-          :class="['session-item', { active: currentSessionId === session.id }]"
+          :class="[
+            'px-3 py-2.5 rounded-lg cursor-pointer text-sm transition-colors',
+            currentSessionId === session.id 
+              ? 'bg-black/5 dark:bg-white/5 font-medium text-text-primary-light dark:text-text-primary-dark flex items-center relative before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-1 before:bg-accent-light dark:before:bg-accent-dark before:rounded-r-full overflow-hidden' 
+              : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
+          ]"
           @click="switchSession(session.id)"
         >
-          {{ session.name || `会话 ${session.id}` }}
+          <span class="truncate block max-w-full">{{ session.name || `会话 ${session.id}` }}</span>
         </li>
       </ul>
     </aside>
 
-    <section class="chat-section">
-      <div class="top-bar">
-        <button class="back-btn" @click="$router.push('/menu')">返回</button>
-        <button class="sync-btn" @click="syncHistory" :disabled="!currentSessionId || tempSession || loading">同步历史</button>
-        <button class="stop-btn" @click="stopCurrentStream" :disabled="!loading || !isStreaming">停止生成</button>
+    <!-- Main Content -->
+    <section class="flex-1 flex flex-col relative min-w-0 bg-bg-light dark:bg-bg-dark">
+      <!-- Header -->
+      <div class="sticky top-0 z-10 glass border-b border-border-light dark:border-border-dark px-6 py-3 flex items-center gap-3 flex-wrap">
+        <button class="px-3 py-1.5 text-sm rounded bg-transparent border border-border-light dark:border-border-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer" @click="$router.push('/menu')">返回</button>
+        <button class="px-3 py-1.5 text-sm rounded bg-transparent border border-border-light dark:border-border-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-30" @click="syncHistory" :disabled="!currentSessionId || tempSession || loading">同步</button>
+        <button class="px-3 py-1.5 text-sm rounded bg-transparent border border-border-light dark:border-border-dark hover:border-red-500 hover:text-red-500 transition-colors cursor-pointer disabled:opacity-30" @click="stopCurrentStream" :disabled="!loading || !isStreaming">停止</button>
 
-        <label for="modelType">选择模型</label>
-        <select id="modelType" v-model="selectedModel" class="model-select" :disabled="loading">
-          <option v-for="option in modelOptions" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </option>
-        </select>
+        <div class="flex items-center gap-2 ml-auto">
+          <label for="modelType" class="text-sm text-text-secondary-light dark:text-text-secondary-dark">模型</label>
+          <select id="modelType" v-model="selectedModel" class="px-2 py-1.5 text-sm rounded border border-border-light dark:border-border-dark bg-transparent cursor-pointer outline-none focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark disabled:opacity-50" :disabled="loading">
+            <option v-for="option in modelOptions" :key="option.value" :value="option.value" class="bg-surface-light dark:bg-surface-dark">
+              {{ option.label }}
+            </option>
+          </select>
 
-        <label class="streaming-mode" for="streamingMode">
-          <input id="streamingMode" v-model="isStreaming" type="checkbox" :disabled="loading" />
-          流式响应
-        </label>
+          <label class="flex items-center gap-1.5 text-sm ml-2 cursor-pointer select-none">
+            <input id="streamingMode" v-model="isStreaming" type="checkbox" class="accent-accent-light dark:accent-accent-dark" :disabled="loading" />
+            流式
+          </label>
 
-        <button class="upload-btn" @click="triggerFileUpload" :disabled="uploading || loading">上传文档 (.md/.txt)</button>
-        <input
-          ref="fileInput"
-          type="file"
-          accept=".md,.txt,text/markdown,text/plain"
-          style="display: none"
-          @change="handleFileUpload"
-        />
-      </div>
-
-      <div class="chat-messages" ref="messagesRef">
-        <div
-          v-for="(message, index) in currentMessages"
-          :key="index"
-          :class="['message', message.role === 'user' ? 'user-message' : 'ai-message']"
-        >
-          <div class="message-header">
-            <b>{{ message.role === 'user' ? '你' : 'AI' }}:</b>
-            <button
-              v-if="message.role === 'assistant' && message.content"
-              class="tts-btn"
-              @click="playTTS(message.content)"
-            >
-              朗读
-            </button>
-            <span v-if="getMessageMetaStatus(message)" :class="['message-status', `status-${getMessageMetaStatus(message)}`]">
-              {{ getMessageStatusLabel(getMessageMetaStatus(message)) }}
-            </span>
-          </div>
-          <div class="message-content" v-html="renderMarkdown(message.content)"></div>
+          <button class="px-3 py-1.5 text-sm rounded bg-transparent border border-border-light dark:border-border-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-50 ml-2" @click="triggerFileUpload" :disabled="uploading || loading">上传(.md/.txt)</button>
+          <input
+            ref="fileInput"
+            type="file"
+            accept=".md,.txt,text/markdown,text/plain"
+            class="hidden"
+            @change="handleFileUpload"
+          />
         </div>
       </div>
 
-      <div class="chat-input">
-        <textarea
-          v-model="inputMessage"
-          placeholder="请输入你想问的问题..."
-          @keydown.enter.exact.prevent="sendMessage"
-          :disabled="loading"
-          ref="messageInput"
-          rows="1"
-        ></textarea>
-        <button
-          type="button"
-          :disabled="!inputMessage.trim() || loading"
-          @click="sendMessage"
-          class="send-btn"
-        >
-          {{ loading ? '发送中...' : '发送' }}
-        </button>
+      <!-- Messages Stream (Bubble-less) -->
+      <div class="flex-1 overflow-y-auto px-8 md:px-24 pt-8 pb-40" ref="messagesRef">
+        <div class="max-w-4xl mx-auto flex flex-col gap-12">
+          <div
+            v-for="(message, index) in currentMessages"
+            :key="index"
+            class="flex flex-col gap-2 group"
+          >
+            <!-- Sender Header -->
+            <div class="flex items-center gap-3">
+              <div :class="['w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm select-none', message.role === 'user' ? 'bg-black text-white dark:bg-white dark:text-black' : 'bg-surface-light border border-border-light dark:bg-surface-dark dark:border-border-dark']">
+                {{ message.role === 'user' ? 'U' : 'AI' }}
+              </div>
+              <span class="font-semibold text-sm">{{ message.role === 'user' ? '你' : 'Antigravity' }}</span>
+              <!-- Actions & Meta -->
+              <div class="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  v-if="message.role === 'assistant' && message.content"
+                  class="px-2 py-0.5 text-xs rounded bg-surface-light dark:bg-surface-dark border border-border-light dark:border-border-dark hover:text-accent-light dark:hover:text-accent-dark cursor-pointer transition-colors"
+                  @click="playTTS(message.content)"
+                >
+                  朗读
+                </button>
+              </div>
+              <span v-if="getMessageMetaStatus(message)" class="text-xs text-text-secondary-light dark:text-text-secondary-dark ml-auto">
+                {{ getMessageStatusLabel(getMessageMetaStatus(message)) }}
+              </span>
+            </div>
+            
+            <!-- Message Content block -->
+            <div class="pl-11 text-base leading-relaxed space-y-4 break-words">
+              <div v-html="renderMarkdown(message.content)" class="prose dark:prose-invert prose-p:my-2 prose-pre:bg-surface-light dark:prose-pre:bg-surface-dark prose-pre:border prose-pre:border-border-light dark:prose-pre:border-border-dark prose-pre:shadow-[0_2px_10px_rgba(0,0,0,0.02)] max-w-none"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Floating Pill Input -->
+      <div class="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-3xl px-4 z-20">
+        <div class="bg-surface-light dark:bg-surface-dark rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.06)] dark:shadow-2xl ring-1 ring-black/5 dark:ring-white/10 flex items-end p-2 transition-shadow focus-within:ring-border-light dark:focus-within:ring-border-dark">
+          <textarea
+            v-model="inputMessage"
+            placeholder="问点什么..."
+            @keydown.enter.exact.prevent="sendMessage"
+            :disabled="loading"
+            ref="messageInput"
+            rows="1"
+            class="flex-1 max-h-40 min-h-[44px] bg-transparent border-none outline-none resize-none px-4 py-3 text-base text-text-primary-light dark:text-text-primary-dark placeholder-text-secondary-light dark:placeholder-text-secondary-dark"
+          ></textarea>
+          <button
+            type="button"
+            :disabled="!inputMessage.trim() || loading"
+            @click="sendMessage"
+            :class="[
+              'p-2 w-10 h-10 mb-1 mr-1 rounded-xl flex items-center justify-center transition-all disabled:cursor-not-allowed',
+              (!inputMessage.trim() || loading) 
+                ? 'bg-transparent text-text-secondary-light dark:text-text-secondary-dark opacity-50' 
+                : 'bg-black text-white dark:bg-white dark:text-black shadow-sm'
+            ]"
+          >
+            <svg v-if="!loading" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
+              <path d="M3.478 2.404a.75.75 0 00-.926.941l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.404z" />
+            </svg>
+            <svg v-else class="animate-spin w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          </button>
+        </div>
       </div>
     </section>
   </div>
@@ -134,7 +176,7 @@ export default {
       return String(text)
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/`(.*?)`/g, '<code>$1</code>')
+        .replace(/`(.*?)`/g, '<code class="bg-black/5 dark:bg-white/10 px-1 py-0.5 rounded text-sm font-mono">$1</code>')
         .replace(/\n/g, '<br>')
     }
 
@@ -692,226 +734,5 @@ export default {
 </script>
 
 <style scoped>
-.ai-chat-container {
-  height: 100vh;
-  display: flex;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: #222;
-}
-
-.session-list {
-  width: 280px;
-  display: flex;
-  flex-direction: column;
-  background: rgba(255, 255, 255, 0.95);
-  border-right: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.session-list-header {
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  font-weight: 600;
-}
-
-.new-chat-btn,
-.sync-btn,
-.stop-btn,
-.upload-btn,
-.back-btn,
-.send-btn,
-.tts-btn {
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  color: #fff;
-}
-
-.new-chat-btn,
-.send-btn {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-.sync-btn {
-  background: linear-gradient(135deg, #67c23a 0%, #409eff 100%);
-}
-
-.stop-btn {
-  background: linear-gradient(135deg, #f56c6c 0%, #e67e22 100%);
-}
-
-.upload-btn {
-  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-}
-
-.back-btn {
-  background: #5b6c8f;
-}
-
-.tts-btn {
-  padding: 4px 8px;
-  background: #409eff;
-}
-
-.new-chat-btn,
-.sync-btn,
-.stop-btn,
-.upload-btn,
-.back-btn {
-  padding: 8px 14px;
-}
-
-.session-list-ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  flex: 1;
-  overflow-y: auto;
-}
-
-.session-item {
-  padding: 14px 20px;
-  cursor: pointer;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-.session-item.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: #fff;
-  font-weight: 600;
-}
-
-.chat-section {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.top-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 20px;
-  background: rgba(255, 255, 255, 0.95);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  flex-wrap: wrap;
-}
-
-.streaming-mode {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.model-select {
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-}
-
-.chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.message {
-  max-width: 72%;
-  padding: 14px 18px;
-  border-radius: 16px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.user-message {
-  align-self: flex-end;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: #fff;
-}
-
-.ai-message {
-  align-self: flex-start;
-  background: rgba(255, 255, 255, 0.96);
-  color: #2c3e50;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-}
-
-.message-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.message-status {
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.status-streaming {
-  background: rgba(64, 158, 255, 0.12);
-  color: #409eff;
-}
-
-.status-completed {
-  background: rgba(103, 194, 58, 0.12);
-  color: #67c23a;
-}
-
-.status-cancelled {
-  background: rgba(230, 126, 34, 0.14);
-  color: #e67e22;
-}
-
-.status-timeout,
-.status-failed,
-.status-partial {
-  background: rgba(245, 108, 108, 0.12);
-  color: #f56c6c;
-}
-
-.message-content {
-  white-space: pre-wrap;
-}
-
-.chat-input {
-  position: relative;
-  padding: 20px;
-  background: rgba(255, 255, 255, 0.96);
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.chat-input textarea {
-  width: 100%;
-  min-height: 52px;
-  max-height: 160px;
-  resize: none;
-  border-radius: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  padding: 14px 16px;
-  box-sizing: border-box;
-}
-
-.send-btn {
-  position: absolute;
-  right: 32px;
-  bottom: 30px;
-  padding: 10px 18px;
-}
-
-.new-chat-btn:disabled,
-.sync-btn:disabled,
-.stop-btn:disabled,
-.upload-btn:disabled,
-.send-btn:disabled {
-  background: #c0c4cc;
-  cursor: not-allowed;
-}
+/* Removed old CSS */
 </style>
