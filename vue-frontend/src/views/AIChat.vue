@@ -25,9 +25,9 @@
 
         <label for="modelType">选择模型：</label>
         <select id="modelType" v-model="selectedModel" class="model-select" :disabled="loading">
-          <option value="1">阿里百炼</option>
-          <option value="2">阿里百炼 RAG</option>
-          <option value="3">阿里百炼 MCP</option>
+          <option v-for="option in modelOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
         </select>
 
         <label class="streaming-mode" for="streamingMode">
@@ -60,8 +60,8 @@
             >
               语音
             </button>
-            <span v-if="message.meta?.status" :class="['message-status', `status-${message.meta.status}`]">
-              {{ getMessageStatusLabel(message.meta.status) }}
+            <span v-if="getMessageMetaStatus(message)" :class="['message-status', `status-${getMessageMetaStatus(message)}`]">
+              {{ getMessageStatusLabel(getMessageMetaStatus(message)) }}
             </span>
           </div>
           <div class="message-content" v-html="renderMarkdown(message.content)"></div>
@@ -97,6 +97,11 @@ import api, { refreshClient } from '../utils/api'
 import { ensureAccessToken } from '../utils/token'
 
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'timeout', 'failed', 'partial'])
+const MODEL_OPTIONS = [
+  { value: '1', label: 'DeepSeek' },
+  { value: '2', label: 'DeepSeek RAG' },
+  { value: '3', label: 'DeepSeek MCP' }
+]
 
 export default {
   name: 'AIChat',
@@ -167,6 +172,11 @@ export default {
       default:
         return '已完成'
       }
+    }
+
+    const getMessageMetaStatus = (message) => {
+      if (!message || !message.meta) return ''
+      return message.meta.status || ''
     }
 
     const scrollToBottom = () => {

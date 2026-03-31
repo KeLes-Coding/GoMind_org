@@ -12,7 +12,7 @@
         :rules="loginRules"
         label-width="80px"
       >
-        <el-form-item label="用户�? prop="username">
+        <el-form-item label="用户名" prop="username">
           <el-input
             v-model="loginForm.username"
             placeholder="请输入用户名"
@@ -21,7 +21,7 @@
         <el-form-item label="密码" prop="password">
           <el-input
             v-model="loginForm.password"
-            placeholder="请输入密�?
+            placeholder="请输入密码"
             type="password"
             show-password
           />
@@ -42,7 +42,7 @@
             @click="$router.push('/register')"
             style="width: 100%"
           >
-            还没有账号？去注�?
+            还没有账号？去注�?
           </el-button>
         </el-form-item>
       </el-form>
@@ -73,8 +73,8 @@ export default {
         { required: true, message: '请输入用户名', trigger: 'blur' }
       ],
       password: [
-        { required: true, message: '请输入密�?, trigger: 'blur' },
-        { min: 6, message: '密码长度不能少于6�?, trigger: 'blur' }
+        { required: true, message: '请输入密码', trigger: 'blur' },
+        { min: 6, message: '密码长度不能少于6位', trigger: 'blur' }
       ]
     }
 
