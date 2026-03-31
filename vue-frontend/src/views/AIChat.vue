@@ -71,7 +71,7 @@
               <div :class="['w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm select-none', message.role === 'user' ? 'bg-black text-white dark:bg-white dark:text-black' : 'bg-surface-light border border-border-light dark:bg-surface-dark dark:border-border-dark']">
                 {{ message.role === 'user' ? 'U' : 'AI' }}
               </div>
-              <span class="font-semibold text-sm">{{ message.role === 'user' ? '你' : 'Antigravity' }}</span>
+              <span class="font-semibold text-sm">{{ message.role === 'user' ? '你' : 'AI' }}</span>
               <!-- Actions & Meta -->
               <div class="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button

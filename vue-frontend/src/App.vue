@@ -52,14 +52,24 @@ export default {
 }
 
 ::-webkit-scrollbar-track {
-  @apply bg-transparent;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-black/10 dark:bg-white/10 rounded-full transition-colors;
+  background: rgb(0 0 0 / 10%);
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-black/20 dark:bg-white/20;
+  background: rgb(0 0 0 / 20%);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 10%);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 20%);
 }
 </style>
