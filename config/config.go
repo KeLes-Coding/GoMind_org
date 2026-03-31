@@ -2,6 +2,7 @@ package config
 
 import (
 	"log"
+	"os"
 
 	"github.com/BurntSushi/toml"
 )
@@ -14,7 +15,7 @@ type MainConfig struct {
 
 type EmailConfig struct {
 	Authcode string `toml:"authcode"`
-	Email    string `toml:"email" `
+	Email    string `toml:"email"`
 }
 
 type RedisConfig struct {
@@ -34,10 +35,18 @@ type MysqlConfig struct {
 }
 
 type JwtConfig struct {
-	ExpireDuration int    `toml:"expire_duration"`
-	Issuer         string `toml:"issuer"`
-	Subject        string `toml:"subject"`
-	Key            string `toml:"key"`
+	ExpireDuration        int    `toml:"expire_duration"`
+	AccessExpireDuration  int    `toml:"access_expire_duration"`
+	RefreshExpireDuration int    `toml:"refresh_expire_duration"`
+	Issuer                string `toml:"issuer"`
+	Subject               string `toml:"subject"`
+	Key                   string `toml:"key"`
+}
+
+type OpenAIConfig struct {
+	APIKey    string `toml:"apiKey"`
+	ModelName string `toml:"modelName"`
+	BaseURL   string `toml:"baseUrl"`
 }
 
 type Rabbitmq struct {
@@ -49,11 +58,15 @@ type Rabbitmq struct {
 }
 
 type RagModelConfig struct {
-	RagEmbeddingModel string `toml:"embeddingModel"`
-	RagChatModelName  string `toml:"chatModelName"`
-	RagDocDir         string `toml:"docDir"`
-	RagBaseUrl        string `toml:"baseUrl"`
-	RagDimension      int    `toml:"dimension"`
+	RagEmbeddingModel   string `toml:"embeddingModel"`
+	RagEmbeddingAPIKey  string `toml:"embeddingApiKey"`
+	RagEmbeddingBaseURL string `toml:"embeddingBaseUrl"`
+	RagChatModelName    string `toml:"chatModelName"`
+	RagChatAPIKey       string `toml:"chatApiKey"`
+	RagChatBaseURL      string `toml:"chatBaseUrl"`
+	RagDocDir           string `toml:"docDir"`
+	RagBaseUrl          string `toml:"baseUrl"`
+	RagDimension        int    `toml:"dimension"`
 }
 
 type VoiceServiceConfig struct {
@@ -61,9 +74,6 @@ type VoiceServiceConfig struct {
 	VoiceServiceSecretKey string `toml:"voiceServiceSecretKey"`
 }
 
-// StorageConfig 统一描述文件本体的存储后端配置。
-// 这里既要覆盖 local 的单机默认模式，也要覆盖对象存储的分布式模式。
-// PresignExpirySeconds 是这轮新增的下载直链有效期配置，仅对象存储模式会使用。
 type StorageConfig struct {
 	Provider                   string `toml:"provider"`
 	BasePath                   string `toml:"basePath"`
@@ -85,6 +95,7 @@ type Config struct {
 	MysqlConfig        `toml:"mysqlConfig"`
 	JwtConfig          `toml:"jwtConfig"`
 	MainConfig         `toml:"mainConfig"`
+	OpenAIConfig       `toml:"openAIConfig"`
 	Rabbitmq           `toml:"rabbitmqConfig"`
 	RagModelConfig     `toml:"ragModelConfig"`
 	VoiceServiceConfig `toml:"voiceServiceConfig"`
@@ -105,14 +116,23 @@ var DefaultRedisKeyConfig = RedisKeyConfig{
 
 var config *Config
 
-// InitConfig 初始化项目配置。
-// 当前仍然使用 toml 文件直读，保持单机开发环境最小依赖。
 func InitConfig() error {
-	if _, err := toml.DecodeFile("config/config.toml", config); err != nil {
-		log.Fatal(err.Error())
-		return err
+	configPaths := []string{
+		"config/config.local.toml",
+		"config/config.toml",
+		"config/config.example.toml",
 	}
-	return nil
+	for _, path := range configPaths {
+		if _, err := os.Stat(path); err == nil {
+			if _, err := toml.DecodeFile(path, config); err != nil {
+				log.Fatal(err.Error())
+				return err
+			}
+			return nil
+		}
+	}
+	log.Fatal("no config file found: tried config/config.local.toml, config/config.toml, config/config.example.toml")
+	return os.ErrNotExist
 }
 
 func GetConfig() *Config {

@@ -37,9 +37,19 @@ type OpenAIModel struct {
 }
 
 func NewOpenAIModel(ctx context.Context) (*OpenAIModel, error) {
-	key := os.Getenv("OPENAI_API_KEY")
-	modelName := os.Getenv("OPENAI_MODEL_NAME")
-	baseURL := os.Getenv("OPENAI_BASE_URL")
+	cfg := config.GetConfig()
+	key := strings.TrimSpace(cfg.OpenAIConfig.APIKey)
+	if key == "" {
+		key = os.Getenv("OPENAI_API_KEY")
+	}
+	modelName := strings.TrimSpace(cfg.OpenAIConfig.ModelName)
+	if modelName == "" {
+		modelName = os.Getenv("OPENAI_MODEL_NAME")
+	}
+	baseURL := strings.TrimSpace(cfg.OpenAIConfig.BaseURL)
+	if baseURL == "" {
+		baseURL = os.Getenv("OPENAI_BASE_URL")
+	}
 
 	llm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL: baseURL,
@@ -155,10 +165,22 @@ type AliRAGModel struct {
 }
 
 func NewAliRAGModel(ctx context.Context, userID int64) (*AliRAGModel, error) {
-	key := os.Getenv("OPENAI_API_KEY")
 	conf := config.GetConfig()
+	key := strings.TrimSpace(conf.RagModelConfig.RagChatAPIKey)
+	if key == "" {
+		key = strings.TrimSpace(conf.OpenAIConfig.APIKey)
+	}
+	if key == "" {
+		key = os.Getenv("OPENAI_API_KEY")
+	}
 	modelName := conf.RagModelConfig.RagChatModelName
-	baseURL := conf.RagModelConfig.RagBaseUrl
+	baseURL := strings.TrimSpace(conf.RagModelConfig.RagChatBaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(conf.RagModelConfig.RagBaseUrl)
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(conf.OpenAIConfig.BaseURL)
+	}
 
 	llm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL: baseURL,
@@ -340,10 +362,22 @@ type MCPModel struct {
 
 // NewMCPModel 创建MCP模型实例
 func NewMCPModel(ctx context.Context, username string) (*MCPModel, error) {
-	key := os.Getenv("OPENAI_API_KEY")
 	conf := config.GetConfig()
-	modelName := conf.RagModelConfig.RagChatModelName
-	baseURL := conf.RagModelConfig.RagBaseUrl
+	key := strings.TrimSpace(conf.OpenAIConfig.APIKey)
+	if key == "" {
+		key = os.Getenv("OPENAI_API_KEY")
+	}
+	modelName := strings.TrimSpace(conf.OpenAIConfig.ModelName)
+	if modelName == "" {
+		modelName = conf.RagModelConfig.RagChatModelName
+	}
+	baseURL := strings.TrimSpace(conf.OpenAIConfig.BaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(conf.RagModelConfig.RagChatBaseURL)
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(conf.RagModelConfig.RagBaseUrl)
+	}
 
 	// 创建LLM
 	llm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{

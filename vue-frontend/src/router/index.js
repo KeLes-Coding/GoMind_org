@@ -4,6 +4,7 @@ import Register from '../views/Register.vue'
 import Menu from '../views/Menu.vue'
 import AIChat from '../views/AIChat.vue'
 import ImageRecognition from '../views/ImageRecognition.vue'
+import { hasSession } from '../utils/token'
 
 const routes = [
   {
@@ -46,12 +47,11 @@ const router = createRouter({
 })
 
 router.beforeEach((to, from, next) => {
-  const token = localStorage.getItem('token')
-  if (to.matched.some(record => record.meta.requiresAuth) && !token) {
+  if (to.matched.some(record => record.meta.requiresAuth) && !hasSession()) {
     next('/login')
-  } else {
-    next()
+    return
   }
+  next()
 })
 
 export default router

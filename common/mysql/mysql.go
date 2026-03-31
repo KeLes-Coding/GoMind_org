@@ -64,12 +64,18 @@ func migration() error {
 		new(model.EmailCaptcha),
 		new(model.Session),
 		new(model.Message),
-		new(model.FileAsset), // 文件资产表
+		new(model.FileAsset),
 	)
 }
 
 func InsertUser(user *model.User) (*model.User, error) {
 	err := DB.Create(&user).Error
+	return user, err
+}
+
+func GetUserByID(id int64) (*model.User, error) {
+	user := new(model.User)
+	err := DB.Where("id = ?", id).First(user).Error
 	return user, err
 }
 
@@ -81,12 +87,14 @@ func GetUserByUsername(username string) (*model.User, error) {
 
 func GetUserByEmail(email string) (*model.User, error) {
 	user := new(model.User)
-	// 注册链路需要按邮箱查重，保持查询方式和用户名查询一致。
 	err := DB.Where("email = ?", email).First(user).Error
 	return user, err
 }
 
-// UpdateUserPasswordByID 用于密码哈希算法升级时回写新的密码哈希。
 func UpdateUserPasswordByID(id int64, password string) error {
 	return DB.Model(&model.User{}).Where("id = ?", id).Update("password", password).Error
+}
+
+func IncrementUserTokenVersion(id int64) error {
+	return DB.Model(&model.User{}).Where("id = ?", id).Update("token_version", gorm.Expr("token_version + 1")).Error
 }

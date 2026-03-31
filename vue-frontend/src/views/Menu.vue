@@ -2,7 +2,7 @@
   <div class="menu-container">
     <el-header class="header">
       <h1>AI应用平台</h1>
-      <el-button type="danger" @click="handleLogout">退出登录</el-button>
+      <el-button type="danger" @click="handleLogout">退出登�?/el-button>
     </el-header>
     <el-main class="main">
       <div class="menu-grid">
@@ -29,6 +29,8 @@
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ChatDotRound, Camera } from '@element-plus/icons-vue'
+import api from '../utils/api'
+import { clearTokens } from '../utils/token'
 
 export default {
   name: 'MenuView',
@@ -41,13 +43,14 @@ export default {
 
     const handleLogout = async () => {
       try {
-        await ElMessageBox.confirm('确定要退出登录吗？', '提示', {
+        await ElMessageBox.confirm('确定要退出登录吗�?, '提示', {
           confirmButtonText: '确定',
           cancelButtonText: '取消',
           type: 'warning'
         })
-        localStorage.removeItem('token')
-        ElMessage.success('退出登录成功')
+        await api.post('/user/logout')
+        clearTokens()
+        ElMessage.success('退出登录成�?)
         router.push('/login')
       } catch {
         // 用户取消操作

@@ -121,12 +121,26 @@ func NewRAGIndexerWithPermission(filename, embeddingModel string, ownerID int64,
 // 3. 创建一个可以把文本块写入向量库的 indexer。
 func NewRAGIndexer(filename, embeddingModel string) (*RAGIndexer, error) {
 	ctx := context.Background()
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	dimension := config.GetConfig().RagModelConfig.RagDimension
+	cfg := config.GetConfig()
+	apiKey := strings.TrimSpace(cfg.RagModelConfig.RagEmbeddingAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(cfg.OpenAIConfig.APIKey)
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+	baseURL := strings.TrimSpace(cfg.RagModelConfig.RagEmbeddingBaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(cfg.RagModelConfig.RagBaseUrl)
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(cfg.OpenAIConfig.BaseURL)
+	}
+	dimension := cfg.RagModelConfig.RagDimension
 
 	// embedding 模型负责把自然语言文本转换成向量表示。
 	embedConfig := &embeddingArk.EmbeddingConfig{
-		BaseURL: config.GetConfig().RagModelConfig.RagBaseUrl,
+		BaseURL: baseURL,
 		APIKey:  apiKey,
 		Model:   embeddingModel,
 	}
@@ -246,10 +260,23 @@ func DeleteIndex(ctx context.Context, filename string) error {
 // 而查询器内部则负责决定应该从哪些 ready 文件里检索。
 func NewRAGQuery(ctx context.Context, userID int64) (*RAGQuery, error) {
 	cfg := config.GetConfig()
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	apiKey := strings.TrimSpace(cfg.RagModelConfig.RagEmbeddingAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(cfg.OpenAIConfig.APIKey)
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+	baseURL := strings.TrimSpace(cfg.RagModelConfig.RagEmbeddingBaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(cfg.RagModelConfig.RagBaseUrl)
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(cfg.OpenAIConfig.BaseURL)
+	}
 
 	embedConfig := &embeddingArk.EmbeddingConfig{
-		BaseURL: cfg.RagModelConfig.RagBaseUrl,
+		BaseURL: baseURL,
 		APIKey:  apiKey,
 		Model:   cfg.RagModelConfig.RagEmbeddingModel,
 	}

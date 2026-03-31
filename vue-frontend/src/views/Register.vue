@@ -15,11 +15,11 @@
         <el-form-item label="邮箱" prop="email">
           <el-input
             v-model="registerForm.email"
-            placeholder="请输入邮箱"
+            placeholder="请输入邮�?
             type="email"
           />
         </el-form-item>
-        <el-form-item label="验证码" prop="captcha">
+        <el-form-item label="验证�? prop="captcha">
           <el-row :gutter="10">
             <el-col :span="16">
               <el-input
@@ -43,7 +43,7 @@
         <el-form-item label="密码" prop="password">
           <el-input
             v-model="registerForm.password"
-            placeholder="请输入密码"
+            placeholder="请输入密�?
             type="password"
             show-password
           />
@@ -51,7 +51,7 @@
         <el-form-item label="确认密码" prop="confirmPassword">
           <el-input
             v-model="registerForm.confirmPassword"
-            placeholder="请再次输入密码"
+            placeholder="请再次输入密�?
             type="password"
             show-password
           />
@@ -85,6 +85,7 @@ import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../utils/api'
+import { saveTokens } from '../utils/token'
 
 export default {
   name: 'RegisterView',
@@ -104,7 +105,7 @@ export default {
 
     const validateConfirmPassword = (rule, value, callback) => {
       if (value !== registerForm.password) {
-        callback(new Error('两次输入密码不一致'))
+        callback(new Error('两次输入密码不一�?))
       } else {
         callback()
       }
@@ -112,18 +113,18 @@ export default {
 
     const registerRules = {
       email: [
-        { required: true, message: '请输入邮箱', trigger: 'blur' },
+        { required: true, message: '请输入邮�?, trigger: 'blur' },
         { type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' }
       ],
       captcha: [
         { required: true, message: '请输入验证码', trigger: 'blur' }
       ],
       password: [
-        { required: true, message: '请输入密码', trigger: 'blur' },
-        { min: 6, message: '密码长度不能少于6位', trigger: 'blur' }
+        { required: true, message: '请输入密�?, trigger: 'blur' },
+        { min: 6, message: '密码长度不能少于6�?, trigger: 'blur' }
       ],
       confirmPassword: [
-        { required: true, message: '请确认密码', trigger: 'blur' },
+        { required: true, message: '请确认密�?, trigger: 'blur' },
         { validator: validateConfirmPassword, trigger: 'blur' }
       ]
     }
@@ -137,7 +138,7 @@ export default {
         codeLoading.value = true
         const response = await api.post('/user/captcha', { email: registerForm.email })
         if (response.data.status_code === 1000) {
-          ElMessage.success('验证码发送成功')
+          ElMessage.success('验证码发送成�?)
           countdown.value = 60
           const timer = setInterval(() => {
             countdown.value--
@@ -146,11 +147,11 @@ export default {
             }
           }, 1000)
         } else {
-          ElMessage.error(response.data.status_msg || '验证码发送失败')
+          ElMessage.error(response.data.status_msg || '验证码发送失�?)
         }
       } catch (error) {
         console.error('Send code error:', error)
-        ElMessage.error('验证码发送失败，请重试')
+        ElMessage.error('验证码发送失败，请重�?)
       } finally {
         codeLoading.value = false
       }
@@ -166,8 +167,9 @@ export default {
               password: registerForm.password
         })
         if (response.data.status_code === 1000) {
-          ElMessage.success('注册成功，请登录')
-          router.push('/login')
+          saveTokens(response.data)
+          ElMessage.success('ע��ɹ�')
+          router.push('/menu')
         } else {
           ElMessage.error(response.data.status_msg || '注册失败')
         }

@@ -1,9 +1,9 @@
-ï»¿<template>
+<template>
   <div class="ai-chat-container">
     <aside class="session-list">
       <div class="session-list-header">
-        <span>ä¼šè¯åˆ—è¡¨</span>
-        <button class="new-chat-btn" @click="createNewSession">+ æ–°èŠå¤©</button>
+        <span>»á»°ÁĞ±í</span>
+        <button class="new-chat-btn" @click="createNewSession">+ ĞÂÁÄÌì</button>
       </div>
       <ul class="session-list-ul">
         <li
@@ -12,30 +12,30 @@
           :class="['session-item', { active: currentSessionId === session.id }]"
           @click="switchSession(session.id)"
         >
-          {{ session.name || `ä¼šè¯ ${session.id}` }}
+          {{ session.name || `»á»° ${session.id}` }}
         </li>
       </ul>
     </aside>
 
     <section class="chat-section">
       <div class="top-bar">
-        <button class="back-btn" @click="$router.push('/menu')">è¿”å›</button>
-        <button class="sync-btn" @click="syncHistory" :disabled="!currentSessionId || tempSession || loading">åŒæ­¥å†å²</button>
-        <button class="stop-btn" @click="stopCurrentStream" :disabled="!loading || !isStreaming">åœæ­¢ç”Ÿæˆ</button>
+        <button class="back-btn" @click="$router.push('/menu')">·µ»Ø</button>
+        <button class="sync-btn" @click="syncHistory" :disabled="!currentSessionId || tempSession || loading">Í¬²½ÀúÊ·</button>
+        <button class="stop-btn" @click="stopCurrentStream" :disabled="!loading || !isStreaming">Í£Ö¹Éú³É</button>
 
-        <label for="modelType">é€‰æ‹©æ¨¡å‹ï¼š</label>
+        <label for="modelType">Ñ¡ÔñÄ£ĞÍ£º</label>
         <select id="modelType" v-model="selectedModel" class="model-select" :disabled="loading">
-          <option value="1">é˜¿é‡Œç™¾ç‚¼</option>
-          <option value="2">é˜¿é‡Œç™¾ç‚¼ RAG</option>
-          <option value="3">é˜¿é‡Œç™¾ç‚¼ MCP</option>
+          <option value="1">°¢Àï°ÙÁ¶</option>
+          <option value="2">°¢Àï°ÙÁ¶ RAG</option>
+          <option value="3">°¢Àï°ÙÁ¶ MCP</option>
         </select>
 
         <label class="streaming-mode" for="streamingMode">
           <input id="streamingMode" v-model="isStreaming" type="checkbox" :disabled="loading" />
-          æµå¼å“åº”
+          Á÷Ê½ÏìÓ¦
         </label>
 
-        <button class="upload-btn" @click="triggerFileUpload" :disabled="uploading || loading">ä¸Šä¼ æ–‡æ¡£(.md/.txt)</button>
+        <button class="upload-btn" @click="triggerFileUpload" :disabled="uploading || loading">ÉÏ´«ÎÄµµ(.md/.txt)</button>
         <input
           ref="fileInput"
           type="file"
@@ -52,13 +52,13 @@
           :class="['message', message.role === 'user' ? 'user-message' : 'ai-message']"
         >
           <div class="message-header">
-            <b>{{ message.role === 'user' ? 'ä½ ' : 'AI' }}:</b>
+            <b>{{ message.role === 'user' ? 'Äã' : 'AI' }}:</b>
             <button
               v-if="message.role === 'assistant' && message.content"
               class="tts-btn"
               @click="playTTS(message.content)"
             >
-              è¯­éŸ³
+              ÓïÒô
             </button>
             <span v-if="message.meta?.status" :class="['message-status', `status-${message.meta.status}`]">
               {{ getMessageStatusLabel(message.meta.status) }}
@@ -71,7 +71,7 @@
       <div class="chat-input">
         <textarea
           v-model="inputMessage"
-          placeholder="è¯·è¾“å…¥ä½ çš„é—®é¢˜..."
+          placeholder="ÇëÊäÈëÄãµÄÎÊÌâ..."
           @keydown.enter.exact.prevent="sendMessage"
           :disabled="loading"
           ref="messageInput"
@@ -83,7 +83,7 @@
           @click="sendMessage"
           class="send-btn"
         >
-          {{ loading ? 'å‘é€ä¸­...' : 'å‘é€' }}
+          {{ loading ? '·¢ËÍÖĞ...' : '·¢ËÍ' }}
         </button>
       </div>
     </section>
@@ -93,7 +93,8 @@
 <script>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import api from '../utils/api'
+import api, { refreshClient } from '../utils/api'
+import { ensureAccessToken } from '../utils/token'
 
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'timeout', 'failed', 'partial'])
 
@@ -113,17 +114,17 @@ export default {
     const uploading = ref(false)
     const fileInput = ref(null)
 
-    // activeAbortController ç”¨äºå‰ç«¯ä¸»åŠ¨ä¸­æ–­å½“å‰ fetch æµã€‚
-    // ä¹‹æ‰€ä»¥ä¿ç•™åœ¨ç»„ä»¶çº§ï¼Œè€Œä¸æ˜¯å‡½æ•°å±€éƒ¨å˜é‡ï¼Œæ˜¯å› ä¸º Stop æŒ‰é’®éœ€è¦è·¨å‡½æ•°è®¿é—®åŒä¸€ä¸ª controllerã€‚
+    // activeAbortController ÓÃÓÚÇ°¶ËÖ÷¶¯ÖĞ¶Ïµ±Ç° fetch Á÷¡£
+    // Ö®ËùÒÔ±£ÁôÔÚ×é¼ş¼¶£¬¶ø²»ÊÇº¯Êı¾Ö²¿±äÁ¿£¬ÊÇÒòÎª Stop °´Å¥ĞèÒª¿çº¯Êı·ÃÎÊÍ¬Ò»¸ö controller¡£
     const activeAbortController = ref(null)
-    // activeStreamingSessionId è®°å½•å½“å‰æµå¼è¯·æ±‚å¯¹åº”çš„ä¼šè¯ IDã€‚
-    // æ–°ä¼šè¯åœºæ™¯ä¸‹ï¼Œä¸€å¼€å§‹è¿˜æ˜¯ tempï¼Œä¼šåœ¨æœåŠ¡ç«¯ä¸‹å‘ sessionId åå†å›å¡«æˆçœŸå® IDã€‚
+    // activeStreamingSessionId ¼ÇÂ¼µ±Ç°Á÷Ê½ÇëÇó¶ÔÓ¦µÄ»á»° ID¡£
+    // ĞÂ»á»°³¡¾°ÏÂ£¬Ò»¿ªÊ¼»¹ÊÇ temp£¬»áÔÚ·şÎñ¶ËÏÂ·¢ sessionId ºóÔÙ»ØÌî³ÉÕæÊµ ID¡£
     const activeStreamingSessionId = ref(null)
-    // activeAssistantIndex æŒ‡å‘å½“å‰æ­£åœ¨ç”Ÿæˆçš„ assistant æ¶ˆæ¯ã€‚
-    // è¿™æ · stop / timeout / error åœºæ™¯éƒ½èƒ½å‡†ç¡®æ›´æ–°æ­£ç¡®é‚£ä¸€æ¡æ¶ˆæ¯çš„çŠ¶æ€ï¼Œè€Œä¸æ˜¯æ¨¡ç³Šä¿®æ”¹æœ€åä¸€æ¡ã€‚
+    // activeAssistantIndex Ö¸Ïòµ±Ç°ÕıÔÚÉú³ÉµÄ assistant ÏûÏ¢¡£
+    // ÕâÑù stop / timeout / error ³¡¾°¶¼ÄÜ×¼È·¸üĞÂÕıÈ·ÄÇÒ»ÌõÏûÏ¢µÄ×´Ì¬£¬¶ø²»ÊÇÄ£ºıĞŞ¸Ä×îºóÒ»Ìõ¡£
     const activeAssistantIndex = ref(-1)
-    // manualStopRequested ç”¨äºåŒºåˆ†â€œç”¨æˆ·ä¸»åŠ¨åœæ­¢â€å’Œâ€œç½‘ç»œ/æ¨¡å‹å¼‚å¸¸â€ã€‚
-    // å¦‚æœåªæ˜¯çœ‹ fetch æŠ›å‡ºæ¥çš„ AbortErrorï¼Œå‰ç«¯æ— æ³•çŸ¥é“è¿™æ˜¯ç”¨æˆ·ç‚¹å‡» Stopï¼Œè¿˜æ˜¯å…¶ä»–åœ°æ–¹è§¦å‘äº† abortã€‚
+    // manualStopRequested ÓÃÓÚÇø·Ö¡°ÓÃ»§Ö÷¶¯Í£Ö¹¡±ºÍ¡°ÍøÂç/Ä£ĞÍÒì³£¡±¡£
+    // Èç¹ûÖ»ÊÇ¿´ fetch Å×³öÀ´µÄ AbortError£¬Ç°¶ËÎŞ·¨ÖªµÀÕâÊÇÓÃ»§µã»÷ Stop£¬»¹ÊÇÆäËûµØ·½´¥·¢ÁË abort¡£
     const manualStopRequested = ref(false)
 
     const renderMarkdown = (text) => {
@@ -135,8 +136,8 @@ export default {
         .replace(/\n/g, '<br>')
     }
 
-    // normalizeMessageStatus ç»Ÿä¸€å…¼å®¹åç«¯è¿”å›å’Œå‰ç«¯è¿è¡Œæ—¶çš„å„ç§çŠ¶æ€å€¼ã€‚
-    // è€æ•°æ®æ²¡æœ‰ status æ—¶ï¼Œé»˜è®¤è§†ä¸º completedï¼Œé¿å…å†å²æ¶ˆæ¯å…¨éƒ¨æ˜¾ç¤ºæˆæœªçŸ¥çŠ¶æ€ã€‚
+    // normalizeMessageStatus Í³Ò»¼æÈİºó¶Ë·µ»ØºÍÇ°¶ËÔËĞĞÊ±µÄ¸÷ÖÖ×´Ì¬Öµ¡£
+    // ÀÏÊı¾İÃ»ÓĞ status Ê±£¬Ä¬ÈÏÊÓÎª completed£¬±ÜÃâÀúÊ·ÏûÏ¢È«²¿ÏÔÊ¾³ÉÎ´Öª×´Ì¬¡£
     const normalizeMessageStatus = (status) => {
       if (!status) return 'completed'
       const normalized = String(status).toLowerCase()
@@ -154,17 +155,17 @@ export default {
     const getMessageStatusLabel = (status) => {
       switch (normalizeMessageStatus(status)) {
       case 'streaming':
-        return 'ç”Ÿæˆä¸­'
+        return 'Éú³ÉÖĞ'
       case 'cancelled':
-        return 'å·²åœæ­¢'
+        return 'ÒÑÍ£Ö¹'
       case 'timeout':
-        return 'å·²è¶…æ—¶'
+        return 'ÒÑ³¬Ê±'
       case 'failed':
-        return 'å¤±è´¥'
+        return 'Ê§°Ü'
       case 'partial':
-        return 'éƒ¨åˆ†ç»“æœ'
+        return '²¿·Ö½á¹û'
       default:
-        return 'å·²å®Œæˆ'
+        return 'ÒÑÍê³É'
       }
     }
 
@@ -237,10 +238,10 @@ export default {
                   await new Promise(resolve => setTimeout(resolve, pollInterval))
                   return pollResult()
                 }
-                ElMessage.error('è¯­éŸ³åˆæˆè¶…æ—¶')
+                ElMessage.error('ÓïÒôºÏ³É³¬Ê±')
                 return true
               }
-              ElMessage.error('è¯­éŸ³åˆæˆå¤±è´¥')
+              ElMessage.error('ÓïÒôºÏ³ÉÊ§°Ü')
               return true
             }
 
@@ -249,17 +250,17 @@ export default {
               await new Promise(resolve => setTimeout(resolve, pollInterval))
               return pollResult()
             }
-            ElMessage.error('è¯­éŸ³åˆæˆè¶…æ—¶')
+            ElMessage.error('ÓïÒôºÏ³É³¬Ê±')
             return true
           }
 
           await pollResult()
         } else {
-          ElMessage.error('æ— æ³•åˆ›å»ºè¯­éŸ³åˆæˆä»»åŠ¡')
+          ElMessage.error('ÎŞ·¨´´½¨ÓïÒôºÏ³ÉÈÎÎñ')
         }
       } catch (error) {
         console.error('TTS error:', error)
-        ElMessage.error('è¯·æ±‚è¯­éŸ³æ¥å£å¤±è´¥')
+        ElMessage.error('ÇëÇóÓïÒô½Ó¿ÚÊ§°Ü')
       }
     }
 
@@ -272,7 +273,7 @@ export default {
             const sid = String(sessionItem.sessionId)
             sessionMap[sid] = {
               id: sid,
-              name: sessionItem.name || `ä¼šè¯ ${sid}`,
+              name: sessionItem.name || `»á»° ${sid}`,
               messages: []
             }
           })
@@ -289,7 +290,7 @@ export default {
         sessions.value[sessionId].messages = response.data.history.map(mapHistoryItemToMessage)
         return
       }
-      throw new Error(response.data?.status_msg || 'æ— æ³•åŠ è½½ä¼šè¯å†å²')
+      throw new Error(response.data?.status_msg || 'ÎŞ·¨¼ÓÔØ»á»°ÀúÊ·')
     }
 
     const createNewSession = () => {
@@ -315,13 +316,13 @@ export default {
         scrollToBottom()
       } catch (error) {
         console.error('Load history error:', error)
-        ElMessage.error('åŠ è½½å†å²å¤±è´¥')
+        ElMessage.error('¼ÓÔØÀúÊ·Ê§°Ü')
       }
     }
 
     const syncHistory = async () => {
       if (!currentSessionId.value || tempSession.value) {
-        ElMessage.warning('è¯·é€‰æ‹©å·²æœ‰ä¼šè¯è¿›è¡ŒåŒæ­¥')
+        ElMessage.warning('ÇëÑ¡ÔñÒÑÓĞ»á»°½øĞĞÍ¬²½')
         return
       }
       try {
@@ -331,7 +332,7 @@ export default {
         scrollToBottom()
       } catch (error) {
         console.error('Sync history error:', error)
-        ElMessage.error('è¯·æ±‚å†å²æ•°æ®å¤±è´¥')
+        ElMessage.error('ÇëÇóÀúÊ·Êı¾İÊ§°Ü')
       }
     }
 
@@ -347,7 +348,7 @@ export default {
         if (targetSessionId) {
           const response = await api.post('/AI/chat/stop', { sessionId: targetSessionId })
           if (response.data?.status_code !== 1000 && response.data?.status_code !== 2012) {
-            throw new Error(response.data?.status_msg || 'åœæ­¢å¤±è´¥')
+            throw new Error(response.data?.status_msg || 'Í£Ö¹Ê§°Ü')
           }
         }
       } catch (error) {
@@ -358,13 +359,13 @@ export default {
         }
         loading.value = false
         await setAssistantStatus('cancelled')
-        ElMessage.success('å·²åœæ­¢å½“å‰ç”Ÿæˆ')
+        ElMessage.success('ÒÑÍ£Ö¹µ±Ç°Éú³É')
       }
     }
 
     const sendMessage = async () => {
       if (!inputMessage.value || !inputMessage.value.trim()) {
-        ElMessage.warning('è¯·è¾“å…¥æ¶ˆæ¯å†…å®¹')
+        ElMessage.warning('ÇëÊäÈëÏûÏ¢ÄÚÈİ')
         return
       }
 
@@ -388,7 +389,7 @@ export default {
         }
       } catch (error) {
         console.error('Send message error:', error)
-        ElMessage.error(error.message || 'å‘é€å¤±è´¥ï¼Œè¯·é‡è¯•')
+        ElMessage.error(error.message || '·¢ËÍÊ§°Ü£¬ÇëÖØÊÔ')
 
         if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]?.messages?.length) {
           sessions.value[currentSessionId.value].messages.pop()
@@ -415,9 +416,10 @@ export default {
       await syncSessionMessagesFromCurrent()
 
       const url = tempSession.value ? '/api/AI/chat/send-stream-new-session' : '/api/AI/chat/send-stream'
+      const accessToken = await ensureAccessToken(refreshClient)
       const headers = {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+        Authorization: `Bearer ${accessToken}`
       }
       const body = tempSession.value
         ? { question, modelType: selectedModel.value }
@@ -439,7 +441,7 @@ export default {
         })
 
         if (!response.ok || !response.body) {
-          throw new Error('ç½‘ç»œè¯·æ±‚å¤±è´¥')
+          throw new Error('ÍøÂçÇëÇóÊ§°Ü')
         }
 
         const reader = response.body.getReader()
@@ -475,7 +477,7 @@ export default {
                   if (tempSession.value) {
                     sessions.value[newSid] = {
                       id: newSid,
-                      name: 'æ–°ä¼šè¯',
+                      name: 'ĞÂ»á»°',
                       messages: [...currentMessages.value]
                     }
                     currentSessionId.value = newSid
@@ -484,7 +486,7 @@ export default {
                   continue
                 }
                 if (parsed.type === 'error') {
-                  const error = new Error(parsed.message || 'æµå¼å‘é€å¤±è´¥')
+                  const error = new Error(parsed.message || 'Á÷Ê½·¢ËÍÊ§°Ü')
                   error.serverCode = parsed.status_code
                   throw error
                 }
@@ -511,10 +513,10 @@ export default {
           await setAssistantStatus('cancelled')
         } else if (error.serverCode === 4002) {
           await setAssistantStatus('timeout')
-          ElMessage.error(error.message || 'è¯·æ±‚è¶…æ—¶')
+          ElMessage.error(error.message || 'ÇëÇó³¬Ê±')
         } else {
           await setAssistantStatus('failed')
-          ElMessage.error(error.message || 'æµå¼ä¼ è¾“å‡ºé”™')
+          ElMessage.error(error.message || 'Á÷Ê½´«Êä³ö´í')
         }
       } finally {
         clearActiveStreamState()
@@ -537,14 +539,14 @@ export default {
 
           sessions.value[sessionId] = {
             id: sessionId,
-            name: 'æ–°ä¼šè¯',
+            name: 'ĞÂ»á»°',
             messages: [{ role: 'user', content: question, meta: buildMessageMeta('completed') }, aiMessage]
           }
           currentSessionId.value = sessionId
           tempSession.value = false
           currentMessages.value = [...sessions.value[sessionId].messages]
         } else {
-          throw new Error(response.data?.status_msg || 'å‘é€å¤±è´¥')
+          throw new Error(response.data?.status_msg || '·¢ËÍÊ§°Ü')
         }
       } else {
         const sessionMsgs = sessions.value[currentSessionId.value].messages || []
@@ -565,7 +567,7 @@ export default {
           currentMessages.value = [...sessionMsgs]
         } else {
           sessionMsgs.pop()
-          throw new Error(response.data?.status_msg || 'å‘é€å¤±è´¥')
+          throw new Error(response.data?.status_msg || '·¢ËÍÊ§°Ü')
         }
       }
     }
@@ -582,7 +584,7 @@ export default {
 
       const fileName = file.name.toLowerCase()
       if (!fileName.endsWith('.md') && !fileName.endsWith('.txt')) {
-        ElMessage.error('åªå…è®¸ä¸Šä¼  .md æˆ– .txt æ–‡ä»¶')
+        ElMessage.error('Ö»ÔÊĞíÉÏ´« .md »ò .txt ÎÄ¼ş')
         if (fileInput.value) {
           fileInput.value.value = ''
         }
@@ -601,13 +603,13 @@ export default {
         })
 
         if (response.data && response.data.status_code === 1000) {
-          ElMessage.success('æ–‡ä»¶ä¸Šä¼ æˆåŠŸ')
+          ElMessage.success('ÎÄ¼şÉÏ´«³É¹¦')
         } else {
-          ElMessage.error(response.data?.status_msg || 'ä¸Šä¼ å¤±è´¥')
+          ElMessage.error(response.data?.status_msg || 'ÉÏ´«Ê§°Ü')
         }
       } catch (error) {
         console.error('File upload error:', error)
-        ElMessage.error('æ–‡ä»¶ä¸Šä¼ å¤±è´¥')
+        ElMessage.error('ÎÄ¼şÉÏ´«Ê§°Ü')
       } finally {
         uploading.value = false
         if (fileInput.value) {
@@ -872,3 +874,5 @@ export default {
   cursor: not-allowed;
 }
 </style>
+
+
