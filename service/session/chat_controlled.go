@@ -5,6 +5,7 @@ import (
 	"GopherAI/common/observability"
 	"GopherAI/model"
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
@@ -99,7 +100,16 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 			// 这样即使写给前端时发生网络错误，当前这段内容也能留在 registry 中，供后续 partial 回写使用。
 			activeTask.appendChunk(msg)
 
-			if _, err := writer.Write([]byte("data: " + msg + "\n\n")); err != nil {
+			payload, err := json.Marshal(map[string]string{
+				"type":  "chunk",
+				"delta": msg,
+			})
+			if err != nil {
+				cancel()
+				return
+			}
+
+			if _, err = writer.Write([]byte("data: " + string(payload) + "\n\n")); err != nil {
 				log.Println("StreamMessageToExistingSessionWithControl Write error:", err)
 				// 写前端失败大多意味着连接已经不可用。
 				// 这里主动 cancel，确保底层模型流及时停掉，而不是继续白白生成 token。

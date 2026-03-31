@@ -20,9 +20,11 @@ type (
 		Token        string `json:"token,omitempty"`
 		AccessToken  string `json:"access_token,omitempty"`
 		RefreshToken string `json:"refresh_token,omitempty"`
+		Username     string `json:"username,omitempty"`
 	}
 
 	RegisterRequest struct {
+		Username string `json:"username" binding:"required"`
 		Email    string `json:"email" binding:"required,email"`
 		Captcha  string `json:"captcha" binding:"required,len=6"`
 		Password string `json:"password" binding:"required,min=6"`
@@ -67,7 +69,7 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	pair, code_ := userService.Register(req.Email, req.Password, req.Captcha)
+	pair, code_ := userService.Register(req.Username, req.Email, req.Password, req.Captcha)
 	if code_ != code.CodeSuccess {
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
@@ -130,4 +132,5 @@ func fillTokenResponse(res *TokenResponse, pair *userService.TokenPair) {
 	res.Token = pair.AccessToken
 	res.AccessToken = pair.AccessToken
 	res.RefreshToken = pair.RefreshToken
+	res.Username = pair.Username
 }

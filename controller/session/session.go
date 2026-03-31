@@ -8,6 +8,7 @@ import (
 	"GopherAI/model"
 	"GopherAI/service/session"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -90,6 +91,16 @@ func writeSSEError(c *gin.Context, code_ code.Code) {
 	c.Writer.Flush()
 }
 
+func writeSSEJSON(c *gin.Context, payload map[string]interface{}) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		writeSSEError(c, code.CodeServerBusy)
+		return
+	}
+	_, _ = c.Writer.WriteString("data: " + string(data) + "\n\n")
+	c.Writer.Flush()
+}
+
 func GetUserSessionsByUserName(c *gin.Context) {
 	res := new(GetUserSessionsResponse)
 	userName := c.GetString("userName")
@@ -152,6 +163,7 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("Access-Control-Allow-Origin", "*")
 	c.Header("X-Accel-Buffering", "no")
+	c.Header("Cache-Control", "no-cache, no-transform")
 
 	ctx, cancel := buildChatTimeoutContext(c, streamChatTimeout)
 	defer cancel()
@@ -162,8 +174,13 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 		return
 	}
 
-	_, _ = c.Writer.WriteString(fmt.Sprintf("data: {\"sessionId\": \"%s\"}\n\n", sessionID))
-	c.Writer.Flush()
+	writeSSEJSON(c, map[string]interface{}{
+		"type":      "session",
+		"sessionId": sessionID,
+	})
+	writeSSEJSON(c, map[string]interface{}{
+		"type": "ready",
+	})
 
 	code_ = session.ChatStreamSendWithControl(ctx, userName, sessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
 	if code_ != code.CodeSuccess {
@@ -216,9 +233,14 @@ func ChatStreamSend(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("Access-Control-Allow-Origin", "*")
 	c.Header("X-Accel-Buffering", "no")
+	c.Header("Cache-Control", "no-cache, no-transform")
 
 	ctx, cancel := buildChatTimeoutContext(c, streamChatTimeout)
 	defer cancel()
+
+	writeSSEJSON(c, map[string]interface{}{
+		"type": "ready",
+	})
 
 	code_ := session.ChatStreamSendWithControl(ctx, userName, req.SessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
 	if code_ != code.CodeSuccess {

@@ -2,6 +2,7 @@ package user
 
 import (
 	"log"
+	"regexp"
 	"time"
 
 	"GopherAI/common/code"
@@ -9,25 +10,32 @@ import (
 	myredis "GopherAI/common/redis"
 	captchaDAO "GopherAI/dao/captcha"
 	userDAO "GopherAI/dao/user"
-	"GopherAI/model"
 	"GopherAI/utils"
 	"GopherAI/utils/myjwt"
 )
 
 const (
-	maxUsernameRetry      = 5
 	captchaExpireDuration = 2 * time.Minute
 )
+
+var usernamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{3,19}$`)
 
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
+	Username     string
 }
 
-func Login(username, password string) (*TokenPair, code.Code) {
-	userInformation, err := userDAO.GetByUsername(username)
+func Login(identifier, password string) (*TokenPair, code.Code) {
+	userInformation, err := userDAO.GetByUsername(identifier)
 	if err != nil {
 		return nil, code.CodeServerBusy
+	}
+	if userInformation == nil {
+		userInformation, err = userDAO.GetByEmail(identifier)
+		if err != nil {
+			return nil, code.CodeServerBusy
+		}
 	}
 	if userInformation == nil {
 		return nil, code.CodeUserNotExist
@@ -48,11 +56,27 @@ func Login(username, password string) (*TokenPair, code.Code) {
 	if err != nil {
 		return nil, code.CodeServerBusy
 	}
-	return &TokenPair{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken}, code.CodeSuccess
+	return &TokenPair{
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		Username:     userInformation.Username,
+	}, code.CodeSuccess
 }
 
-func Register(email, password, captcha string) (*TokenPair, code.Code) {
+func Register(username, email, password, captcha string) (*TokenPair, code.Code) {
+	if !isValidUsername(username) {
+		return nil, code.CodeInvalidUsername
+	}
+
 	existingUser, err := userDAO.GetByEmail(email)
+	if err != nil {
+		return nil, code.CodeServerBusy
+	}
+	if existingUser != nil {
+		return nil, code.CodeUserExist
+	}
+
+	existingUser, err = userDAO.GetByUsername(username)
 	if err != nil {
 		return nil, code.CodeServerBusy
 	}
@@ -73,26 +97,19 @@ func Register(email, password, captcha string) (*TokenPair, code.Code) {
 		return nil, code.CodeServerBusy
 	}
 
-	var userInformation *model.User
-	for i := 0; i < maxUsernameRetry; i++ {
-		username := utils.GetRandomNumbers(11)
-		userInformation, err = userDAO.CreateUser(username, email, passwordHash)
-		if err == nil {
-			if mailErr := myemail.SendCaptcha(email, username, userDAO.UserNameMsg); mailErr != nil {
-				log.Printf("[register] user created but failed to send username email, email=%s username=%s err=%v", email, username, mailErr)
-			}
-			break
+	userInformation, err := userDAO.CreateUser(username, email, passwordHash)
+	if err != nil {
+		if err == userDAO.ErrDuplicateUsername {
+			return nil, code.CodeUserExist
 		}
-		if err != userDAO.ErrDuplicateUsername {
-			return nil, code.CodeServerBusy
-		}
-	}
-
-	if userInformation == nil {
 		return nil, code.CodeServerBusy
 	}
 
-	if err := consumeCaptcha(email); err != nil {
+	if mailErr := myemail.SendCaptcha(email, username, userDAO.UserNameMsg); mailErr != nil {
+		log.Printf("[register] user created but failed to send username email, email=%s username=%s err=%v", email, username, mailErr)
+	}
+
+	if err = consumeCaptcha(email); err != nil {
 		log.Printf("[register] user created but failed to consume captcha, email=%s err=%v", email, err)
 		return nil, code.CodeServerBusy
 	}
@@ -102,7 +119,15 @@ func Register(email, password, captcha string) (*TokenPair, code.Code) {
 		return nil, code.CodeServerBusy
 	}
 
-	return &TokenPair{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken}, code.CodeSuccess
+	return &TokenPair{
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		Username:     userInformation.Username,
+	}, code.CodeSuccess
+}
+
+func isValidUsername(username string) bool {
+	return usernamePattern.MatchString(username)
 }
 
 func RefreshToken(refreshToken string) (*TokenPair, code.Code) {
@@ -126,7 +151,11 @@ func RefreshToken(refreshToken string) (*TokenPair, code.Code) {
 	if err != nil {
 		return nil, code.CodeServerBusy
 	}
-	return &TokenPair{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken}, code.CodeSuccess
+	return &TokenPair{
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		Username:     userInformation.Username,
+	}, code.CodeSuccess
 }
 
 func Logout(userID int64) code.Code {

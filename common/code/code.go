@@ -19,6 +19,7 @@ const (
 	CodeRecordNotFound   Code = 2009
 	CodeIllegalPassword  Code = 2010
 	CodeTooManyRequests  Code = 2011
+	CodeInvalidUsername  Code = 2013
 	// CodeChatNotRunning 表示用户请求 stop 时，当前会话并没有正在运行的流式任务。
 	CodeChatNotRunning Code = 2012
 
@@ -51,6 +52,7 @@ var msg = map[Code]string{
 	CodeRecordNotFound:   "记录不存在",
 	CodeIllegalPassword:  "密码不合法",
 	CodeTooManyRequests:  "请求过于频繁",
+	CodeInvalidUsername:  "用户名格式不合法",
 	CodeChatNotRunning:   "当前没有正在执行的对话任务",
 
 	CodeForbidden: "权限不足",

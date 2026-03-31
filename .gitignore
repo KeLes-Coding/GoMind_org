@@ -1,3 +1,7 @@
 doc/
 config/config.local.toml
 vue-frontend/node_modules/
+.codex
+bin/
+vue-frontend/dist/
+logs/
