@@ -1,12 +1,17 @@
 <template>
   <div class="flex flex-row h-screen w-screen overflow-hidden bg-bg-light dark:bg-bg-dark text-text-primary-light dark:text-text-primary-dark">
     <!-- Sidebar -->
-    <aside class="w-64 bg-surface-light dark:bg-surface-dark border-r border-border-light dark:border-border-dark flex flex-col flex-shrink-0">
-      <div class="p-4 flex flex-col gap-4">
-        <span class="text-sm font-semibold tracking-wide text-text-secondary-light dark:text-text-secondary-dark uppercase pl-2">会话列表</span>
-        <button class="flex items-center justify-between w-full p-2.5 rounded-lg border border-border-light dark:border-border-dark bg-transparent hover:border-accent-light/50 dark:hover:border-accent-dark/50 hover:text-accent-light dark:hover:text-accent-dark transition-colors cursor-pointer text-sm font-medium" @click="createNewSession">
-          <span>+ 新建会话</span>
-          <kbd class="hidden md:inline-block px-1.5 py-0.5 text-xs text-text-secondary-light dark:text-text-secondary-dark bg-bg-light dark:bg-bg-dark rounded border border-border-light dark:border-border-dark font-mono">⌘K</kbd>
+    <aside :class="['bg-surface-light dark:bg-surface-dark border-r border-border-light dark:border-border-dark flex flex-col flex-shrink-0 transition-all duration-300 overflow-hidden', isSidebarCollapsed ? 'w-0 border-r-0' : 'w-64']">
+      <div class="p-4 flex justify-between items-center gap-2">
+        <span class="text-sm font-semibold tracking-wide text-text-secondary-light dark:text-text-secondary-dark uppercase pl-2 whitespace-nowrap">会话列表</span>
+        <button class="p-1.5 rounded-md bg-transparent hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-text-secondary-light dark:text-text-secondary-dark" @click="syncHistory" :disabled="!currentSessionId || tempSession || loading" title="同步当前历史">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+        </button>
+      </div>
+      <div class="px-4 pb-2">
+        <button class="flex items-center justify-center gap-2 w-full p-2.5 rounded-lg border border-border-light dark:border-border-dark bg-transparent hover:border-accent-light/50 dark:hover:border-accent-dark/50 hover:text-accent-light dark:hover:text-accent-dark transition-colors cursor-pointer text-sm font-medium whitespace-nowrap" @click="createNewSession">
+          <el-icon><Edit /></el-icon>
+          <span>新建对话</span>
         </button>
       </div>
       <ul class="flex-1 overflow-y-auto list-none m-0 p-2 space-y-1">
@@ -21,40 +26,58 @@
           ]"
           @click="switchSession(session.id)"
         >
-          <span class="truncate block max-w-full">{{ session.name || `会话 ${session.id}` }}</span>
+          <span class="truncate block max-w-full whitespace-nowrap">{{ session.name || `会话 ${session.id}` }}</span>
         </li>
       </ul>
+      <!-- User Profile at Bottom -->
+      <div class="p-3 border-t border-border-light dark:border-border-dark mt-auto bg-surface-light dark:bg-surface-dark">
+        <el-dropdown trigger="click" placement="top" class="w-full">
+          <div class="flex items-center gap-3 cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 p-2 rounded-lg transition-colors overflow-hidden">
+            <div class="w-8 h-8 rounded-full bg-accent-light flex items-center justify-center text-white flex-shrink-0">
+              <el-icon><UserFilled /></el-icon>
+            </div>
+            <span class="text-sm font-medium truncate flex-1 text-text-primary-light dark:text-text-primary-dark text-left">用户选项</span>
+          </div>
+          <template #dropdown>
+            <el-dropdown-menu class="w-56">
+              <el-dropdown-item @click="handleSettings">
+                <el-icon><Setting /></el-icon> 设置
+              </el-dropdown-item>
+              <el-dropdown-item @click="handleLogout" divided class="text-red-500 hover:!text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20">
+                <el-icon><SwitchButton /></el-icon> 退出登录
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
     </aside>
 
     <!-- Main Content -->
     <section class="flex-1 flex flex-col relative min-w-0 bg-bg-light dark:bg-bg-dark">
       <!-- Header -->
-      <div class="sticky top-0 z-10 glass border-b border-border-light dark:border-border-dark px-6 py-3 flex items-center gap-3 flex-wrap">
-        <button class="px-3 py-1.5 text-sm rounded bg-transparent border border-border-light dark:border-border-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer" @click="$router.push('/menu')">返回</button>
-        <button class="px-3 py-1.5 text-sm rounded bg-transparent border border-border-light dark:border-border-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-30" @click="syncHistory" :disabled="!currentSessionId || tempSession || loading">同步</button>
-        <button class="px-3 py-1.5 text-sm rounded bg-transparent border border-border-light dark:border-border-dark hover:border-red-500 hover:text-red-500 transition-colors cursor-pointer disabled:opacity-30" @click="stopCurrentStream" :disabled="!loading || !isStreaming">停止</button>
+      <div class="sticky top-0 z-10 glass border-b border-border-light dark:border-border-dark px-4 py-3 flex items-center gap-3">
+        <button class="p-2 rounded-lg bg-transparent hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-text-secondary-light dark:text-text-secondary-dark flex items-center justify-center" @click="toggleSidebar">
+          <el-icon size="20"><IconMenu /></el-icon>
+        </button>
+        <span class="font-medium tracking-tight truncate hidden sm:block">AI聊天</span>
 
-        <div class="flex items-center gap-2 ml-auto">
-          <label for="modelType" class="text-sm text-text-secondary-light dark:text-text-secondary-dark">模型</label>
+        <div class="flex items-center gap-3 ml-auto">
+          <label for="modelType" class="text-sm text-text-secondary-light dark:text-text-secondary-dark hidden sm:block">模型</label>
           <select id="modelType" v-model="selectedModel" class="px-2 py-1.5 text-sm rounded border border-border-light dark:border-border-dark bg-transparent cursor-pointer outline-none focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark disabled:opacity-50" :disabled="loading">
             <option v-for="option in modelOptions" :key="option.value" :value="option.value" class="bg-surface-light dark:bg-surface-dark">
               {{ option.label }}
             </option>
           </select>
 
-          <label class="flex items-center gap-1.5 text-sm ml-2 cursor-pointer select-none">
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer select-none">
             <input id="streamingMode" v-model="isStreaming" type="checkbox" class="accent-accent-light dark:accent-accent-dark" :disabled="loading" />
-            流式
+            <span class="hidden sm:inline">流式</span>
           </label>
 
-          <button class="px-3 py-1.5 text-sm rounded bg-transparent border border-border-light dark:border-border-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-50 ml-2" @click="triggerFileUpload" :disabled="uploading || loading">上传(.md/.txt)</button>
-          <input
-            ref="fileInput"
-            type="file"
-            accept=".md,.txt,text/markdown,text/plain"
-            class="hidden"
-            @change="handleFileUpload"
-          />
+          <button @click="toggleTheme" class="p-2 w-9 h-9 ml-1 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer border-none bg-transparent text-text-primary-light dark:text-text-primary-dark text-lg flex items-center justify-center shrink-0">
+            <el-icon v-if="isDark"><Moon /></el-icon>
+            <el-icon v-else><Sunny /></el-icon>
+          </button>
         </div>
       </div>
 
@@ -96,36 +119,69 @@
       </div>
 
       <!-- Floating Pill Input -->
-      <div class="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-3xl px-4 z-20">
-        <div class="bg-surface-light dark:bg-surface-dark rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.06)] dark:shadow-2xl ring-1 ring-black/5 dark:ring-white/10 flex items-end p-2 transition-shadow focus-within:ring-border-light dark:focus-within:ring-border-dark">
-          <textarea
-            v-model="inputMessage"
-            placeholder="问点什么..."
-            @keydown.enter.exact.prevent="sendMessage"
-            :disabled="loading"
-            ref="messageInput"
-            rows="1"
-            class="flex-1 max-h-40 min-h-[44px] bg-transparent border-none outline-none resize-none px-4 py-3 text-base text-text-primary-light dark:text-text-primary-dark placeholder-text-secondary-light dark:placeholder-text-secondary-dark"
-          ></textarea>
-          <button
-            type="button"
-            :disabled="!inputMessage.trim() || loading"
-            @click="sendMessage"
-            :class="[
-              'p-2 w-10 h-10 mb-1 mr-1 rounded-xl flex items-center justify-center transition-all disabled:cursor-not-allowed',
-              (!inputMessage.trim() || loading) 
-                ? 'bg-transparent text-text-secondary-light dark:text-text-secondary-dark opacity-50' 
-                : 'bg-black text-white dark:bg-white dark:text-black shadow-sm'
-            ]"
-          >
-            <svg v-if="!loading" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
-              <path d="M3.478 2.404a.75.75 0 00-.926.941l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.404z" />
-            </svg>
-            <svg v-else class="animate-spin w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-          </button>
+      <div class="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-3xl px-4 z-20 flex flex-col gap-2">
+        <div class="bg-surface-light dark:bg-surface-dark rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.06)] dark:shadow-2xl ring-1 ring-black/5 dark:ring-white/10 flex flex-col p-2 transition-shadow focus-within:ring-border-light dark:focus-within:ring-border-dark">
+          <!-- Toolbar -->
+          <div class="flex items-center gap-1 px-2 pt-1">
+            <button @click="triggerFileUpload" :disabled="uploading || loading" class="p-1.5 rounded-lg text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 hover:text-accent-light dark:hover:text-accent-dark transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" title="上传文档 (.md/.txt)">
+               <el-icon size="18"><Paperclip /></el-icon>
+            </button>
+            <button @click="$router.push('/image-recognition')" class="p-1.5 rounded-lg text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 hover:text-accent-light dark:hover:text-accent-dark transition-colors cursor-pointer" title="图像识别">
+               <el-icon size="18"><PictureRounded /></el-icon>
+            </button>
+            <input
+              ref="fileInput"
+              type="file"
+              accept=".md,.txt,text/markdown,text/plain"
+              class="hidden"
+              @change="handleFileUpload"
+            />
+          </div>
+          
+          <div class="flex items-end">
+            <textarea
+              v-model="inputMessage"
+              placeholder="问点什么..."
+              @keydown.enter.exact.prevent="sendMessage"
+              :disabled="loading"
+              ref="messageInput"
+              rows="1"
+              class="flex-1 max-h-40 min-h-[44px] bg-transparent border-none outline-none resize-none px-4 py-2 text-base text-text-primary-light dark:text-text-primary-dark placeholder-text-secondary-light dark:placeholder-text-secondary-dark"
+            ></textarea>
+
+            <!-- Stop Button when streaming and loading -->
+            <button
+               v-if="isStreaming && loading"
+               type="button"
+               @click="stopCurrentStream"
+               class="p-2 w-10 h-10 mb-1 mr-1 rounded-xl flex items-center justify-center transition-all bg-red-500/10 text-red-500 hover:bg-red-500/20 cursor-pointer shadow-sm"
+               title="停止生成"
+            >
+               <el-icon size="18"><VideoPause /></el-icon>
+            </button>
+            
+            <!-- Default Send / Loading Button -->
+            <button
+              v-else
+              type="button"
+              :disabled="!inputMessage.trim() || loading"
+              @click="sendMessage"
+              :class="[
+                'p-2 w-10 h-10 mb-1 mr-1 rounded-xl flex items-center justify-center transition-all disabled:cursor-not-allowed',
+                (!inputMessage.trim() || loading) 
+                  ? 'bg-transparent text-text-secondary-light dark:text-text-secondary-dark opacity-50' 
+                  : 'bg-black text-white dark:bg-white dark:text-black shadow-sm'
+              ]"
+            >
+              <svg v-if="!loading" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
+                <path d="M3.478 2.404a.75.75 0 00-.926.941l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.404z" />
+              </svg>
+              <svg v-else class="animate-spin w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -134,9 +190,11 @@
 
 <script>
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Edit, Menu as IconMenu, Sunny, Moon, PictureRounded, Paperclip, VideoPause, Setting, SwitchButton, UserFilled } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
 import api, { refreshClient } from '../utils/api'
-import { ensureAccessToken } from '../utils/token'
+import { ensureAccessToken, clearTokens } from '../utils/token'
 
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'timeout', 'failed', 'partial'])
 const MODEL_OPTIONS = [
@@ -147,7 +205,13 @@ const MODEL_OPTIONS = [
 
 export default {
   name: 'AIChat',
+  components: {
+    Edit, IconMenu, Sunny, Moon, PictureRounded, Paperclip, VideoPause, Setting, SwitchButton, UserFilled
+  },
   setup() {
+    const router = useRouter()
+    const isSidebarCollapsed = ref(false)
+    const isDark = ref(false)
     const sessions = ref({})
     const currentSessionId = ref(null)
     const tempSession = ref(false)
@@ -699,11 +763,47 @@ export default {
       }
     }
 
+    const toggleTheme = () => {
+      isDark.value = !isDark.value
+      if (isDark.value) {
+        document.documentElement.classList.add('dark')
+      } else {
+        document.documentElement.classList.remove('dark')
+      }
+    }
+
+    const handleLogout = async () => {
+      try {
+        await ElMessageBox.confirm('确定要退出登录吗？', '提示', {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          type: 'warning'
+        })
+        await api.post('/user/logout')
+        clearTokens()
+        ElMessage.success('退出登录成功')
+        router.push('/login')
+      } catch {
+        // 用户取消操作
+      }
+    }
+
+    const handleSettings = () => {
+      ElMessage.info('设置功能开发中...')
+    }
+
+    const toggleSidebar = () => {
+      isSidebarCollapsed.value = !isSidebarCollapsed.value
+    }
+
     onMounted(() => {
+      isDark.value = document.documentElement.classList.contains('dark')
       loadSessions()
     })
 
     return {
+      isSidebarCollapsed,
+      isDark,
       sessions: computed(() => Object.values(sessions.value)),
       currentSessionId,
       tempSession,
@@ -727,7 +827,11 @@ export default {
       stopCurrentStream,
       sendMessage,
       triggerFileUpload,
-      handleFileUpload
+      handleFileUpload,
+      toggleTheme,
+      handleLogout,
+      handleSettings,
+      toggleSidebar
     }
   }
 }

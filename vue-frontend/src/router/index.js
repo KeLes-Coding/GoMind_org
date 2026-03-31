@@ -1,7 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Login from '../views/Login.vue'
 import Register from '../views/Register.vue'
-import Menu from '../views/Menu.vue'
 import AIChat from '../views/AIChat.vue'
 import ImageRecognition from '../views/ImageRecognition.vue'
 import { hasSession } from '../utils/token'
@@ -20,12 +19,6 @@ const routes = [
     path: '/register',
     name: 'Register',
     component: Register
-  },
-  {
-    path: '/menu',
-    name: 'Menu',
-    component: Menu,
-    meta: { requiresAuth: true }
   },
   {
     path: '/ai-chat',
