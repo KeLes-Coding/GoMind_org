@@ -7,28 +7,30 @@ import (
 	myredis "GopherAI/common/redis"
 	messageDAO "GopherAI/dao/message"
 	sessionDAO "GopherAI/dao/session"
+	sessionFolderDAO "GopherAI/dao/session_folder"
 	"GopherAI/model"
 	"context"
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-// buildAIConfig 统一构造模型初始化参数，避免同步和流式链路重复拼装配置。
+// buildAIConfig 缂佺喍绔撮弸鍕偓鐘衬侀崹瀣灥婵瀵查崣鍌涙殶閿涘矂浼╅崗宥呮倱濮濄儱鎷板ù浣哥础闁炬崘鐭鹃柌宥咁槻閹疯壈顥婇柊宥囩枂閵?
 func buildAIConfig(userName string, userID int64) map[string]interface{} {
 	return map[string]interface{}{
-		"apiKey":   "your-api-key", // TODO: 后续从配置中心或环境变量读取
-		"username": userName,       // MCP 等模型需要知道当前用户身份
-		"userID":   userID,         // RAG 模型需要 userID 查询文件
+		"apiKey":   "your-api-key", // TODO: 閸氬海鐢绘禒搴ㄥ帳缂冾喕鑵戣箛鍐╁灗閻滎垰顣ㄩ崣姗€鍣虹拠璇插絿
+		"username": userName,       // MCP 缁涘膩閸ㄥ娓剁憰浣虹叀闁挸缍嬮崜宥囨暏閹寸柉闊╂禒?
+		"userID":   userID,         // RAG 濡€崇€烽棁鈧憰?userID 閺屻儴顕楅弬鍥︽
 	}
 }
 
-// ensureOwnedSession 统一校验会话是否存在，以及是否属于当前用户。
-// 数据库负责会话真相和权限边界，不能只靠运行时 helper 判断会话是否合法。
+// ensureOwnedSession 缂佺喍绔撮弽锟犵崣娴兼俺鐦介弰顖氭儊鐎涙ê婀敍灞间簰閸欏﹥妲搁崥锕€鐫樻禍搴＄秼閸撳秶鏁ら幋鏋偓?
+// 閺佺増宓佹惔鎾圭鐠愶絼绱扮拠婵堟埂閻╃鎷伴弶鍐鏉堝湱鏅敍灞肩瑝閼宠棄褰ч棃鐘虹箥鐞涘本妞?helper 閸掋倖鏌囨导姘崇樈閺勵垰鎯侀崥鍫熺《閵?
 func ensureOwnedSession(userName string, sessionID string) (*model.Session, code.Code) {
 	sess, err := sessionDAO.GetSessionByID(sessionID)
 	if err != nil {
@@ -46,7 +48,22 @@ func ensureOwnedSession(userName string, sessionID string) (*model.Session, code
 	return sess, code.CodeSuccess
 }
 
-// persistSummaryIfChanged 只在摘要确实变化时回写数据库，避免每轮请求都更新 session。
+func ensureOwnedFolder(userID int64, folderID int64) (*model.SessionFolder, code.Code) {
+	folder, err := sessionFolderDAO.GetSessionFolderByID(folderID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, code.CodeRecordNotFound
+		}
+		log.Println("ensureOwnedFolder GetSessionFolderByID error:", err)
+		return nil, code.CodeServerBusy
+	}
+	if folder.UserID != userID {
+		return nil, code.CodeForbidden
+	}
+	return folder, code.CodeSuccess
+}
+
+// persistSummaryIfChanged 閸欘亜婀幗妯款洣绾喖鐤勯崣妯哄閺冭泛娲栭崘娆愭殶閹诡喖绨遍敍宀勪缉閸忓秵鐦℃潪顔款嚞濮瑰倿鍏橀弴瀛樻煀 session閵?
 func persistSummaryIfChanged(sessionID string, beforeSummary string, beforeCount int, helper *aihelper.AIHelper) code.Code {
 	afterSummary, afterCount := helper.GetSummaryState()
 	if beforeSummary == afterSummary && beforeCount == afterCount {
@@ -61,8 +78,8 @@ func persistSummaryIfChanged(sessionID string, beforeSummary string, beforeCount
 	return code.CodeSuccess
 }
 
-// persistHelperHotState 把 helper 当前的轻量热状态快照写入 Redis。
-// 这里故意不把 Redis 当真相源，所以写失败只记日志，不阻断主聊天链路。
+// persistHelperHotState 閹?helper 瑜版挸澧犻惃鍕氦闁插繒鍎归悩鑸碘偓浣告彥閻撗冨晸閸?Redis閵?
+// 鏉╂瑩鍣烽弫鍛壈娑撳秵濡?Redis 瑜版挾婀￠惄鍛婄爱閿涘本澧嶆禒銉ュ晸婢惰精瑙﹂崣顏囶唶閺冦儱绻旈敍灞肩瑝闂冪粯鏌囨稉鏄忎喊婢垛晠鎽肩捄顖樷偓?
 func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 	if helper == nil {
 		return
@@ -75,11 +92,11 @@ func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 	}
 }
 
-// syncHelperWithDatabase 在“继续某个会话前”校准本地 helper 与数据库消息状态。
-// 规则是：
-// 1. DB 最新消息已经在本地：说明本地至少不落后于 DB，保留本地 buffer。
-// 2. 本地最新消息已落库，但 DB 最新消息不在本地：说明本地缺消息，按 DB 补回。
-// 3. 本地最新消息未落库：说明本地可能领先；只有当 DB 最新消息也越过了本地最后一条已持久化消息时，才做保守重构。
+// syncHelperWithDatabase 閸︺劉鈧粎鎴风紒顓熺厙娑擃亙绱扮拠婵嗗閳ユ繃鐗庨崙鍡樻拱閸?helper 娑撳孩鏆熼幑顔肩氨濞戝牊浼呴悩鑸碘偓浣碘偓?
+// 鐟欏嫬鍨弰顖ょ窗
+// 1. DB 閺堚偓閺傜増绉烽幁顖氬嚒缂佸繐婀張顒€婀撮敍姘愁嚛閺勫孩婀伴崷鎷屽殾鐏忔垳绗夐拃钘夋倵娴?DB閿涘奔绻氶悾娆愭拱閸?buffer閵?
+// 2. 閺堫剙婀撮張鈧弬鐗堢Х閹垰鍑￠拃钘夌氨閿涘奔绲?DB 閺堚偓閺傜増绉烽幁顖欑瑝閸︺劍婀伴崷甯窗鐠囧瓨妲戦張顒€婀寸紓鐑樼Х閹垽绱濋幐?DB 鐞涖儱娲栭妴?
+// 3. 閺堫剙婀撮張鈧弬鐗堢Х閹垱婀拃钘夌氨閿涙俺顕╅弰搴㈡拱閸︽澘褰查懗浠嬵暙閸忓牞绱遍崣顏呮箒瑜?DB 閺堚偓閺傜増绉烽幁顖欑瘍鐡掑﹨绻冩禍鍡樻拱閸︾増娓堕崥搴濈閺夆€冲嚒閹镐椒绠欓崠鏍ㄧХ閹垱妞傞敍灞惧閸嬫矮绻氱€瑰牓鍣搁弸鍕┾偓?
 func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Code {
 	latestDBMessage, err := messageDAO.GetLatestMessageBySessionID(sessionID)
 	if err != nil {
@@ -90,7 +107,7 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 		return code.CodeServerBusy
 	}
 
-	// DB 最新消息已在本地，说明本地没有落后于数据库，不需要拿 DB 反向覆盖本地 buffer。
+	// DB 閺堚偓閺傜増绉烽幁顖氬嚒閸︺劍婀伴崷甯礉鐠囧瓨妲戦張顒€婀村▽鈩冩箒閽€钘夋倵娴滃孩鏆熼幑顔肩氨閿涘奔绗夐棁鈧憰浣瑰瑏 DB 閸欏秴鎮滅憰鍡欐磰閺堫剙婀?buffer閵?
 	if helper.HasMessageKey(latestDBMessage.MessageKey) {
 		dbMessageCount, err := messageDAO.GetMessageCountBySessionID(sessionID)
 		if err != nil {
@@ -98,8 +115,8 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 			return code.CodeServerBusy
 		}
 
-		// 即使“最后一条消息”对上了，也不代表中间没有缺口。
-		// 如果本地已持久化消息数比 DB 少，仍然要做一次保守对齐。
+		// 閸楀厖濞囬垾婊勬付閸氬簼绔撮弶鈩冪Х閹垪鈧繂顕稉濠佺啊閿涘奔绡冩稉宥勫敩鐞涖劋鑵戦梻瀛樼梾閺堝宸遍崣锝冣偓?
+		// 婵″倹鐏夐張顒€婀村鍙夊瘮娑斿懎瀵插☉鍫熶紖閺佺増鐦?DB 鐏忔埊绱濇禒宥囧姧鐟曚礁浠涙稉鈧▎鈥茬箽鐎瑰牆顕鎰┾偓?
 		if int64(helper.GetPersistedMessageCount()) < dbMessageCount {
 			dbMessages, err := messageDAO.GetMessagesBySessionID(sessionID)
 			if err != nil {
@@ -124,7 +141,7 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 
 	localLatestPersistedMessage := helper.GetLatestPersistedMessage()
 	if localLatestPersistedMessage == nil {
-		// 本地只有尚未落库的消息时，不能让 DB 反向覆盖本地。
+		// 閺堫剙婀撮崣顏呮箒鐏忔碍婀拃钘夌氨閻ㄥ嫭绉烽幁顖涙閿涘奔绗夐懗鍊燁唨 DB 閸欏秴鎮滅憰鍡欐磰閺堫剙婀撮妴?
 		return code.CodeSuccess
 	}
 
@@ -134,7 +151,7 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 		return code.CodeServerBusy
 	}
 
-	// 本地最新消息已经在 DB，但 DB 最新消息却不在本地，说明本地 helper 缺了后续消息。
+	// 閺堫剙婀撮張鈧弬鐗堢Х閹垰鍑＄紒蹇撴躬 DB閿涘奔绲?DB 閺堚偓閺傜増绉烽幁顖氬祱娑撳秴婀張顒€婀撮敍宀冾嚛閺勫孩婀伴崷?helper 缂傝桨绨￠崥搴ｇ敾濞戝牊浼呴妴?
 	if localLatestExistsInDB {
 		dbMessages, err := messageDAO.GetMessagesBySessionID(sessionID)
 		if err != nil {
@@ -145,9 +162,9 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 		return code.CodeSuccess
 	}
 
-	// 走到这里说明：本地最新消息尚未落库，本地 buffer 领先于 DB。
-	// 这时只有当 DB 最新消息已经不是“本地最后一条已持久化消息”时，
-	// 才说明两边可能都各自缺了一部分，需要做保守重构。
+	// 鐠ф澘鍩屾潻娆撳櫡鐠囧瓨妲戦敍姘拱閸︾増娓堕弬鐗堢Х閹垰鐨婚張顏囨儰鎼存搫绱濋張顒€婀?buffer 妫板棗鍘涙禍?DB閵?
+	// 鏉╂瑦妞傞崣顏呮箒瑜?DB 閺堚偓閺傜増绉烽幁顖氬嚒缂佸繋绗夐弰顖椻偓婊勬拱閸︾増娓堕崥搴濈閺夆€冲嚒閹镐椒绠欓崠鏍ㄧХ閹垪鈧繃妞傞敍?
+	// 閹靛秷顕╅弰搴濊⒈鏉堢懓褰查懗浠嬪厴閸氬嫯鍤滅紓杞扮啊娑撯偓闁劌鍨庨敍宀勬付鐟曚礁浠涙穱婵嗙暓闁插秵鐎妴?
 	if localLatestPersistedMessage.MessageKey == latestDBMessage.MessageKey {
 		return code.CodeSuccess
 	}
@@ -161,9 +178,9 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 	return code.CodeSuccess
 }
 
-// getOrSyncHelperWithHistory 优先复用当前进程中的 helper；
-// 如果 helper 不存在，就从数据库回放历史消息；
-// 如果 helper 已存在，就在继续会话前做一次本地/DB 的安全对齐。
+// getOrSyncHelperWithHistory 娴兼ê鍘涙径宥囨暏瑜版挸澧犳潻娑氣柤娑擃厾娈?helper閿?
+// 婵″倹鐏?helper 娑撳秴鐡ㄩ崷顭掔礉鐏忓彉绮犻弫鐗堝祦鎼存挸娲栭弨鎯у坊閸欏弶绉烽幁顖ょ幢
+// 婵″倹鐏?helper 瀹告彃鐡ㄩ崷顭掔礉鐏忓崬婀紒褏鐢绘导姘崇樈閸撳秴浠涙稉鈧▎鈩冩拱閸?DB 閻ㄥ嫬鐣ㄩ崗銊ヮ嚠姒绘劑鈧?
 func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *model.Session, modelType string) (*aihelper.AIHelper, code.Code) {
 	if !aihelper.IsSupportedModelType(modelType) {
 		return nil, code.CodeInvalidParams
@@ -186,7 +203,7 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 		return nil, code.AIModelFail
 	}
 
-	// helper 首次进入当前进程时，需要从数据库回放消息历史，恢复会话上下文。
+	// helper 妫ｆ牗顐兼潻娑樺弳瑜版挸澧犳潻娑氣柤閺冭绱濋棁鈧憰浣风矤閺佺増宓佹惔鎾虫礀閺€鐐Х閹垰宸婚崣璇х礉閹垹顦叉导姘崇樈娑撳﹣绗呴弬鍥モ偓?
 	msgs, err := messageDAO.GetMessagesBySessionID(sessionID)
 	if err != nil {
 		log.Println("getOrCreateHelperWithHistory GetMessagesBySessionID error:", err)
@@ -196,8 +213,8 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 		helper.LoadMessages(msgs)
 	}
 
-	// 第二轮升级里引入 Redis 热状态快照，但这里仍然保留 DB 回放作为兜底真相恢复。
-	// 也就是说：先保证“至少能恢复”，再用 Redis 热快照把最近窗口状态补回来。
+	// 缁楊兛绨╂潪顔煎磳缁狙囧櫡瀵洖鍙?Redis 閻戭厾濮搁幀浣告彥閻撗嶇礉娴ｅ棜绻栭柌灞肩矝閻掓湹绻氶悾?DB 閸ョ偞鏂佹担婊€璐熼崗婊冪俺閻喓娴夐幁銏狀槻閵?
+	// 娑旂喎姘ㄩ弰顖濐嚛閿涙艾鍘涙穱婵婄槈閳ユ粏鍤︾亸鎴ｅ厴閹垹顦查垾婵撶礉閸愬秶鏁?Redis 閻戭厼鎻╅悡褎濡搁張鈧潻鎴犵崶閸欙絿濮搁幀浣剿夐崶鐐存降閵?
 	hotState, err := myredis.GetSessionHotState(ctx, sessionID)
 	if err != nil {
 		observability.RecordRedisHotStateLookup(false)
@@ -220,8 +237,8 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 	return helper, code.CodeSuccess
 }
 
-// GetUserSessionsByUserName 从数据库读取会话列表。
-// 会话列表属于业务真相，不能依赖进程内 helper 的生命周期。
+// GetUserSessionsByUserName 娴犲孩鏆熼幑顔肩氨鐠囪褰囨导姘崇樈閸掓銆冮妴?
+// 娴兼俺鐦介崚妤勩€冪仦鐐扮艾娑撴艾濮熼惇鐔烘祲閿涘奔绗夐懗鎴掔贩鐠ф牞绻樼粙瀣敶 helper 閻ㄥ嫮鏁撻崨钘夋噯閺堢喆鈧?
 func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
 	sessions, err := sessionDAO.GetSessionsByUserName(userName)
 	if err != nil {
@@ -239,7 +256,7 @@ func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
 	return sessionInfos, nil
 }
 
-// CreateSessionAndSendMessage 创建新会话并发送第一条消息。
+// CreateSessionAndSendMessage 閸掓稑缂撻弬棰佺窗鐠囨繂鑻熼崣鎴︹偓浣侯儑娑撯偓閺夆剝绉烽幁顖樷偓?
 func CreateSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, modelType string) (string, string, code.Code) {
 	requestStart := time.Now()
 	if !allowChatRateLimit(ctx, userName) {
@@ -251,7 +268,7 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 		ID:       uuid.New().String(),
 		UserName: userName,
 		UserID:   userID,
-		// 先保持现有产品语义：用首条问题作为会话标题。
+		// 閸忓牅绻氶幐浣哄箛閺堝楠囬崫浣筋嚔娑斿绱伴悽銊╊浕閺夛繝妫舵０妯圭稊娑撹桨绱扮拠婵囩垼妫版ǜ鈧?
 		Title: userQuestion,
 	}
 	createdSession, err := sessionDAO.CreateSession(newSession)
@@ -308,8 +325,8 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 	return createdSession.ID, result.aiResponse, code.CodeSuccess
 }
 
-// CreateStreamSessionOnly 只创建会话，不发送消息。
-// 流式场景先下发 sessionID，再开始持续推流。
+// CreateStreamSessionOnly 閸欘亜鍨卞杞扮窗鐠囨繐绱濇稉宥呭絺闁焦绉烽幁顖樷偓?
+// 濞翠礁绱￠崷鐑樻珯閸忓牅绗呴崣?sessionID閿涘苯鍟€瀵偓婵瀵旂紒顓熷腹濞翠降鈧?
 func CreateStreamSessionOnly(userName string, userID int64, userQuestion string) (string, code.Code) {
 	newSession := &model.Session{
 		ID:       uuid.New().String(),
@@ -325,7 +342,7 @@ func CreateStreamSessionOnly(userName string, userID int64, userQuestion string)
 	return createdSession.ID, code.CodeSuccess
 }
 
-// StreamMessageToExistingSession 向已有会话发送一条流式消息。
+// StreamMessageToExistingSession 閸氭垵鍑￠張澶夌窗鐠囨繂褰傞柅浣风閺夆剝绁﹀蹇旂Х閹垬鈧?
 func StreamMessageToExistingSession(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
 	requestStart := time.Now()
 	ctx, _ = newSessionTrace(ctx, "chat_stream", sessionID, modelType)
@@ -350,7 +367,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		return code_
 	}
 
-	// 从这里开始走新的“会话执行保护 + 热状态回写”链路。
+	// 娴犲氦绻栭柌灞界磻婵铔嬮弬鎵畱閳ユ粈绱扮拠婵囧⒔鐞涘奔绻氶幎?+ 閻戭厾濮搁幀浣告礀閸愭瑢鈧繈鎽肩捄顖樷偓?
 	result := withSessionExecutionGuard(ctx, sessionID, func() codeExecutorResult {
 		helper, code_ := getOrSyncHelperWithHistory(ctx, userName, sess, modelType)
 		if code_ != code.CodeSuccess {
@@ -358,7 +375,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		}
 
 		cb := func(msg string) {
-			// SSE 协议要求每个片段都按 data 行输出，并在每次写入后立刻 flush。
+			// SSE 閸楀繗顔呯憰浣圭湴濮ｅ繋閲滈悧鍥唽闁姤瀵?data 鐞涘矁绶崙鐚寸礉楠炶泛婀В蹇旑偧閸愭瑥鍙嗛崥搴ｇ彌閸?flush閵?
 			_, err := writer.Write([]byte("data: " + msg + "\n\n"))
 			if err != nil {
 				log.Println("StreamMessageToExistingSession Write error:", err)
@@ -413,7 +430,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 	return code.CodeSuccess
 }
 
-// CreateStreamSessionAndSendMessage 创建会话后立即走流式回复。
+// CreateStreamSessionAndSendMessage 閸掓稑缂撴导姘崇樈閸氬海鐝涢崡瀹犺泲濞翠礁绱￠崶鐐差槻閵?
 func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, modelType string, writer http.ResponseWriter) (string, code.Code) {
 	sessionID, code_ := CreateStreamSessionOnly(userName, userID, userQuestion)
 	if code_ != code.CodeSuccess {
@@ -428,7 +445,7 @@ func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, use
 	return sessionID, code.CodeSuccess
 }
 
-// ChatSend 向已有会话发送同步消息。
+// ChatSend 閸氭垵鍑￠張澶夌窗鐠囨繂褰傞柅浣告倱濮濄儲绉烽幁顖樷偓?
 func ChatSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
 	requestStart := time.Now()
 	ctx, _ = newSessionTrace(ctx, "chat_sync", sessionID, modelType)
@@ -444,7 +461,7 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 		return "", code_
 	}
 
-	// 新链路在这里提前返回，后面的旧逻辑仅保留作对照，实际不会再走到。
+	// 閺備即鎽肩捄顖氭躬鏉╂瑩鍣烽幓鎰鏉╂柨娲栭敍灞芥倵闂堛垻娈戦弮褔鈧槒绶禒鍛箽閻ｆ瑤缍旂€靛湱鍙庨敍灞界杽闂勫懍绗夋导姘晙鐠ф澘鍩岄妴?
 	result := withSessionExecutionGuard(ctx, sessionID, func() codeExecutorResult {
 		helper, code_ := getOrSyncHelperWithHistory(ctx, userName, sess, modelType)
 		if code_ != code.CodeSuccess {
@@ -488,8 +505,8 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 	return result.aiResponse, code.CodeSuccess
 }
 
-// GetChatHistory 从数据库读取历史消息。
-// 历史接口强调可恢复性和一致性，因此必须以数据库中的消息记录为准。
+// GetChatHistory 娴犲孩鏆熼幑顔肩氨鐠囪褰囬崢鍡楀蕉濞戝牊浼呴妴?
+// 閸樺棗褰堕幒銉ュ經瀵缚鐨熼崣顖涗划婢跺秵鈧冩嫲娑撯偓閼峰瓨鈧嶇礉閸ョ姵顒濊箛鍛淬€忔禒銉︽殶閹诡喖绨辨稉顓犳畱濞戝牊浼呯拋鏉跨秿娑撳搫鍣妴?
 func GetChatHistory(userName string, sessionID string) ([]model.History, code.Code) {
 	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
 		return nil, code_
@@ -503,7 +520,7 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 
 	history := make([]model.History, 0, len(messages))
 	for _, msg := range messages {
-		// 直接使用持久化的 IsUser 字段，避免再通过奇偶位猜测消息身份。
+		// 閻╁瓨甯存担璺ㄦ暏閹镐椒绠欓崠鏍畱 IsUser 鐎涙顔岄敍宀勪缉閸忓秴鍟€闁俺绻冩總鍥т紦娴ｅ秶瀵藉ù瀣Х閹垵闊╂禒濮愨偓?
 		history = append(history, model.History{
 			IsUser:  msg.IsUser,
 			Content: msg.Content,
@@ -514,7 +531,170 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 	return history, code.CodeSuccess
 }
 
-// ChatStreamSend 向已有会话发送流式消息。
+// ChatStreamSend 閸氭垵鍑￠張澶夌窗鐠囨繂褰傞柅浣圭ウ瀵繑绉烽幁顖樷偓?
 func ChatStreamSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
 	return StreamMessageToExistingSession(ctx, userName, sessionID, userQuestion, modelType, writer)
+}
+
+// RenameSession renames a session owned by the current user.
+func RenameSession(userName string, sessionID string, title string) code.Code {
+	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+		return code_
+	}
+
+	title = strings.TrimSpace(title)
+	if title == "" || len(title) > 100 {
+		return code.CodeInvalidParams
+	}
+
+	if err := sessionDAO.UpdateSessionTitle(sessionID, title); err != nil {
+		log.Println("RenameSession UpdateSessionTitle error:", err)
+		return code.CodeServerBusy
+	}
+
+	return code.CodeSuccess
+}
+
+// DeleteSession soft-deletes a session and clears in-memory helper state.
+func DeleteSession(userName string, sessionID string) code.Code {
+	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+		return code_
+	}
+
+	if err := sessionDAO.DeleteSession(sessionID); err != nil {
+		log.Println("DeleteSession DeleteSession error:", err)
+		return code.CodeServerBusy
+	}
+
+	aihelper.GetGlobalManager().RemoveAIHelper(userName, sessionID)
+	return code.CodeSuccess
+}
+
+func GetSessionTree(userID int64, userName string) (*model.SessionListTreeResponse, code.Code) {
+	folders, err := sessionFolderDAO.GetSessionFoldersByUserID(userID)
+	if err != nil {
+		log.Println("GetSessionTree GetSessionFoldersByUserID error:", err)
+		return nil, code.CodeServerBusy
+	}
+
+	sessions, err := sessionDAO.GetSessionsByUserName(userName)
+	if err != nil {
+		log.Println("GetSessionTree GetSessionsByUserName error:", err)
+		return nil, code.CodeServerBusy
+	}
+
+	folderMap := make(map[int64]*model.SessionFolderInfo, len(folders))
+	response := &model.SessionListTreeResponse{
+		Folders:           make([]model.SessionFolderInfo, 0, len(folders)),
+		UngroupedSessions: make([]model.SessionTreeItem, 0),
+	}
+
+	for _, folder := range folders {
+		response.Folders = append(response.Folders, model.SessionFolderInfo{
+			ID:       folder.ID,
+			Name:     folder.Name,
+			Sessions: make([]model.SessionTreeItem, 0),
+		})
+		folderMap[folder.ID] = &response.Folders[len(response.Folders)-1]
+	}
+
+	for _, sess := range sessions {
+		item := model.SessionTreeItem{SessionID: sess.ID, Title: sess.Title}
+		if sess.FolderID != nil {
+			if folderInfo, ok := folderMap[*sess.FolderID]; ok {
+				folderInfo.Sessions = append(folderInfo.Sessions, item)
+				continue
+			}
+		}
+		response.UngroupedSessions = append(response.UngroupedSessions, item)
+	}
+
+	return response, code.CodeSuccess
+}
+
+func CreateSessionFolder(userID int64, userName string, name string) (*model.SessionFolderInfo, code.Code) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 100 {
+		return nil, code.CodeInvalidParams
+	}
+
+	folder, err := sessionFolderDAO.CreateSessionFolder(&model.SessionFolder{
+		UserID:   userID,
+		UserName: userName,
+		Name:     name,
+	})
+	if err != nil {
+		log.Println("CreateSessionFolder CreateSessionFolder error:", err)
+		return nil, code.CodeServerBusy
+	}
+
+	return &model.SessionFolderInfo{
+		ID:       folder.ID,
+		Name:     folder.Name,
+		Sessions: make([]model.SessionTreeItem, 0),
+	}, code.CodeSuccess
+}
+
+func RenameSessionFolder(userID int64, folderID int64, name string) code.Code {
+	if _, code_ := ensureOwnedFolder(userID, folderID); code_ != code.CodeSuccess {
+		return code_
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 100 {
+		return code.CodeInvalidParams
+	}
+
+	if err := sessionFolderDAO.UpdateSessionFolderName(folderID, name); err != nil {
+		log.Println("RenameSessionFolder UpdateSessionFolderName error:", err)
+		return code.CodeServerBusy
+	}
+
+	return code.CodeSuccess
+}
+
+func DeleteSessionFolder(userID int64, folderID int64) code.Code {
+	if _, code_ := ensureOwnedFolder(userID, folderID); code_ != code.CodeSuccess {
+		return code_
+	}
+
+	if err := sessionDAO.ClearSessionFolderIDByFolderID(folderID); err != nil {
+		log.Println("DeleteSessionFolder ClearSessionFolderIDByFolderID error:", err)
+		return code.CodeServerBusy
+	}
+	if err := sessionFolderDAO.DeleteSessionFolder(folderID); err != nil {
+		log.Println("DeleteSessionFolder DeleteSessionFolder error:", err)
+		return code.CodeServerBusy
+	}
+
+	return code.CodeSuccess
+}
+
+func MoveSessionToFolder(userID int64, userName string, sessionID string, folderID int64) code.Code {
+	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+		return code_
+	}
+	if _, code_ := ensureOwnedFolder(userID, folderID); code_ != code.CodeSuccess {
+		return code_
+	}
+
+	if err := sessionDAO.UpdateSessionFolderID(sessionID, &folderID); err != nil {
+		log.Println("MoveSessionToFolder UpdateSessionFolderID error:", err)
+		return code.CodeServerBusy
+	}
+
+	return code.CodeSuccess
+}
+
+func RemoveSessionFromFolder(userName string, sessionID string) code.Code {
+	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+		return code_
+	}
+
+	if err := sessionDAO.UpdateSessionFolderID(sessionID, nil); err != nil {
+		log.Println("RemoveSessionFromFolder UpdateSessionFolderID error:", err)
+		return code.CodeServerBusy
+	}
+
+	return code.CodeSuccess
 }

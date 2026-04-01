@@ -22,7 +22,7 @@
           <button
             class="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent"
             @click="toggleSidebar"
-            title="关闭侧边栏"
+            title="Close sidebar"
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-text-secondary-light dark:text-text-secondary-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
           </button>
@@ -35,81 +35,115 @@
             @click="createNewSession"
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-            <span class="whitespace-nowrap">新建对话</span>
+            <span class="whitespace-nowrap">New chat</span>
+          </button>
+        </div>
+        <div class="px-3 pb-2">
+          <button
+            class="flex items-center gap-3 px-4 py-2 rounded-xl bg-transparent hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer text-sm text-text-secondary-light dark:text-text-secondary-dark border-none w-full"
+            @click="createFolder"
+          >
+            <span>+ Folder</span>
           </button>
         </div>
 
         <!-- Conversation History -->
         <div class="flex-1 overflow-y-auto px-2 pt-2">
           <div class="px-3 pb-2">
-            <span class="text-xs font-medium text-text-secondary-light dark:text-text-secondary-dark tracking-wider">近期</span>
+            <span class="text-xs font-medium text-text-secondary-light dark:text-text-secondary-dark tracking-wider">SESSIONS</span>
           </div>
-          <ul class="list-none m-0 p-0 space-y-0.5">
-            <li
-              v-for="session in sessions"
-              :key="session.id"
-              :class="[
-                'px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all group flex items-center',
-                currentSessionId === session.id
-                  ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
-                  : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
-              ]"
-              @click="switchSession(session.id)"
+          <div class="space-y-2">
+            <div
+              v-for="folder in sidebarFolders"
+              :key="`folder-${folder.id}`"
+              class="space-y-1"
             >
-              <span class="truncate flex-1">{{ session.name || `会话 ${session.id}` }}</span>
-            </li>
-          </ul>
+              <div class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5">
+                <button
+                  type="button"
+                  class="w-full flex items-center gap-2 text-inherit bg-transparent border-none cursor-pointer p-0"
+                  @click="toggleFolder(folder.id)"
+                >
+                  <span class="w-3 text-xs text-center">{{ isFolderExpanded(folder.id) ? 'v' : '>' }}</span>
+                  <span class="truncate flex-1 text-left">{{ folder.name }}</span>
+                  <span class="text-[11px] opacity-60">{{ folder.sessions.length }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="px-2 py-0.5 text-[11px] rounded-md bg-transparent border border-border-light dark:border-border-dark cursor-pointer"
+                  @click.stop="renameFolder(folder)"
+                >
+                  R
+                </button>
+                <button
+                  type="button"
+                  class="px-2 py-0.5 text-[11px] rounded-md bg-transparent border border-border-light dark:border-border-dark cursor-pointer"
+                  @click.stop="deleteFolder(folder)"
+                >
+                  D
+                </button>
+              </div>
+              <ul
+                v-if="isFolderExpanded(folder.id)"
+                class="list-none m-0 pl-4 space-y-0.5"
+              >
+                <li
+                  v-for="session in folder.sessions"
+                  :key="session.id"
+                  :class="[
+                    'px-3 py-2 rounded-xl cursor-pointer text-sm transition-all flex items-center gap-2',
+                    currentSessionId === session.id
+                      ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
+                      : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
+                  ]"
+                  @click="switchSession(session.id)"
+                >
+                  <span class="truncate block flex-1">{{ session.name || `Session ${session.id}` }}</span>
+                  <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="renameSessionItem(session)">R</button>
+                  <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="moveSessionItem(session)">M</button>
+                  <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="removeSessionItemFromFolder(session)">U</button>
+                  <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="deleteSessionItem(session)">D</button>
+                </li>
+              </ul>
+            </div>
+            <ul class="list-none m-0 p-0 space-y-0.5">
+              <li
+                v-for="session in ungroupedSessions"
+                :key="session.id"
+                :class="[
+                  'px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all flex items-center gap-2',
+                  currentSessionId === session.id
+                    ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
+                    : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
+                ]"
+                @click="switchSession(session.id)"
+              >
+                <span class="truncate block flex-1">{{ session.name || `Session ${session.id}` }}</span>
+                <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="renameSessionItem(session)">R</button>
+                <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="moveSessionItem(session)">M</button>
+                <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="deleteSessionItem(session)">D</button>
+              </li>
+            </ul>
+            <div
+              v-if="sidebarFolders.length === 0 && ungroupedSessions.length === 0"
+              class="px-3 py-4 text-sm text-text-secondary-light dark:text-text-secondary-dark"
+            >
+              No sessions yet
+            </div>
+          </div>
         </div>
 
-        <!-- Bottom Actions (Gemini-style seamless) -->
+        <!-- Bottom Actions -->
         <div class="px-2 pb-3 pt-2 space-y-0.5">
-          <button
-            v-if="false"
-            @click="syncHistory"
-            :disabled="!currentSessionId || tempSession || loading"
-            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-[18px] w-[18px] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            <span>同步历史</span>
-          </button>
-          <button
-            v-if="false"
-            @click="handleSettings"
-            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent border-none"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-[18px] w-[18px] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            <span>设置</span>
-          </button>
-
-          <div v-if="false" class="flex items-center gap-3 px-3 py-2.5 rounded-xl">
-            <img
-              v-if="userProfile.avatar_url"
-              :src="userProfile.avatar_url"
-              alt="用户头像"
-              class="w-8 h-8 rounded-full object-cover shrink-0 border border-border-light dark:border-border-dark"
-            />
-            <div
-              v-else
-              class="w-8 h-8 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-xs font-bold shrink-0 select-none"
-            >
-              {{ getUserInitial() }}
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="text-sm truncate text-text-primary-light dark:text-text-primary-dark">{{ getUserDisplayName() }}</div>
-              <div class="text-xs truncate text-text-secondary-light dark:text-text-secondary-dark">@{{ userProfile.username || 'user' }}</div>
-            </div>
-          </div>
-
           <div class="relative">
             <button
-              type="button"
               class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent border-none text-left"
               @click.stop="toggleUserMenu"
             >
               <img
                 v-if="userProfile.avatar_url"
                 :src="userProfile.avatar_url"
-                alt="用户头像"
+                alt="User avatar"
                 class="w-8 h-8 rounded-full object-cover shrink-0 border border-border-light dark:border-border-dark"
               />
               <div
@@ -129,18 +163,10 @@
               v-if="userMenuVisible"
               class="absolute bottom-full left-2 right-2 mb-2 rounded-2xl border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark shadow-xl overflow-hidden"
             >
-              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleSettings">设置</button>
-              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" :disabled="!currentSessionId || tempSession || loading" @click="handleSyncHistoryFromMenu">同步历史</button>
-              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleLogout">退出登录</button>
+              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleSettings">Settings</button>
+              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" :disabled="!currentSessionId || tempSession || loading" @click="handleSyncHistoryFromMenu">Sync history</button>
+              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleLogout">Log out</button>
             </div>
-          </div>
-
-          <!-- User Avatar Row -->
-          <div v-if="false" class="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer" @click="handleLogout">
-            <div class="w-7 h-7 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-xs font-bold shrink-0 select-none">
-              U
-            </div>
-            <span class="text-sm text-text-secondary-light dark:text-text-secondary-dark">退出登录</span>
           </div>
         </div>
       </div>
@@ -155,7 +181,7 @@
           v-if="isSidebarCollapsed"
           class="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent"
           @click="toggleSidebar"
-          title="展开侧边栏"
+          title="Open sidebar"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-text-secondary-light dark:text-text-secondary-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
@@ -165,13 +191,13 @@
           v-if="isSidebarCollapsed"
           class="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent"
           @click="createNewSession"
-          title="新建对话"
+          title="New chat"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-text-secondary-light dark:text-text-secondary-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
         </button>
 
         <div class="flex items-center gap-3 ml-auto">
-          <label for="modelType" class="text-sm text-text-secondary-light dark:text-text-secondary-dark hidden sm:block">模型</label>
+          <label for="modelType" class="text-sm text-text-secondary-light dark:text-text-secondary-dark hidden sm:block">Model</label>
           <select id="modelType" v-model="selectedModel" class="px-2 py-1.5 text-sm rounded-lg border border-border-light dark:border-border-dark bg-transparent cursor-pointer outline-none focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark disabled:opacity-50" :disabled="loading">
             <option v-for="option in modelOptions" :key="option.value" :value="option.value" class="bg-surface-light dark:bg-surface-dark">
               {{ option.label }}
@@ -209,7 +235,7 @@
               <div v-else :class="['w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm select-none', message.role === 'user' ? 'bg-black text-white dark:bg-white dark:text-black' : 'bg-surface-light border border-border-light dark:bg-surface-dark dark:border-border-dark']">
                 {{ message.role === 'user' ? getUserInitial() : 'AI' }}
               </div>
-              <span class="font-semibold text-sm">{{ message.role === 'user' ? '你' : 'AI' }}</span>
+              <span class="font-semibold text-sm">{{ message.role === 'user' ? 'You' : 'AI' }}</span>
               <!-- Actions & Meta -->
               <div class="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
@@ -217,7 +243,7 @@
                   class="px-2 py-0.5 text-xs rounded bg-surface-light dark:bg-surface-dark border border-border-light dark:border-border-dark hover:text-accent-light dark:hover:text-accent-dark cursor-pointer transition-colors"
                   @click="playTTS(message.content)"
                 >
-                  朗读
+                  Read aloud
                 </button>
               </div>
               <span v-if="getMessageMetaStatus(message)" class="text-xs text-text-secondary-light dark:text-text-secondary-dark ml-auto">
@@ -228,7 +254,7 @@
             <!-- Message Content block -->
             <div class="pl-11 text-base leading-relaxed space-y-4 break-words">
               <!-- Image Preview (for image recognition messages) -->
-              <img v-if="message.imageUrl" :src="message.imageUrl" alt="上传的图片" class="max-w-xs rounded-xl shadow-md mt-1 mb-2" />
+              <img v-if="message.imageUrl" :src="message.imageUrl" alt="Uploaded image" class="max-w-xs rounded-xl shadow-md mt-1 mb-2" />
               <div v-html="renderMarkdown(message.content)" class="prose dark:prose-invert prose-p:my-2 prose-pre:bg-surface-light dark:prose-pre:bg-surface-dark prose-pre:border prose-pre:border-border-light dark:prose-pre:border-border-dark prose-pre:shadow-[0_2px_10px_rgba(0,0,0,0.02)] max-w-none"></div>
             </div>
           </div>
@@ -265,7 +291,7 @@
           <div class="flex items-end">
             <textarea
               v-model="inputMessage"
-              placeholder="问点什么..."
+              placeholder="问点什�?.."
               @keydown.enter.exact.prevent="sendMessage"
               :disabled="loading"
               ref="messageInput"
@@ -330,7 +356,7 @@
                 @click="triggerAvatarUpload"
                 :disabled="uploadingAvatar"
               >
-                {{ uploadingAvatar ? '上传中...' : '上传头像' }}
+                {{ uploadingAvatar ? '上传�?..' : '上传头像' }}
               </button>
               <span class="text-xs text-text-secondary-light dark:text-text-secondary-dark">支持 JPG、PNG、WEBP，大小不超过 2MB</span>
             </div>
@@ -344,40 +370,40 @@
           </div>
 
           <div class="space-y-2">
-            <label class="block text-sm">昵称</label>
+            <label class="block text-sm">Display name</label>
             <input v-model="profileForm.name" type="text" maxlength="50" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none" />
           </div>
 
           <div class="space-y-2">
-            <label class="block text-sm">用户名</label>
+            <label class="block text-sm">Username</label>
             <input :value="userProfile.username || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none" disabled />
           </div>
 
           <div class="space-y-2">
-            <label class="block text-sm">邮箱</label>
+            <label class="block text-sm">Email</label>
             <input :value="userProfile.email || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none" disabled />
           </div>
 
           <div class="space-y-2">
-            <label class="block text-sm">简介</label>
+            <label class="block text-sm">Bio</label>
             <textarea v-model="profileForm.bio" rows="4" maxlength="255" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none resize-none"></textarea>
           </div>
         </div>
         <template #footer>
           <div class="flex justify-end gap-2">
-            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="settingsVisible = false">取消</button>
-            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="saveProfile" :disabled="savingProfile">{{ savingProfile ? '保存中...' : '保存' }}</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="settingsVisible = false">Cancel</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="saveProfile" :disabled="savingProfile">{{ savingProfile ? 'Saving...' : 'Save' }}</button>
           </div>
         </template>
       </el-dialog>
-      <el-dialog v-model="cropDialogVisible" title="裁剪头像" width="560px">
+      <el-dialog v-model="cropDialogVisible" title="Crop avatar" width="560px">
         <div class="space-y-4">
           <div class="flex justify-center">
             <div class="relative flex items-center justify-center w-72 h-72 overflow-hidden rounded-2xl border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5">
               <img
                 v-if="cropPreviewUrl"
                 :src="cropPreviewUrl"
-                alt="裁剪预览"
+                alt="Crop preview"
                 class="max-w-none select-none"
                 :style="cropImageStyle"
               />
@@ -385,24 +411,24 @@
           </div>
           <div class="space-y-3">
             <div>
-              <label class="block text-sm mb-2">缩放</label>
+              <label class="block text-sm mb-2">Zoom</label>
               <input v-model="cropScale" type="range" min="1" max="3" step="0.01" class="w-full" />
             </div>
             <div>
-              <label class="block text-sm mb-2">左右调整</label>
+              <label class="block text-sm mb-2">Horizontal offset</label>
               <input v-model="cropOffsetX" type="range" min="-120" max="120" step="1" class="w-full" />
             </div>
             <div>
-              <label class="block text-sm mb-2">上下调整</label>
+              <label class="block text-sm mb-2">Vertical offset</label>
               <input v-model="cropOffsetY" type="range" min="-120" max="120" step="1" class="w-full" />
             </div>
           </div>
-          <p class="text-xs text-text-secondary-light dark:text-text-secondary-dark">当前裁剪比例固定为 1:1，适合作为头像展示。</p>
+          <p class="text-xs text-text-secondary-light dark:text-text-secondary-dark">The crop ratio is fixed at 1:1 for avatar display.</p>
         </div>
         <template #footer>
           <div class="flex justify-end gap-2">
-            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="cancelAvatarCrop">取消</button>
-            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="confirmAvatarCrop" :disabled="uploadingAvatar">{{ uploadingAvatar ? '上传中...' : '确认并上传' }}</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="cancelAvatarCrop">Cancel</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="confirmAvatarCrop" :disabled="uploadingAvatar">{{ uploadingAvatar ? 'Uploading...' : 'Confirm upload' }}</button>
           </div>
         </template>
       </el-dialog>
@@ -431,6 +457,9 @@ export default {
     const isSidebarCollapsed = ref(false)
     const isDark = ref(false)
     const sessions = ref({})
+    const sessionFolders = ref([])
+    const ungroupedSessionIds = ref([])
+    const expandedFolders = ref({})
     const currentSessionId = ref(null)
     const tempSession = ref(false)
     const currentMessages = ref([])
@@ -470,13 +499,13 @@ export default {
     })
     const modelOptions = MODEL_OPTIONS
 
-    // 用于中断当前请求，保证停止按钮和异常处理共用同一个 controller。
+    // 用于中断当前请求，保证停止按钮和异常处理共用同一�?controller�?
     const activeAbortController = ref(null)
-    // 记录当前流式响应对应的会话 ID，新会话开始时会先使用 temp。
+    // 记录当前流式响应对应的会�?ID，新会话开始时会先使用 temp�?
     const activeStreamingSessionId = ref(null)
-    // 指向当前 assistant 消息，便于更新停止、超时和失败状态。
+    // 指向当前 assistant 消息，便于更新停止、超时和失败状态�?
     const activeAssistantIndex = ref(-1)
-    // 区分用户手动停止与请求异常中断。
+    // 区分用户手动停止与请求异常中断�?
     const manualStopRequested = ref(false)
 
     const renderMarkdown = (text) => {
@@ -488,7 +517,7 @@ export default {
         .replace(/\n/g, '<br>')
     }
 
-    // 统一后端返回和前端临时消息的状态值。
+    // 统一后端返回和前端临时消息的状态值�?
     const normalizeMessageStatus = (status) => {
       if (!status) return 'completed'
       const normalized = String(status).toLowerCase()
@@ -499,7 +528,7 @@ export default {
 
     const buildSessionTitle = (question) => {
       const title = String(question || '').trim()
-      return title || '新会话'
+      return title || 'New session'
     }
 
     const mapHistoryItemToMessage = (item) => ({
@@ -511,11 +540,11 @@ export default {
     const getMessageStatusLabel = (status) => {
       switch (normalizeMessageStatus(status)) {
       case 'streaming':
-        return '生成中'
+        return 'Streaming'
       case 'cancelled':
-        return '已停止'
+        return 'Stopped'
       case 'timeout':
-        return '已超时'
+        return 'Timed out'
       case 'failed':
         return '失败'
       case 'partial':
@@ -540,7 +569,7 @@ export default {
       }
     }
 
-    // 确保会话对象一定存在，避免新会话切换或异步返回时访问空对象。
+    // 确保会话对象一定存在，避免新会话切换或异步返回时访问空对象�?
     const ensureSessionEntry = (sessionId) => {
       const normalizedId = String(sessionId || '')
       if (!normalizedId || normalizedId === 'temp') {
@@ -595,7 +624,88 @@ export default {
       }
 
       sessions.value = nextSessions
+      ensureSessionListed(normalizedId)
       return nextEntry
+    }
+
+    const sidebarFolders = computed(() => sessionFolders.value.map(folder => ({
+      ...folder,
+      sessions: (folder.sessionIds || [])
+        .map(sessionId => sessions.value[sessionId])
+        .filter(Boolean)
+    })))
+
+    const ungroupedSessions = computed(() => ungroupedSessionIds.value
+      .map(sessionId => sessions.value[sessionId])
+      .filter(Boolean))
+
+    const isFolderExpanded = (folderId) => expandedFolders.value[String(folderId)] !== false
+
+    const toggleFolder = (folderId) => {
+      const key = String(folderId)
+      expandedFolders.value = {
+        ...expandedFolders.value,
+        [key]: !isFolderExpanded(key)
+      }
+    }
+
+    const ensureSessionListed = (sessionId) => {
+      const normalizedId = String(sessionId || '')
+      if (!normalizedId || normalizedId === 'temp') return
+
+      const inFolder = sessionFolders.value.some(folder => (folder.sessionIds || []).includes(normalizedId))
+      const inUngrouped = ungroupedSessionIds.value.includes(normalizedId)
+      if (!inFolder && !inUngrouped) {
+        ungroupedSessionIds.value = [normalizedId, ...ungroupedSessionIds.value]
+      }
+    }
+
+    const applySessionTree = (tree) => {
+      const nextSessionMap = {}
+      const nextFolders = []
+      const nextExpanded = { ...expandedFolders.value }
+      const nextUngrouped = []
+
+      ;(tree?.folders || []).forEach(folder => {
+        const folderId = String(folder.id)
+        nextExpanded[folderId] = expandedFolders.value[folderId] !== false
+        const sessionIds = []
+
+        ;(folder.sessions || []).forEach(sessionItem => {
+          const sid = String(sessionItem.sessionId)
+          const existing = sessions.value[sid] || {}
+          nextSessionMap[sid] = {
+            ...existing,
+            id: sid,
+            name: sessionItem.name || existing.name || `Session ${sid}`,
+            messages: Array.isArray(existing.messages) ? existing.messages : []
+          }
+          sessionIds.push(sid)
+        })
+
+        nextFolders.push({
+          id: folder.id,
+          name: folder.name || `Folder ${folder.id}`,
+          sessionIds
+        })
+      })
+
+      ;(tree?.ungroupedSessions || []).forEach(sessionItem => {
+        const sid = String(sessionItem.sessionId)
+        const existing = sessions.value[sid] || {}
+        nextSessionMap[sid] = {
+          ...existing,
+          id: sid,
+          name: sessionItem.name || existing.name || `Session ${sid}`,
+          messages: Array.isArray(existing.messages) ? existing.messages : []
+        }
+        nextUngrouped.push(sid)
+      })
+
+      sessions.value = nextSessionMap
+      sessionFolders.value = nextFolders
+      ungroupedSessionIds.value = nextUngrouped
+      expandedFolders.value = nextExpanded
     }
 
     const CROP_PREVIEW_SIZE = 288
@@ -668,7 +778,7 @@ export default {
       try {
         parsed = JSON.parse(data)
       } catch {
-        // 非法 JSON 直接忽略，避免把协议数据漏到聊天内容里。
+        // 非法 JSON 直接忽略，避免把协议数据漏到聊天内容里�?
         return
       }
 
@@ -764,7 +874,11 @@ export default {
 
     const loadSessions = async () => {
       try {
-        const response = await api.get('/AI/chat/sessions')
+        const response = await api.get('/AI/chat/session-tree')
+        if (response.data && response.data.status_code === 1000 && response.data.tree) {
+          applySessionTree(response.data.tree)
+          return
+        }
         if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.sessions)) {
           const sessionMap = {}
           response.data.sessions.forEach((sessionItem) => {
@@ -779,6 +893,237 @@ export default {
         }
       } catch (error) {
         console.error('Load sessions error:', error)
+      }
+    }
+
+    const createFolder = async () => {
+      try {
+        const { value } = await ElMessageBox.prompt('Enter a folder name', 'Create Folder', {
+          confirmButtonText: 'OK',
+          cancelButtonText: 'Cancel',
+          inputPattern: /\S+/,
+          inputErrorMessage: 'Folder name is required'
+        })
+
+        const name = String(value || '').trim()
+        if (!name) return
+
+        const response = await api.post('/AI/chat/folder/create', { name })
+        if (response.data && response.data.status_code === 1000) {
+          await loadSessions()
+          ElMessage.success('Folder created')
+          return
+        }
+
+        ElMessage.error(response.data?.status_msg || 'Create folder failed')
+      } catch (error) {
+        if (error !== 'cancel' && error !== 'close') {
+          console.error('Create folder error:', error)
+          ElMessage.error('Create folder failed')
+        }
+      }
+    }
+
+    const renameFolder = async (folder) => {
+      if (!folder?.id) return
+      try {
+        const { value } = await ElMessageBox.prompt('Enter a new folder name', 'Rename Folder', {
+          confirmButtonText: 'OK',
+          cancelButtonText: 'Cancel',
+          inputValue: folder.name || '',
+          inputPattern: /\S+/,
+          inputErrorMessage: 'Folder name is required'
+        })
+        const name = String(value || '').trim()
+        if (!name) return
+
+        const response = await api.post('/AI/chat/folder/rename', {
+          folderId: Number(folder.id),
+          name
+        })
+        if (response.data?.status_code === 1000) {
+          await loadSessions()
+          ElMessage.success('Folder renamed')
+          return
+        }
+        ElMessage.error(response.data?.status_msg || 'Rename folder failed')
+      } catch (error) {
+        if (error !== 'cancel' && error !== 'close') {
+          console.error('Rename folder error:', error)
+          ElMessage.error('Rename folder failed')
+        }
+      }
+    }
+
+    const deleteFolder = async (folder) => {
+      if (!folder?.id) return
+      try {
+        await ElMessageBox.confirm(
+          `Delete folder "${folder.name || folder.id}"? Sessions will become ungrouped.`,
+          'Delete Folder',
+          {
+            confirmButtonText: 'Delete',
+            cancelButtonText: 'Cancel',
+            type: 'warning'
+          }
+        )
+
+        const response = await api.post('/AI/chat/folder/delete', {
+          folderId: Number(folder.id)
+        })
+        if (response.data?.status_code === 1000) {
+          await loadSessions()
+          ElMessage.success('Folder deleted')
+          return
+        }
+        ElMessage.error(response.data?.status_msg || 'Delete folder failed')
+      } catch (error) {
+        if (error !== 'cancel' && error !== 'close') {
+          console.error('Delete folder error:', error)
+          ElMessage.error('Delete folder failed')
+        }
+      }
+    }
+
+    const promptTargetFolderId = async () => {
+      const folders = sessionFolders.value || []
+      if (!folders.length) {
+        ElMessage.warning('Create a folder first')
+        return null
+      }
+
+      const hint = folders.map(item => `${item.id}:${item.name}`).join(' | ')
+      const { value } = await ElMessageBox.prompt(
+        `Choose target folder id: ${hint}`,
+        'Move Session',
+        {
+          confirmButtonText: 'Move',
+          cancelButtonText: 'Cancel',
+          inputPattern: /^\d+$/,
+          inputErrorMessage: 'Enter a numeric folder id'
+        }
+      )
+
+      const folderId = Number(value)
+      if (!Number.isInteger(folderId)) {
+        ElMessage.error('Invalid folder id')
+        return null
+      }
+      const exists = folders.some(item => Number(item.id) === folderId)
+      if (!exists) {
+        ElMessage.error('Folder id does not exist')
+        return null
+      }
+      return folderId
+    }
+
+    const moveSessionItem = async (session) => {
+      if (!session?.id) return
+      try {
+        const folderId = await promptTargetFolderId()
+        if (!folderId) return
+
+        const response = await api.post('/AI/chat/session/move', {
+          sessionId: String(session.id),
+          folderId
+        })
+        if (response.data?.status_code === 1000) {
+          await loadSessions()
+          ElMessage.success('Session moved')
+          return
+        }
+        ElMessage.error(response.data?.status_msg || 'Move session failed')
+      } catch (error) {
+        if (error !== 'cancel' && error !== 'close') {
+          console.error('Move session error:', error)
+          ElMessage.error('Move session failed')
+        }
+      }
+    }
+
+    const removeSessionItemFromFolder = async (session) => {
+      if (!session?.id) return
+      try {
+        const response = await api.post('/AI/chat/session/remove-from-folder', {
+          sessionId: String(session.id)
+        })
+        if (response.data?.status_code === 1000) {
+          await loadSessions()
+          ElMessage.success('Session removed from folder')
+          return
+        }
+        ElMessage.error(response.data?.status_msg || 'Remove from folder failed')
+      } catch (error) {
+        console.error('Remove from folder error:', error)
+        ElMessage.error('Remove from folder failed')
+      }
+    }
+
+    const renameSessionItem = async (session) => {
+      if (!session?.id) return
+      try {
+        const { value } = await ElMessageBox.prompt('Enter a new session title', 'Rename Session', {
+          confirmButtonText: 'OK',
+          cancelButtonText: 'Cancel',
+          inputValue: session.name || '',
+          inputPattern: /\S+/,
+          inputErrorMessage: 'Session title is required'
+        })
+        const title = String(value || '').trim()
+        if (!title) return
+
+        const response = await api.post('/AI/chat/session/rename', {
+          sessionId: String(session.id),
+          title
+        })
+        if (response.data?.status_code === 1000) {
+          await loadSessions()
+          if (sessions.value[String(session.id)]) {
+            sessions.value[String(session.id)].name = title
+          }
+          ElMessage.success('Session renamed')
+          return
+        }
+        ElMessage.error(response.data?.status_msg || 'Rename session failed')
+      } catch (error) {
+        if (error !== 'cancel' && error !== 'close') {
+          console.error('Rename session error:', error)
+          ElMessage.error('Rename session failed')
+        }
+      }
+    }
+
+    const deleteSessionItem = async (session) => {
+      if (!session?.id) return
+      try {
+        await ElMessageBox.confirm(
+          `Delete session "${session.name || session.id}"?`,
+          'Delete Session',
+          {
+            confirmButtonText: 'Delete',
+            cancelButtonText: 'Cancel',
+            type: 'warning'
+          }
+        )
+
+        const response = await api.post('/AI/chat/session/delete', {
+          sessionId: String(session.id)
+        })
+        if (response.data?.status_code === 1000) {
+          const deletedId = String(session.id)
+          if (currentSessionId.value === deletedId) {
+            createNewSession()
+          }
+          await loadSessions()
+          ElMessage.success('Session deleted')
+          return
+        }
+        ElMessage.error(response.data?.status_msg || 'Delete session failed')
+      } catch (error) {
+        if (error !== 'cancel' && error !== 'close') {
+          console.error('Delete session error:', error)
+          ElMessage.error('Delete session failed')
+        }
       }
     }
 
@@ -834,7 +1179,7 @@ export default {
 
     const syncHistory = async () => {
       if (!currentSessionId.value || tempSession.value) {
-        ElMessage.warning('请先选择已有会话再同步历史')
+        ElMessage.warning('Please select an existing session first')
         return
       }
       try {
@@ -871,13 +1216,13 @@ export default {
         }
         loading.value = false
         await setAssistantStatus('cancelled')
-        ElMessage.success('已停止当前生成')
+        ElMessage.success('Stopped current generation')
       }
     }
 
     const sendMessage = async () => {
       if (!inputMessage.value || !inputMessage.value.trim()) {
-        ElMessage.warning('请输入消息内容')
+        ElMessage.warning('Please enter a message')
         return
       }
 
@@ -911,7 +1256,7 @@ export default {
         }
       } catch (error) {
         console.error('Send message error:', error)
-        ElMessage.error(error.message || '发送失败，请重试')
+        ElMessage.error(error.message || 'Send failed, please try again')
 
         if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]?.messages?.length) {
           sessions.value[currentSessionId.value].messages.pop()
@@ -1046,7 +1391,7 @@ export default {
           tempSession.value = false
           currentMessages.value = [...sessions.value[sessionId].messages]
         } else {
-          throw new Error(response.data?.status_msg || '发送失败')
+          throw new Error(response.data?.status_msg || 'Send failed')
         }
       } else {
         const targetSession = ensureSessionEntry(currentSessionId.value)
@@ -1070,7 +1415,7 @@ export default {
           currentMessages.value = [...sessionMsgs]
         } else {
           sessionMsgs.pop()
-          throw new Error(response.data?.status_msg || '发送失败')
+          throw new Error(response.data?.status_msg || 'Send failed')
         }
       }
     }
@@ -1087,7 +1432,7 @@ export default {
 
       const fileName = file.name.toLowerCase()
       if (!fileName.endsWith('.md') && !fileName.endsWith('.txt')) {
-        ElMessage.error('只支持上传 .md 和 .txt 文件')
+        ElMessage.error('只支持上�?.md �?.txt 文件')
         if (fileInput.value) {
           fileInput.value.value = ''
         }
@@ -1137,7 +1482,7 @@ export default {
       // Add user message with image preview
       currentMessages.value.push({
         role: 'user',
-        content: `已上传图片: ${file.name}`,
+        content: `已上传图�? ${file.name}`,
         imageUrl: imageUrl,
         meta: buildMessageMeta('completed')
       })
@@ -1172,7 +1517,7 @@ export default {
         console.error('Image recognition error:', error)
         currentMessages.value.push({
           role: 'assistant',
-          content: `[错误] 无法连接到服务器或识别失败: ${error.message}`,
+          content: `[错误] 无法连接到服务器或识别失�? ${error.message}`,
           meta: buildMessageMeta('failed')
         })
       } finally {
@@ -1244,7 +1589,7 @@ export default {
         if (response.data?.status_code === 1000 && response.data.profile) {
           applyUserProfile(response.data.profile)
           settingsVisible.value = false
-          ElMessage.success('个人资料已更新')
+          ElMessage.success('Profile updated')
           return
         }
         ElMessage.error(response.data?.status_msg || '个人资料更新失败')
@@ -1404,14 +1749,14 @@ export default {
     const handleLogout = async () => {
       userMenuVisible.value = false
       try {
-        await ElMessageBox.confirm('确定要退出登录吗？', '提示', {
-          confirmButtonText: '确定',
-          cancelButtonText: '取消',
+        await ElMessageBox.confirm('Are you sure you want to log out?', 'Confirm', {
+          confirmButtonText: 'OK',
+          cancelButtonText: 'Cancel',
           type: 'warning'
         })
         await api.post('/user/logout')
         clearTokens()
-        ElMessage.success('退出登录成功')
+        ElMessage.success('Logged out')
         router.push('/login')
       } catch {
         // 用户取消操作
@@ -1436,7 +1781,8 @@ export default {
     return {
       isSidebarCollapsed,
       isDark,
-      sessions: computed(() => Object.values(sessions.value)),
+      sidebarFolders,
+      ungroupedSessions,
       currentSessionId,
       tempSession,
       currentMessages,
@@ -1468,8 +1814,17 @@ export default {
       getMessageMetaStatus,
       getUserDisplayName,
       getUserInitial,
+      isFolderExpanded,
+      toggleFolder,
       toggleUserMenu,
       playTTS,
+      createFolder,
+      renameFolder,
+      deleteFolder,
+      moveSessionItem,
+      removeSessionItemFromFolder,
+      renameSessionItem,
+      deleteSessionItem,
       createNewSession,
       switchSession,
       syncHistory,
@@ -1510,3 +1865,4 @@ aside ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
 }
 </style>
+
