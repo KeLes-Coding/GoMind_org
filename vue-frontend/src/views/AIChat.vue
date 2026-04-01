@@ -373,12 +373,12 @@
       <el-dialog v-model="cropDialogVisible" title="裁剪头像" width="560px">
         <div class="space-y-4">
           <div class="flex justify-center">
-            <div class="w-72 h-72 overflow-hidden rounded-2xl border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5">
+            <div class="relative flex items-center justify-center w-72 h-72 overflow-hidden rounded-2xl border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5">
               <img
                 v-if="cropPreviewUrl"
                 :src="cropPreviewUrl"
                 alt="裁剪预览"
-                class="w-full h-full select-none"
+                class="max-w-none select-none"
                 :style="cropImageStyle"
               />
             </div>
@@ -439,7 +439,7 @@ export default {
     const messagesRef = ref(null)
     const messageInput = ref(null)
     const selectedModel = ref('1')
-    const isStreaming = ref(false)
+    const isStreaming = ref(true)
     const uploading = ref(false)
     const fileInput = ref(null)
     const imageInput = ref(null)
@@ -453,6 +453,8 @@ export default {
     const cropScale = ref(1)
     const cropOffsetX = ref(0)
     const cropOffsetY = ref(0)
+    const cropImageNaturalWidth = ref(0)
+    const cropImageNaturalHeight = ref(0)
     const pendingAvatarFile = ref(null)
     const userProfile = ref({
       id: null,
@@ -494,6 +496,11 @@ export default {
     }
 
     const buildMessageMeta = (status) => ({ status: normalizeMessageStatus(status) })
+
+    const buildSessionTitle = (question) => {
+      const title = String(question || '').trim()
+      return title || '新会话'
+    }
 
     const mapHistoryItemToMessage = (item) => ({
       role: item.is_user ? 'user' : 'assistant',
@@ -551,10 +558,69 @@ export default {
       return sessions.value[normalizedId]
     }
 
-    const cropImageStyle = computed(() => ({
-      transform: `translate(${cropOffsetX.value}px, ${cropOffsetY.value}px) scale(${cropScale.value})`,
-      transformOrigin: 'center center'
-    }))
+    const upsertSessionEntry = (sessionData, options = {}) => {
+      const normalizedId = String(sessionData?.id || '')
+      if (!normalizedId || normalizedId === 'temp') {
+        return null
+      }
+
+      const existing = sessions.value[normalizedId] || {
+        id: normalizedId,
+        name: `会话 ${normalizedId}`,
+        messages: []
+      }
+      const nextEntry = {
+        ...existing,
+        ...sessionData,
+        id: normalizedId,
+        messages: Array.isArray(sessionData?.messages)
+          ? sessionData.messages
+          : (Array.isArray(existing.messages) ? existing.messages : [])
+      }
+
+      const nextSessions = {}
+      const shouldPrepend = options.prepend !== false
+      if (shouldPrepend) {
+        nextSessions[normalizedId] = nextEntry
+      }
+
+      Object.entries(sessions.value).forEach(([key, value]) => {
+        if (key !== normalizedId) {
+          nextSessions[key] = value
+        }
+      })
+
+      if (!shouldPrepend) {
+        nextSessions[normalizedId] = nextEntry
+      }
+
+      sessions.value = nextSessions
+      return nextEntry
+    }
+
+    const CROP_PREVIEW_SIZE = 288
+    const CROP_OUTPUT_SIZE = 512
+
+    const cropImageStyle = computed(() => {
+      if (!cropImageNaturalWidth.value || !cropImageNaturalHeight.value) {
+        return {
+          transform: `translate(${cropOffsetX.value}px, ${cropOffsetY.value}px) scale(${cropScale.value})`,
+          transformOrigin: 'center center'
+        }
+      }
+
+      const baseScale = Math.max(
+        CROP_PREVIEW_SIZE / cropImageNaturalWidth.value,
+        CROP_PREVIEW_SIZE / cropImageNaturalHeight.value
+      )
+
+      return {
+        width: `${cropImageNaturalWidth.value * baseScale}px`,
+        height: `${cropImageNaturalHeight.value * baseScale}px`,
+        transform: `translate(${cropOffsetX.value}px, ${cropOffsetY.value}px) scale(${cropScale.value})`,
+        transformOrigin: 'center center'
+      }
+    })
 
     const syncSessionMessagesFromCurrent = async () => {
       if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]) {
@@ -619,11 +685,11 @@ export default {
         const newSid = String(parsed.sessionId)
         activeStreamingSessionId.value = newSid
         if (tempSession.value) {
-          sessions.value[newSid] = {
+          upsertSessionEntry({
             id: newSid,
-            name: '新会话',
+            name: buildSessionTitle(currentMessages.value.find(message => message.role === 'user')?.content),
             messages: [...currentMessages.value]
-          }
+          })
           currentSessionId.value = newSid
           tempSession.value = false
         }
@@ -735,6 +801,18 @@ export default {
       })
     }
 
+    const ensureActiveDraftSession = () => {
+      if (currentSessionId.value && !tempSession.value) {
+        return
+      }
+      if (tempSession.value && currentSessionId.value === 'temp') {
+        return
+      }
+      currentSessionId.value = 'temp'
+      tempSession.value = true
+      currentMessages.value = []
+    }
+
     const switchSession = async (sessionId) => {
       if (!sessionId || loading.value) return
       const targetSession = ensureSessionEntry(sessionId)
@@ -803,6 +881,10 @@ export default {
         return
       }
 
+      if (!currentSessionId.value) {
+        ensureActiveDraftSession()
+      }
+
       const currentInput = inputMessage.value.trim()
       const userMessage = {
         role: 'user',
@@ -812,6 +894,12 @@ export default {
       inputMessage.value = ''
 
       currentMessages.value.push(userMessage)
+      if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]) {
+        upsertSessionEntry({
+          ...sessions.value[currentSessionId.value],
+          messages: [...currentMessages.value]
+        })
+      }
       await syncSessionMessagesFromCurrent()
 
       try {
@@ -949,11 +1037,11 @@ export default {
             meta: buildMessageMeta('completed')
           }
 
-          sessions.value[sessionId] = {
+          upsertSessionEntry({
             id: sessionId,
-            name: '新会话',
+            name: buildSessionTitle(question),
             messages: [{ role: 'user', content: question, meta: buildMessageMeta('completed') }, aiMessage]
-          }
+          })
           currentSessionId.value = sessionId
           tempSession.value = false
           currentMessages.value = [...sessions.value[sessionId].messages]
@@ -1178,42 +1266,26 @@ export default {
       const file = event.target.files[0]
       if (!file) return
 
-      pendingAvatarFile.value = file
-      cropScale.value = 1
-      cropOffsetX.value = 0
-      cropOffsetY.value = 0
-      if (cropPreviewUrl.value) {
-        URL.revokeObjectURL(cropPreviewUrl.value)
-      }
-      cropPreviewUrl.value = URL.createObjectURL(file)
-      cropDialogVisible.value = true
-      if (avatarInput.value) {
-        avatarInput.value.value = ''
-      }
-      return
-
       try {
-        uploadingAvatar.value = true
-        const formData = new FormData()
-        formData.append('avatar', file)
-
-        const response = await api.post('/user/avatar/upload', formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
-        })
-
-        if (response.data?.status_code === 1000 && response.data.profile) {
-          applyUserProfile(response.data.profile)
-          ElMessage.success('头像上传成功')
-        } else {
-          ElMessage.error(response.data?.status_msg || '头像上传失败')
+        pendingAvatarFile.value = file
+        const { width, height } = await loadImageDimensions(file)
+        cropImageNaturalWidth.value = width
+        cropImageNaturalHeight.value = height
+        cropScale.value = 1
+        cropOffsetX.value = 0
+        cropOffsetY.value = 0
+        if (cropPreviewUrl.value) {
+          URL.revokeObjectURL(cropPreviewUrl.value)
         }
+        cropPreviewUrl.value = URL.createObjectURL(file)
+        cropDialogVisible.value = true
       } catch (error) {
-        console.error('Upload avatar error:', error)
-        ElMessage.error('头像上传失败')
+        pendingAvatarFile.value = null
+        cropImageNaturalWidth.value = 0
+        cropImageNaturalHeight.value = 0
+        console.error('Load avatar preview error:', error)
+        ElMessage.error('头像预览加载失败')
       } finally {
-        uploadingAvatar.value = false
         if (avatarInput.value) {
           avatarInput.value.value = ''
         }
@@ -1223,6 +1295,8 @@ export default {
     const cancelAvatarCrop = () => {
       cropDialogVisible.value = false
       pendingAvatarFile.value = null
+      cropImageNaturalWidth.value = 0
+      cropImageNaturalHeight.value = 0
       if (cropPreviewUrl.value) {
         URL.revokeObjectURL(cropPreviewUrl.value)
         cropPreviewUrl.value = ''
@@ -1265,7 +1339,7 @@ export default {
       const objectUrl = URL.createObjectURL(file)
       image.onload = () => {
         const canvas = document.createElement('canvas')
-        const size = 512
+        const size = CROP_OUTPUT_SIZE
         canvas.width = size
         canvas.height = size
         const ctx = canvas.getContext('2d')
@@ -1279,8 +1353,9 @@ export default {
         const finalScale = baseScale * cropScale.value
         const drawWidth = image.width * finalScale
         const drawHeight = image.height * finalScale
-        const offsetX = (size - drawWidth) / 2 + cropOffsetX.value
-        const offsetY = (size - drawHeight) / 2 + cropOffsetY.value
+        const previewToOutputRatio = size / CROP_PREVIEW_SIZE
+        const offsetX = (size - drawWidth) / 2 + cropOffsetX.value * previewToOutputRatio
+        const offsetY = (size - drawHeight) / 2 + cropOffsetY.value * previewToOutputRatio
         ctx.clearRect(0, 0, size, size)
         ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight)
 
@@ -1292,6 +1367,23 @@ export default {
           }
           resolve(new File([blob], 'avatar.png', { type: 'image/png' }))
         }, 'image/png')
+      }
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl)
+        reject(new Error('头像预览加载失败'))
+      }
+      image.src = objectUrl
+    })
+
+    const loadImageDimensions = (file) => new Promise((resolve, reject) => {
+      const image = new Image()
+      const objectUrl = URL.createObjectURL(file)
+      image.onload = () => {
+        URL.revokeObjectURL(objectUrl)
+        resolve({
+          width: image.width,
+          height: image.height
+        })
       }
       image.onerror = () => {
         URL.revokeObjectURL(objectUrl)
