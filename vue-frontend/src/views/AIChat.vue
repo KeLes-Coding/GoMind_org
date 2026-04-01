@@ -64,6 +64,7 @@
         <!-- Bottom Actions (Gemini-style seamless) -->
         <div class="px-2 pb-3 pt-2 space-y-0.5">
           <button
+            v-if="false"
             @click="syncHistory"
             :disabled="!currentSessionId || tempSession || loading"
             class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed"
@@ -72,6 +73,7 @@
             <span>同步历史</span>
           </button>
           <button
+            v-if="false"
             @click="handleSettings"
             class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent border-none"
           >
@@ -79,7 +81,7 @@
             <span>设置</span>
           </button>
 
-          <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl">
+          <div v-if="false" class="flex items-center gap-3 px-3 py-2.5 rounded-xl">
             <img
               v-if="userProfile.avatar_url"
               :src="userProfile.avatar_url"
@@ -98,8 +100,43 @@
             </div>
           </div>
 
+          <div class="relative">
+            <button
+              type="button"
+              class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent border-none text-left"
+              @click.stop="toggleUserMenu"
+            >
+              <img
+                v-if="userProfile.avatar_url"
+                :src="userProfile.avatar_url"
+                alt="用户头像"
+                class="w-8 h-8 rounded-full object-cover shrink-0 border border-border-light dark:border-border-dark"
+              />
+              <div
+                v-else
+                class="w-8 h-8 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-xs font-bold shrink-0 select-none"
+              >
+                {{ getUserInitial() }}
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm truncate text-text-primary-light dark:text-text-primary-dark">{{ getUserDisplayName() }}</div>
+                <div class="text-xs truncate text-text-secondary-light dark:text-text-secondary-dark">@{{ userProfile.username || 'user' }}</div>
+              </div>
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0 text-text-secondary-light dark:text-text-secondary-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+
+            <div
+              v-if="userMenuVisible"
+              class="absolute bottom-full left-2 right-2 mb-2 rounded-2xl border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark shadow-xl overflow-hidden"
+            >
+              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleSettings">设置</button>
+              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" :disabled="!currentSessionId || tempSession || loading" @click="handleSyncHistoryFromMenu">同步历史</button>
+              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleLogout">退出登录</button>
+            </div>
+          </div>
+
           <!-- User Avatar Row -->
-          <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer" @click="handleLogout">
+          <div v-if="false" class="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer" @click="handleLogout">
             <div class="w-7 h-7 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-xs font-bold shrink-0 select-none">
               U
             </div>
@@ -333,6 +370,42 @@
           </div>
         </template>
       </el-dialog>
+      <el-dialog v-model="cropDialogVisible" title="裁剪头像" width="560px">
+        <div class="space-y-4">
+          <div class="flex justify-center">
+            <div class="w-72 h-72 overflow-hidden rounded-2xl border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5">
+              <img
+                v-if="cropPreviewUrl"
+                :src="cropPreviewUrl"
+                alt="裁剪预览"
+                class="w-full h-full select-none"
+                :style="cropImageStyle"
+              />
+            </div>
+          </div>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-sm mb-2">缩放</label>
+              <input v-model="cropScale" type="range" min="1" max="3" step="0.01" class="w-full" />
+            </div>
+            <div>
+              <label class="block text-sm mb-2">左右调整</label>
+              <input v-model="cropOffsetX" type="range" min="-120" max="120" step="1" class="w-full" />
+            </div>
+            <div>
+              <label class="block text-sm mb-2">上下调整</label>
+              <input v-model="cropOffsetY" type="range" min="-120" max="120" step="1" class="w-full" />
+            </div>
+          </div>
+          <p class="text-xs text-text-secondary-light dark:text-text-secondary-dark">当前裁剪比例固定为 1:1，适合作为头像展示。</p>
+        </div>
+        <template #footer>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="cancelAvatarCrop">取消</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="confirmAvatarCrop" :disabled="uploadingAvatar">{{ uploadingAvatar ? '上传中...' : '确认并上传' }}</button>
+          </div>
+        </template>
+      </el-dialog>
     </section>
   </div>
 </template>
@@ -372,8 +445,15 @@ export default {
     const imageInput = ref(null)
     const avatarInput = ref(null)
     const settingsVisible = ref(false)
+    const userMenuVisible = ref(false)
     const savingProfile = ref(false)
     const uploadingAvatar = ref(false)
+    const cropDialogVisible = ref(false)
+    const cropPreviewUrl = ref('')
+    const cropScale = ref(1)
+    const cropOffsetX = ref(0)
+    const cropOffsetY = ref(0)
+    const pendingAvatarFile = ref(null)
     const userProfile = ref({
       id: null,
       name: '',
@@ -452,6 +532,29 @@ export default {
         }
       }
     }
+
+    // 确保会话对象一定存在，避免新会话切换或异步返回时访问空对象。
+    const ensureSessionEntry = (sessionId) => {
+      const normalizedId = String(sessionId || '')
+      if (!normalizedId || normalizedId === 'temp') {
+        return null
+      }
+      if (!sessions.value[normalizedId]) {
+        sessions.value[normalizedId] = {
+          id: normalizedId,
+          name: `会话 ${normalizedId}`,
+          messages: []
+        }
+      } else if (!Array.isArray(sessions.value[normalizedId].messages)) {
+        sessions.value[normalizedId].messages = []
+      }
+      return sessions.value[normalizedId]
+    }
+
+    const cropImageStyle = computed(() => ({
+      transform: `translate(${cropOffsetX.value}px, ${cropOffsetY.value}px) scale(${cropScale.value})`,
+      transformOrigin: 'center center'
+    }))
 
     const syncSessionMessagesFromCurrent = async () => {
       if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]) {
@@ -614,9 +717,10 @@ export default {
     }
 
     const loadHistoryIntoSession = async (sessionId) => {
+      const targetSession = ensureSessionEntry(sessionId)
       const response = await api.post('/AI/chat/history', { sessionId })
       if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.history)) {
-        sessions.value[sessionId].messages = response.data.history.map(mapHistoryItemToMessage)
+        targetSession.messages = response.data.history.map(mapHistoryItemToMessage)
         return
       }
       throw new Error(response.data?.status_msg || '无法加载会话历史')
@@ -633,14 +737,15 @@ export default {
 
     const switchSession = async (sessionId) => {
       if (!sessionId || loading.value) return
+      const targetSession = ensureSessionEntry(sessionId)
       currentSessionId.value = String(sessionId)
       tempSession.value = false
 
       try {
-        if (!sessions.value[sessionId].messages || sessions.value[sessionId].messages.length === 0) {
+        if (!targetSession.messages || targetSession.messages.length === 0) {
           await loadHistoryIntoSession(sessionId)
         }
-        currentMessages.value = [...(sessions.value[sessionId].messages || [])]
+        currentMessages.value = [...(ensureSessionEntry(sessionId)?.messages || [])]
         await nextTick()
         scrollToBottom()
       } catch (error) {
@@ -656,7 +761,7 @@ export default {
       }
       try {
         await loadHistoryIntoSession(currentSessionId.value)
-        currentMessages.value = [...sessions.value[currentSessionId.value].messages]
+        currentMessages.value = [...(ensureSessionEntry(currentSessionId.value)?.messages || [])]
         await nextTick()
         scrollToBottom()
       } catch (error) {
@@ -856,9 +961,12 @@ export default {
           throw new Error(response.data?.status_msg || '发送失败')
         }
       } else {
-        const sessionMsgs = sessions.value[currentSessionId.value].messages || []
+        const targetSession = ensureSessionEntry(currentSessionId.value)
+        const sessionMsgs = targetSession ? (targetSession.messages || []) : []
         sessionMsgs.push({ role: 'user', content: question, meta: buildMessageMeta('completed') })
-        sessions.value[currentSessionId.value].messages = sessionMsgs
+        if (targetSession) {
+          targetSession.messages = sessionMsgs
+        }
 
         const response = await api.post('/AI/chat/send', {
           question,
@@ -1023,9 +1131,19 @@ export default {
       return source ? source.slice(0, 1).toUpperCase() : 'U'
     }
 
+    const toggleUserMenu = () => {
+      userMenuVisible.value = !userMenuVisible.value
+    }
+
     const handleSettings = async () => {
+      userMenuVisible.value = false
       settingsVisible.value = true
       await fetchUserProfile()
+    }
+
+    const handleSyncHistoryFromMenu = async () => {
+      userMenuVisible.value = false
+      await syncHistory()
     }
 
     const saveProfile = async () => {
@@ -1060,6 +1178,20 @@ export default {
       const file = event.target.files[0]
       if (!file) return
 
+      pendingAvatarFile.value = file
+      cropScale.value = 1
+      cropOffsetX.value = 0
+      cropOffsetY.value = 0
+      if (cropPreviewUrl.value) {
+        URL.revokeObjectURL(cropPreviewUrl.value)
+      }
+      cropPreviewUrl.value = URL.createObjectURL(file)
+      cropDialogVisible.value = true
+      if (avatarInput.value) {
+        avatarInput.value.value = ''
+      }
+      return
+
       try {
         uploadingAvatar.value = true
         const formData = new FormData()
@@ -1088,6 +1220,86 @@ export default {
       }
     }
 
+    const cancelAvatarCrop = () => {
+      cropDialogVisible.value = false
+      pendingAvatarFile.value = null
+      if (cropPreviewUrl.value) {
+        URL.revokeObjectURL(cropPreviewUrl.value)
+        cropPreviewUrl.value = ''
+      }
+    }
+
+    const confirmAvatarCrop = async () => {
+      if (!pendingAvatarFile.value) return
+
+      try {
+        uploadingAvatar.value = true
+        const croppedFile = await buildCroppedAvatarFile(pendingAvatarFile.value)
+        const formData = new FormData()
+        formData.append('avatar', croppedFile)
+
+        const response = await api.post('/user/avatar/upload', formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        })
+
+        if (response.data?.status_code === 1000 && response.data.profile) {
+          applyUserProfile(response.data.profile)
+          cropDialogVisible.value = false
+          ElMessage.success('头像上传成功')
+        } else {
+          ElMessage.error(response.data?.status_msg || '头像上传失败')
+        }
+      } catch (error) {
+        console.error('Upload avatar error:', error)
+        ElMessage.error('头像上传失败')
+      } finally {
+        uploadingAvatar.value = false
+        cancelAvatarCrop()
+      }
+    }
+
+    const buildCroppedAvatarFile = (file) => new Promise((resolve, reject) => {
+      const image = new Image()
+      const objectUrl = URL.createObjectURL(file)
+      image.onload = () => {
+        const canvas = document.createElement('canvas')
+        const size = 512
+        canvas.width = size
+        canvas.height = size
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl)
+          reject(new Error('无法创建裁剪画布'))
+          return
+        }
+
+        const baseScale = Math.max(size / image.width, size / image.height)
+        const finalScale = baseScale * cropScale.value
+        const drawWidth = image.width * finalScale
+        const drawHeight = image.height * finalScale
+        const offsetX = (size - drawWidth) / 2 + cropOffsetX.value
+        const offsetY = (size - drawHeight) / 2 + cropOffsetY.value
+        ctx.clearRect(0, 0, size, size)
+        ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight)
+
+        canvas.toBlob((blob) => {
+          URL.revokeObjectURL(objectUrl)
+          if (!blob) {
+            reject(new Error('无法生成裁剪结果'))
+            return
+          }
+          resolve(new File([blob], 'avatar.png', { type: 'image/png' }))
+        }, 'image/png')
+      }
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl)
+        reject(new Error('头像预览加载失败'))
+      }
+      image.src = objectUrl
+    })
+
     const toggleTheme = () => {
       isDark.value = !isDark.value
       if (isDark.value) {
@@ -1098,6 +1310,7 @@ export default {
     }
 
     const handleLogout = async () => {
+      userMenuVisible.value = false
       try {
         await ElMessageBox.confirm('确定要退出登录吗？', '提示', {
           confirmButtonText: '确定',
@@ -1146,16 +1359,24 @@ export default {
       imageInput,
       avatarInput,
       settingsVisible,
+      userMenuVisible,
       savingProfile,
       uploadingAvatar,
+      cropDialogVisible,
+      cropPreviewUrl,
+      cropScale,
+      cropOffsetX,
+      cropOffsetY,
       userProfile,
       profileForm,
       renderMarkdown,
+      cropImageStyle,
       modelOptions,
       getMessageStatusLabel,
       getMessageMetaStatus,
       getUserDisplayName,
       getUserInitial,
+      toggleUserMenu,
       playTTS,
       createNewSession,
       switchSession,
@@ -1168,6 +1389,9 @@ export default {
       handleImageRecognition,
       triggerAvatarUpload,
       handleAvatarUpload,
+      handleSyncHistoryFromMenu,
+      cancelAvatarCrop,
+      confirmAvatarCrop,
       saveProfile,
       toggleTheme,
       handleLogout,

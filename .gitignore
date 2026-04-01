@@ -5,3 +5,4 @@ vue-frontend/node_modules/
 bin/
 vue-frontend/dist/
 logs/
+uploads/
