@@ -1,21 +1,29 @@
 package user
 
 import (
+	"context"
 	"log"
+	"mime/multipart"
+	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"GopherAI/common/code"
 	myemail "GopherAI/common/email"
 	myredis "GopherAI/common/redis"
+	"GopherAI/common/storage"
 	captchaDAO "GopherAI/dao/captcha"
 	userDAO "GopherAI/dao/user"
+	"GopherAI/model"
 	"GopherAI/utils"
 	"GopherAI/utils/myjwt"
 )
 
 const (
 	captchaExpireDuration = 2 * time.Minute
+	maxAvatarSize         = 2 << 20
 )
 
 var usernamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{3,19}$`)
@@ -24,6 +32,15 @@ type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
 	Username     string
+}
+
+type UserProfile struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	Username  string `json:"username"`
+	AvatarURL string `json:"avatar_url"`
+	Bio       string `json:"bio"`
 }
 
 func Login(identifier, password string) (*TokenPair, code.Code) {
@@ -222,4 +239,136 @@ func consumeCaptcha(email string) error {
 	}
 
 	return captchaDAO.MarkCaptchaUsed(record.ID, time.Now())
+}
+
+// GetProfile 读取当前用户资料，并转换成对外返回结构。
+// GetProfile 读取当前用户资料，并转换成对外返回结构。
+func GetProfile(userID int64) (*UserProfile, code.Code) {
+	if userID <= 0 {
+		return nil, code.CodeInvalidToken
+	}
+
+	userInformation, err := userDAO.GetByID(userID)
+	if err != nil {
+		return nil, code.CodeServerBusy
+	}
+	if userInformation == nil {
+		return nil, code.CodeUserNotExist
+	}
+
+	return buildUserProfile(userInformation), code.CodeSuccess
+}
+
+// UpdateProfile 只允许更新展示层资料字段，避免资料接口越权修改认证信息。
+// UpdateProfile 只允许更新展示层资料字段，避免资料接口越权修改认证信息。
+func UpdateProfile(userID int64, name string, bio string) (*UserProfile, code.Code) {
+	if userID <= 0 {
+		return nil, code.CodeInvalidToken
+	}
+
+	name = strings.TrimSpace(name)
+	bio = strings.TrimSpace(bio)
+	if len(name) > 50 || len(bio) > 255 {
+		return nil, code.CodeInvalidParams
+	}
+
+	updates := map[string]interface{}{
+		"name": name,
+		"bio":  bio,
+	}
+	if err := userDAO.UpdateProfile(userID, updates); err != nil {
+		return nil, code.CodeServerBusy
+	}
+
+	return GetProfile(userID)
+}
+
+// UploadAvatar 负责校验头像文件并写入统一存储，再回写用户头像 key。
+// UploadAvatar 负责校验头像文件并写入统一存储，再回写用户头像 key。
+func UploadAvatar(userID int64, file *multipart.FileHeader) (*UserProfile, code.Code) {
+	if userID <= 0 {
+		return nil, code.CodeInvalidToken
+	}
+	if file == nil {
+		return nil, code.CodeInvalidParams
+	}
+	if file.Size <= 0 || file.Size > maxAvatarSize {
+		return nil, code.CodeInvalidParams
+	}
+
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp":
+	default:
+		return nil, code.CodeInvalidParams
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return nil, code.CodeServerBusy
+	}
+	defer src.Close()
+
+	fileStorage, err := storage.GetStorage()
+	if err != nil {
+		return nil, code.CodeServerBusy
+	}
+
+	avatarKey := buildAvatarStorageKey(userID, ext)
+	if err := fileStorage.Upload(context.Background(), avatarKey, src); err != nil {
+		return nil, code.CodeServerBusy
+	}
+
+	if err := userDAO.UpdateProfile(userID, map[string]interface{}{"avatar_url": avatarKey}); err != nil {
+		return nil, code.CodeServerBusy
+	}
+
+	return GetProfile(userID)
+}
+
+// GetAvatarStorageKeyByUserID 返回用户头像在存储层中的 key，供头像读取接口使用。
+func GetAvatarStorageKeyByUserID(userID int64) (string, code.Code) {
+	if userID <= 0 {
+		return "", code.CodeInvalidParams
+	}
+
+	userInformation, err := userDAO.GetByID(userID)
+	if err != nil {
+		return "", code.CodeServerBusy
+	}
+	if userInformation == nil {
+		return "", code.CodeUserNotExist
+	}
+	if strings.TrimSpace(userInformation.AvatarURL) == "" {
+		return "", code.CodeRecordNotFound
+	}
+
+	return userInformation.AvatarURL, code.CodeSuccess
+}
+
+func buildUserProfile(userInformation *model.User) *UserProfile {
+	if userInformation == nil {
+		return nil
+	}
+	return &UserProfile{
+		ID:        userInformation.ID,
+		Name:      userInformation.Name,
+		Email:     userInformation.Email,
+		Username:  userInformation.Username,
+		AvatarURL: buildAvatarAccessURL(userInformation),
+		Bio:       userInformation.Bio,
+	}
+}
+
+// buildAvatarAccessURL 把内部存储 key 转成前端可直接访问的头像地址。
+func buildAvatarAccessURL(userInformation *model.User) string {
+	if userInformation == nil || strings.TrimSpace(userInformation.AvatarURL) == "" {
+		return ""
+	}
+	return "/api/user/avatar/" + strconv.FormatInt(userInformation.ID, 10)
+}
+
+// buildAvatarStorageKey 使用稳定目录加时间戳生成头像 key，避免文件名冲突。
+func buildAvatarStorageKey(userID int64, ext string) string {
+	return "avatars/" + strconv.FormatInt(userID, 10) + "/" + strconv.FormatInt(time.Now().UnixNano(), 10) + ext
 }

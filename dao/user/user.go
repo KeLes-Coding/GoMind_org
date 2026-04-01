@@ -76,6 +76,11 @@ func IncrementTokenVersion(userID int64) error {
 	return mysql.IncrementUserTokenVersion(userID)
 }
 
+// UpdateProfile 只更新用户资料相关字段，不触碰密码和登录态版本。
+func UpdateProfile(userID int64, updates map[string]interface{}) error {
+	return mysql.UpdateUserProfileByID(userID, updates)
+}
+
 func isDuplicateUsernameError(err error) bool {
 	var mysqlErr *mysqlDriver.MySQLError
 	if errors.As(err, &mysqlErr) {

@@ -98,3 +98,9 @@ func UpdateUserPasswordByID(id int64, password string) error {
 func IncrementUserTokenVersion(id int64) error {
 	return DB.Model(&model.User{}).Where("id = ?", id).Update("token_version", gorm.Expr("token_version + 1")).Error
 }
+
+// UpdateUserProfileByID 按用户 ID 更新可编辑资料字段。
+// 这里显式限制可更新字段，避免把认证相关字段暴露给资料接口误改。
+func UpdateUserProfileByID(id int64, updates map[string]interface{}) error {
+	return DB.Model(&model.User{}).Where("id = ?", id).Updates(updates).Error
+}

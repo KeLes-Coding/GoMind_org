@@ -11,6 +11,8 @@ type User struct {
 	Name         string         `gorm:"type:varchar(50)" json:"name"`
 	Email        string         `gorm:"type:varchar(100);uniqueIndex" json:"email"`
 	Username     string         `gorm:"type:varchar(50);uniqueIndex" json:"username"`
+	AvatarURL    string         `gorm:"type:varchar(255)" json:"avatar_url"`
+	Bio          string         `gorm:"type:varchar(255)" json:"bio"`
 	Password     string         `gorm:"type:varchar(255)" json:"-"`
 	TokenVersion int64          `gorm:"default:1" json:"-"`
 	CreatedAt    time.Time      `json:"created_at"`

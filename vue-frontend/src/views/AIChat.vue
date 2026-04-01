@@ -79,6 +79,25 @@
             <span>设置</span>
           </button>
 
+          <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl">
+            <img
+              v-if="userProfile.avatar_url"
+              :src="userProfile.avatar_url"
+              alt="用户头像"
+              class="w-8 h-8 rounded-full object-cover shrink-0 border border-border-light dark:border-border-dark"
+            />
+            <div
+              v-else
+              class="w-8 h-8 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-xs font-bold shrink-0 select-none"
+            >
+              {{ getUserInitial() }}
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-sm truncate text-text-primary-light dark:text-text-primary-dark">{{ getUserDisplayName() }}</div>
+              <div class="text-xs truncate text-text-secondary-light dark:text-text-secondary-dark">@{{ userProfile.username || 'user' }}</div>
+            </div>
+          </div>
+
           <!-- User Avatar Row -->
           <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer" @click="handleLogout">
             <div class="w-7 h-7 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-xs font-bold shrink-0 select-none">
@@ -144,8 +163,14 @@
           >
             <!-- Sender Header -->
             <div class="flex items-center gap-3">
-              <div :class="['w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm select-none', message.role === 'user' ? 'bg-black text-white dark:bg-white dark:text-black' : 'bg-surface-light border border-border-light dark:bg-surface-dark dark:border-border-dark']">
-                {{ message.role === 'user' ? 'U' : 'AI' }}
+              <img
+                v-if="message.role === 'user' && userProfile.avatar_url"
+                :src="userProfile.avatar_url"
+                alt="用户头像"
+                class="w-8 h-8 rounded-full object-cover border border-border-light dark:border-border-dark"
+              />
+              <div v-else :class="['w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm select-none', message.role === 'user' ? 'bg-black text-white dark:bg-white dark:text-black' : 'bg-surface-light border border-border-light dark:bg-surface-dark dark:border-border-dark']">
+                {{ message.role === 'user' ? getUserInitial() : 'AI' }}
               </div>
               <span class="font-semibold text-sm">{{ message.role === 'user' ? '你' : 'AI' }}</span>
               <!-- Actions & Meta -->
@@ -246,6 +271,68 @@
           </div>
         </div>
       </div>
+      <el-dialog v-model="settingsVisible" title="个人设置" width="520px">
+        <div class="space-y-4">
+          <div class="flex items-center gap-4">
+            <img
+              v-if="userProfile.avatar_url"
+              :src="userProfile.avatar_url"
+              alt="用户头像"
+              class="w-16 h-16 rounded-full object-cover border border-border-light dark:border-border-dark"
+            />
+            <div
+              v-else
+              class="w-16 h-16 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-lg font-bold select-none"
+            >
+              {{ getUserInitial() }}
+            </div>
+            <div class="flex flex-col gap-2">
+              <button
+                type="button"
+                class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer"
+                @click="triggerAvatarUpload"
+                :disabled="uploadingAvatar"
+              >
+                {{ uploadingAvatar ? '上传中...' : '上传头像' }}
+              </button>
+              <span class="text-xs text-text-secondary-light dark:text-text-secondary-dark">支持 JPG、PNG、WEBP，大小不超过 2MB</span>
+            </div>
+            <input
+              ref="avatarInput"
+              type="file"
+              accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+              class="hidden"
+              @change="handleAvatarUpload"
+            />
+          </div>
+
+          <div class="space-y-2">
+            <label class="block text-sm">昵称</label>
+            <input v-model="profileForm.name" type="text" maxlength="50" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none" />
+          </div>
+
+          <div class="space-y-2">
+            <label class="block text-sm">用户名</label>
+            <input :value="userProfile.username || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none" disabled />
+          </div>
+
+          <div class="space-y-2">
+            <label class="block text-sm">邮箱</label>
+            <input :value="userProfile.email || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none" disabled />
+          </div>
+
+          <div class="space-y-2">
+            <label class="block text-sm">简介</label>
+            <textarea v-model="profileForm.bio" rows="4" maxlength="255" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none resize-none"></textarea>
+          </div>
+        </div>
+        <template #footer>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="settingsVisible = false">取消</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="saveProfile" :disabled="savingProfile">{{ savingProfile ? '保存中...' : '保存' }}</button>
+          </div>
+        </template>
+      </el-dialog>
     </section>
   </div>
 </template>
@@ -283,6 +370,22 @@ export default {
     const uploading = ref(false)
     const fileInput = ref(null)
     const imageInput = ref(null)
+    const avatarInput = ref(null)
+    const settingsVisible = ref(false)
+    const savingProfile = ref(false)
+    const uploadingAvatar = ref(false)
+    const userProfile = ref({
+      id: null,
+      name: '',
+      username: '',
+      email: '',
+      avatar_url: '',
+      bio: ''
+    })
+    const profileForm = ref({
+      name: '',
+      bio: ''
+    })
     const modelOptions = MODEL_OPTIONS
 
     // 用于中断当前请求，保证停止按钮和异常处理共用同一个 controller。
@@ -886,6 +989,105 @@ export default {
       }
     }
 
+    const applyUserProfile = (profile) => {
+      const nextProfile = profile || {}
+      userProfile.value = {
+        id: nextProfile.id || null,
+        name: nextProfile.name || '',
+        username: nextProfile.username || '',
+        email: nextProfile.email || '',
+        avatar_url: nextProfile.avatar_url || '',
+        bio: nextProfile.bio || ''
+      }
+      profileForm.value = {
+        name: userProfile.value.name || '',
+        bio: userProfile.value.bio || ''
+      }
+    }
+
+    const fetchUserProfile = async () => {
+      try {
+        const response = await api.get('/user/profile')
+        if (response.data?.status_code === 1000 && response.data.profile) {
+          applyUserProfile(response.data.profile)
+        }
+      } catch (error) {
+        console.error('Load profile error:', error)
+      }
+    }
+
+    const getUserDisplayName = () => userProfile.value.name || userProfile.value.username || '用户'
+
+    const getUserInitial = () => {
+      const source = getUserDisplayName().trim()
+      return source ? source.slice(0, 1).toUpperCase() : 'U'
+    }
+
+    const handleSettings = async () => {
+      settingsVisible.value = true
+      await fetchUserProfile()
+    }
+
+    const saveProfile = async () => {
+      try {
+        savingProfile.value = true
+        const response = await api.post('/user/profile/update', {
+          name: profileForm.value.name || '',
+          bio: profileForm.value.bio || ''
+        })
+        if (response.data?.status_code === 1000 && response.data.profile) {
+          applyUserProfile(response.data.profile)
+          settingsVisible.value = false
+          ElMessage.success('个人资料已更新')
+          return
+        }
+        ElMessage.error(response.data?.status_msg || '个人资料更新失败')
+      } catch (error) {
+        console.error('Save profile error:', error)
+        ElMessage.error('个人资料更新失败')
+      } finally {
+        savingProfile.value = false
+      }
+    }
+
+    const triggerAvatarUpload = () => {
+      if (avatarInput.value) {
+        avatarInput.value.click()
+      }
+    }
+
+    const handleAvatarUpload = async (event) => {
+      const file = event.target.files[0]
+      if (!file) return
+
+      try {
+        uploadingAvatar.value = true
+        const formData = new FormData()
+        formData.append('avatar', file)
+
+        const response = await api.post('/user/avatar/upload', formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        })
+
+        if (response.data?.status_code === 1000 && response.data.profile) {
+          applyUserProfile(response.data.profile)
+          ElMessage.success('头像上传成功')
+        } else {
+          ElMessage.error(response.data?.status_msg || '头像上传失败')
+        }
+      } catch (error) {
+        console.error('Upload avatar error:', error)
+        ElMessage.error('头像上传失败')
+      } finally {
+        uploadingAvatar.value = false
+        if (avatarInput.value) {
+          avatarInput.value.value = ''
+        }
+      }
+    }
+
     const toggleTheme = () => {
       isDark.value = !isDark.value
       if (isDark.value) {
@@ -911,7 +1113,8 @@ export default {
       }
     }
 
-    const handleSettings = () => {
+    // eslint-disable-next-line no-unused-vars
+    const handleSettingsLegacy = () => {
       ElMessage.info('设置功能开发中...')
     }
 
@@ -922,6 +1125,7 @@ export default {
     onMounted(() => {
       isDark.value = document.documentElement.classList.contains('dark')
       loadSessions()
+      fetchUserProfile()
     })
 
     return {
@@ -940,10 +1144,18 @@ export default {
       uploading,
       fileInput,
       imageInput,
+      avatarInput,
+      settingsVisible,
+      savingProfile,
+      uploadingAvatar,
+      userProfile,
+      profileForm,
       renderMarkdown,
       modelOptions,
       getMessageStatusLabel,
       getMessageMetaStatus,
+      getUserDisplayName,
+      getUserInitial,
       playTTS,
       createNewSession,
       switchSession,
@@ -954,6 +1166,9 @@ export default {
       handleFileUpload,
       triggerImageUpload,
       handleImageRecognition,
+      triggerAvatarUpload,
+      handleAvatarUpload,
+      saveProfile,
       toggleTheme,
       handleLogout,
       handleSettings,
