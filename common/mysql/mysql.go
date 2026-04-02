@@ -62,6 +62,7 @@ func migration() error {
 	return DB.AutoMigrate(
 		new(model.User),
 		new(model.EmailCaptcha),
+		new(model.SessionFolder),
 		new(model.Session),
 		new(model.Message),
 		new(model.FileAsset),

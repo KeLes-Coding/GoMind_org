@@ -41,22 +41,94 @@
 
         <!-- Conversation History -->
         <div class="flex-1 overflow-y-auto px-2 pt-2">
-          <div class="px-3 pb-2">
+          <div class="px-3 pb-2 flex items-center justify-between">
             <span class="text-xs font-medium text-text-secondary-light dark:text-text-secondary-dark tracking-wider">近期</span>
+            <button
+              class="p-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-text-secondary-light dark:text-text-secondary-dark bg-transparent border-none"
+              title="新建文件夹"
+              @click="showCreateFolderDialog"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            </button>
           </div>
           <ul class="list-none m-0 p-0 space-y-0.5">
+            <!-- Folders -->
+            <li v-for="folder in foldersList" :key="folder.id" class="mb-1">
+              <div
+                class="px-3 py-2 rounded-xl cursor-pointer text-sm transition-all group flex items-center text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5"
+                @click="toggleFolder(folder.id)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 shrink-0 transition-transform" :class="collapsedFolders[folder.id] ? '-rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                <span class="truncate flex-1 font-medium">{{ folder.name }}</span>
+                <el-dropdown trigger="click" @command="(cmd) => handleFolderCommand(cmd, folder)" @click.stop class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <span class="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
+                  </span>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                      <el-dropdown-item command="delete" class="text-red-500">删除文件夹</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </div>
+              <!-- Folder Sessions -->
+              <ul v-show="!collapsedFolders[folder.id]" class="list-none m-0 p-0 pl-6 mt-0.5 space-y-0.5">
+                <li
+                  v-for="session in folder.sessions"
+                  :key="session.sessionId"
+                  :class="[
+                    'px-3 py-2 rounded-xl cursor-pointer text-sm transition-all group flex items-center',
+                    currentSessionId === session.sessionId
+                      ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
+                      : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
+                  ]"
+                  @click="switchSession(session.sessionId)"
+                >
+                  <span class="truncate flex-1">{{ session.name || `会话 ${session.sessionId}` }}</span>
+                  <el-dropdown trigger="click" @command="(cmd) => handleSessionCommand(cmd, session)" @click.stop class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span class="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
+                    </span>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                        <el-dropdown-item command="move">移动到...</el-dropdown-item>
+                        <el-dropdown-item command="removeFromFolder">移出文件夹</el-dropdown-item>
+                        <el-dropdown-item command="delete" class="text-red-500">删除</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </li>
+              </ul>
+            </li>
+
+            <!-- Ungrouped Sessions -->
             <li
-              v-for="session in sessions"
-              :key="session.id"
+              v-for="session in ungroupedSessionsList"
+              :key="session.sessionId"
               :class="[
-                'px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all group flex items-center',
-                currentSessionId === session.id
+                'px-3 py-2 rounded-xl cursor-pointer text-sm transition-all group flex items-center',
+                currentSessionId === session.sessionId
                   ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
                   : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
               ]"
-              @click="switchSession(session.id)"
+              @click="switchSession(session.sessionId)"
             >
-              <span class="truncate flex-1">{{ session.name || `会话 ${session.id}` }}</span>
+              <span class="truncate flex-1">{{ session.name || `会话 ${session.sessionId}` }}</span>
+              <el-dropdown trigger="click" @command="(cmd) => handleSessionCommand(cmd, session)" @click.stop class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <span class="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
+                </span>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                    <el-dropdown-item command="move">移动到...</el-dropdown-item>
+                    <el-dropdown-item command="delete" class="text-red-500">删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </li>
           </ul>
         </div>
@@ -406,6 +478,58 @@
           </div>
         </template>
       </el-dialog>
+
+      <!-- 新建/重命名 文件夹弹窗 -->
+      <el-dialog v-model="folderDialogVisible" :title="folderDialogType === 'create' ? '新建文件夹' : '重命名文件夹'" width="400px">
+        <div class="space-y-4">
+          <div class="space-y-2">
+            <label class="block text-sm">文件夹名称</label>
+            <input v-model="folderForm.name" type="text" maxlength="50" placeholder="请输入文件夹名称" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none" @keydown.enter="submitFolderDialog" />
+          </div>
+        </div>
+        <template #footer>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="folderDialogVisible = false">取消</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="submitFolderDialog" :disabled="!folderForm.name.trim() || submittingFolder">确认</button>
+          </div>
+        </template>
+      </el-dialog>
+
+      <!-- 重命名会话弹窗 -->
+      <el-dialog v-model="renameSessionDialogVisible" title="重命名会话" width="400px">
+        <div class="space-y-4">
+          <div class="space-y-2">
+            <label class="block text-sm">会话名称</label>
+            <input v-model="renameSessionForm.name" type="text" maxlength="50" placeholder="请输入会话名称" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none" @keydown.enter="submitRenameSession" />
+          </div>
+        </div>
+        <template #footer>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="renameSessionDialogVisible = false">取消</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="submitRenameSession" :disabled="!renameSessionForm.name.trim() || submittingRenameSession">确认</button>
+          </div>
+        </template>
+      </el-dialog>
+
+      <!-- 移动到文件夹弹窗 -->
+      <el-dialog v-model="moveSessionDialogVisible" title="移动到文件夹" width="400px">
+        <div class="space-y-4">
+          <div class="space-y-2">
+            <label class="block text-sm">选择目标文件夹</label>
+            <select v-model="moveSessionForm.folderId" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none cursor-pointer">
+              <option value="" class="bg-surface-light dark:bg-surface-dark">-- 改为独立会话 (移出文件夹) --</option>
+              <option v-for="f in foldersList" :key="f.id" :value="f.id" class="bg-surface-light dark:bg-surface-dark">{{ f.name }}</option>
+            </select>
+          </div>
+        </div>
+        <template #footer>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="moveSessionDialogVisible = false">取消</button>
+            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="submitMoveSession" :disabled="submittingMoveSession">确认</button>
+          </div>
+        </template>
+      </el-dialog>
+
     </section>
   </div>
 </template>
@@ -430,7 +554,28 @@ export default {
     const router = useRouter()
     const isSidebarCollapsed = ref(false)
     const isDark = ref(false)
-    const sessions = ref({})
+    const sessions = ref({}) // 仍保留平铺的数据结构管理消息状态
+    
+    // ----------- 文件夹 & 会话树状态 -----------
+    const foldersList = ref([])
+    const ungroupedSessionsList = ref([])
+    const collapsedFolders = ref({}) // track folder collapse state
+    
+    // Dialog state
+    const folderDialogVisible = ref(false)
+    const folderDialogType = ref('create') // 'create' or 'rename'
+    const folderForm = ref({ id: '', name: '' })
+    const submittingFolder = ref(false)
+
+    const renameSessionDialogVisible = ref(false)
+    const renameSessionForm = ref({ sessionId: '', name: '' })
+    const submittingRenameSession = ref(false)
+
+    const moveSessionDialogVisible = ref(false)
+    const moveSessionForm = ref({ sessionId: '', folderId: '' })
+    const submittingMoveSession = ref(false)
+    // -------------------------------------------
+
     const currentSessionId = ref(null)
     const tempSession = ref(false)
     const currentMessages = ref([])
@@ -762,23 +907,173 @@ export default {
       }
     }
 
+    const toggleFolder = (folderId) => {
+      collapsedFolders.value[folderId] = !collapsedFolders.value[folderId]
+    }
+
     const loadSessions = async () => {
       try {
-        const response = await api.get('/AI/chat/sessions')
-        if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.sessions)) {
+        const response = await api.get('/AI/chat/session-tree')
+        if (response.data && response.data.status_code === 1000 && response.data.tree) {
+          const tree = response.data.tree
+          foldersList.value = tree.folders || []
+          ungroupedSessionsList.value = tree.ungrouped_sessions || []
+          
           const sessionMap = {}
-          response.data.sessions.forEach((sessionItem) => {
-            const sid = String(sessionItem.sessionId)
-            sessionMap[sid] = {
-              id: sid,
-              name: sessionItem.name || `会话 ${sid}`,
-              messages: []
+          // Initialize flat sessions map and collapsed states
+          foldersList.value.forEach(f => {
+            if (!(f.id in collapsedFolders.value)) {
+              collapsedFolders.value[f.id] = false
             }
+            if (f.sessions) {
+              f.sessions.forEach(s => {
+                sessionMap[s.sessionId] = { id: s.sessionId, name: s.name, folderId: s.folderId, messages: sessions.value[s.sessionId]?.messages || [] }
+              })
+            } else {
+              f.sessions = []
+            }
+          })
+          ungroupedSessionsList.value.forEach(s => {
+            sessionMap[s.sessionId] = { id: s.sessionId, name: s.name, folderId: null, messages: sessions.value[s.sessionId]?.messages || [] }
           })
           sessions.value = sessionMap
         }
       } catch (error) {
-        console.error('Load sessions error:', error)
+        console.error('Load session tree error:', error)
+      }
+    }
+
+    // --- 文件夹管理 ---
+    const showCreateFolderDialog = () => {
+      folderDialogType.value = 'create'
+      folderForm.value = { id: '', name: '' }
+      folderDialogVisible.value = true
+    }
+
+    const handleFolderCommand = (cmd, folder) => {
+      if (cmd === 'rename') {
+        folderDialogType.value = 'rename'
+        folderForm.value = { id: folder.id, name: folder.name }
+        folderDialogVisible.value = true
+      } else if (cmd === 'delete') {
+        ElMessageBox.confirm('删除文件夹后，其中的会话将被移出并作为独立会话保留。确定删除吗？', '删除确认', {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }).then(async () => {
+          try {
+            const res = await api.post('/AI/chat/folder/delete', { folderId: folder.id })
+            if (res.data?.status_code === 1000) {
+              ElMessage.success('已删除文件夹')
+              await loadSessions()
+            } else {
+              ElMessage.error(res.data?.status_msg || '删除失败')
+            }
+          } catch (e) {
+            ElMessage.error('服务器错误')
+          }
+        }).catch(() => {})
+      }
+    }
+
+    const submitFolderDialog = async () => {
+      if (!folderForm.value.name.trim() || submittingFolder.value) return
+      submittingFolder.value = true
+      try {
+        const url = folderDialogType.value === 'create' ? '/AI/chat/folder/create' : '/AI/chat/folder/rename'
+        const payload = folderDialogType.value === 'create' ? { name: folderForm.value.name } : { folderId: folderForm.value.id, name: folderForm.value.name }
+        const res = await api.post(url, payload)
+        if (res.data?.status_code === 1000) {
+          ElMessage.success(folderDialogType.value === 'create' ? '创建成功' : '重命名成功')
+          folderDialogVisible.value = false
+          await loadSessions()
+        } else {
+          ElMessage.error(res.data?.status_msg || '操作失败')
+        }
+      } catch (e) {
+        ElMessage.error('请求异常')
+      } finally {
+        submittingFolder.value = false
+      }
+    }
+
+    // --- 会话管理 ---
+    const handleSessionCommand = (cmd, session) => {
+      if (cmd === 'rename') {
+        renameSessionForm.value = { sessionId: session.sessionId, name: session.name }
+        renameSessionDialogVisible.value = true
+      } else if (cmd === 'move') {
+        moveSessionForm.value = { sessionId: session.sessionId, folderId: session.folderId || '' }
+        moveSessionDialogVisible.value = true
+      } else if (cmd === 'removeFromFolder') {
+        api.post('/AI/chat/session/remove-from-folder', { sessionId: session.sessionId }).then(res => {
+          if (res.data?.status_code === 1000) {
+            ElMessage.success('已移出文件夹')
+            loadSessions()
+          } else {
+            ElMessage.error('移出失败')
+          }
+        })
+      } else if (cmd === 'delete') {
+        ElMessageBox.confirm('会话删除后无法恢复，确定删除该会话吗？', '删除确认', {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }).then(async () => {
+          try {
+            const res = await api.post('/AI/chat/session/delete', { sessionId: session.sessionId })
+            if (res.data?.status_code === 1000) {
+              ElMessage.success('已删除')
+              if (currentSessionId.value === String(session.sessionId)) {
+                currentSessionId.value = 'temp'
+                currentMessages.value = []
+                tempSession.value = true
+              }
+              await loadSessions()
+            } else {
+              ElMessage.error(res.data?.status_msg || '删除失败')
+            }
+          } catch (e) {
+            ElMessage.error('删除异常')
+          }
+        }).catch(() => {})
+      }
+    }
+
+    const submitRenameSession = async () => {
+      if (!renameSessionForm.value.name.trim() || submittingRenameSession.value) return
+      submittingRenameSession.value = true
+      try {
+        const res = await api.post('/AI/chat/session/rename', { sessionId: renameSessionForm.value.sessionId, title: renameSessionForm.value.name })
+        if (res.data?.status_code === 1000) {
+          renameSessionDialogVisible.value = false
+          await loadSessions()
+        } else {
+          ElMessage.error('重命名失败')
+        }
+      } finally {
+        submittingRenameSession.value = false
+      }
+    }
+
+    const submitMoveSession = async () => {
+      if (submittingMoveSession.value) return
+      submittingMoveSession.value = true
+      try {
+        let res
+        if (!moveSessionForm.value.folderId) {
+          res = await api.post('/AI/chat/session/remove-from-folder', { sessionId: moveSessionForm.value.sessionId })
+        } else {
+          res = await api.post('/AI/chat/session/move', { sessionId: moveSessionForm.value.sessionId, folderId: moveSessionForm.value.folderId })
+        }
+        if (res.data?.status_code === 1000) {
+          moveSessionDialogVisible.value = false
+          await loadSessions()
+        } else {
+          ElMessage.error('移动失败')
+        }
+      } finally {
+        submittingMoveSession.value = false
       }
     }
 
@@ -1437,6 +1732,31 @@ export default {
       isSidebarCollapsed,
       isDark,
       sessions: computed(() => Object.values(sessions.value)),
+      
+      // -- Folders & Session --
+      foldersList,
+      ungroupedSessionsList,
+      collapsedFolders,
+      folderDialogVisible,
+      folderDialogType,
+      folderForm,
+      submittingFolder,
+      renameSessionDialogVisible,
+      renameSessionForm,
+      submittingRenameSession,
+      moveSessionDialogVisible,
+      moveSessionForm,
+      submittingMoveSession,
+
+      toggleFolder,
+      showCreateFolderDialog,
+      handleFolderCommand,
+      submitFolderDialog,
+      handleSessionCommand,
+      submitRenameSession,
+      submitMoveSession,
+      // ----------------------
+
       currentSessionId,
       tempSession,
       currentMessages,

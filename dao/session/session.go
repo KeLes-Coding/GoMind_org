@@ -3,31 +3,39 @@ package session
 import (
 	"GopherAI/common/mysql"
 	"GopherAI/model"
+
+	"gorm.io/gorm"
 )
 
-// GetSessionsByUserName 按用户名读取该用户的全部会话。
-// 这里直接以数据库为真相来源，避免会话列表依赖进程内缓存。
 func GetSessionsByUserName(userName string) ([]model.Session, error) {
 	var sessions []model.Session
-	err := mysql.DB.Where("user_name = ?", userName).Order("created_at desc").Find(&sessions).Error
+	err := mysql.DB.Where("user_name = ?", userName).Order("updated_at desc").Find(&sessions).Error
 	return sessions, err
 }
 
-// CreateSession 创建一条新的会话记录。
+func GetUngroupedSessionsByUserName(userName string) ([]model.Session, error) {
+	var sessions []model.Session
+	err := mysql.DB.Where("user_name = ? AND folder_id IS NULL", userName).Order("updated_at desc").Find(&sessions).Error
+	return sessions, err
+}
+
+func GetSessionsByFolderID(userName string, folderID string) ([]model.Session, error) {
+	var sessions []model.Session
+	err := mysql.DB.Where("user_name = ? AND folder_id = ?", userName, folderID).Order("updated_at desc").Find(&sessions).Error
+	return sessions, err
+}
+
 func CreateSession(session *model.Session) (*model.Session, error) {
 	err := mysql.DB.Create(session).Error
 	return session, err
 }
 
-// GetSessionByID 按主键读取会话，用于校验会话是否存在以及归属权。
 func GetSessionByID(sessionID string) (*model.Session, error) {
 	var session model.Session
 	err := mysql.DB.Where("id = ?", sessionID).First(&session).Error
 	return &session, err
 }
 
-// UpdateSessionSummary 持久化会话摘要状态。
-// summary_message_count 表示当前摘要已经覆盖了前多少条历史消息。
 func UpdateSessionSummary(sessionID string, summary string, summaryMessageCount int) error {
 	return mysql.DB.Model(&model.Session{}).
 		Where("id = ?", sessionID).
@@ -35,4 +43,47 @@ func UpdateSessionSummary(sessionID string, summary string, summaryMessageCount 
 			"context_summary":       summary,
 			"summary_message_count": summaryMessageCount,
 		}).Error
+}
+
+func UpdateSessionTitle(userName string, sessionID string, title string) error {
+	result := mysql.DB.Model(&model.Session{}).
+		Where("id = ? AND user_name = ?", sessionID, userName).
+		Update("title", title)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func UpdateSessionFolder(userName string, sessionID string, folderID *string) error {
+	result := mysql.DB.Model(&model.Session{}).
+		Where("id = ? AND user_name = ?", sessionID, userName).
+		Update("folder_id", folderID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func ClearFolderIDByFolderID(userName string, folderID string) error {
+	return mysql.DB.Model(&model.Session{}).
+		Where("user_name = ? AND folder_id = ?", userName, folderID).
+		Update("folder_id", nil).Error
+}
+
+func SoftDeleteSession(userName string, sessionID string) error {
+	result := mysql.DB.Where("id = ? AND user_name = ?", sessionID, userName).Delete(&model.Session{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
