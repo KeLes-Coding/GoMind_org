@@ -41,7 +41,7 @@
         <div class="px-3 pb-2">
           <button
             class="flex items-center gap-3 px-4 py-2 rounded-xl bg-transparent hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer text-sm text-text-secondary-light dark:text-text-secondary-dark border-none w-full"
-            @click="createFolder"
+            @click="showCreateFolderDialog"
           >
             <span>+ Folder</span>
           </button>
@@ -49,7 +49,6 @@
 
         <!-- Conversation History -->
         <div class="flex-1 overflow-y-auto px-2 pt-2">
-<<<<<<< HEAD
           <div class="px-3 pb-2 flex items-center justify-between">
             <span class="text-xs font-medium text-text-secondary-light dark:text-text-secondary-dark tracking-wider">近期</span>
             <button
@@ -140,90 +139,6 @@
               </el-dropdown>
             </li>
           </ul>
-=======
-          <div class="px-3 pb-2">
-            <span class="text-xs font-medium text-text-secondary-light dark:text-text-secondary-dark tracking-wider">SESSIONS</span>
-          </div>
-          <div class="space-y-2">
-            <div
-              v-for="folder in sidebarFolders"
-              :key="`folder-${folder.id}`"
-              class="space-y-1"
-            >
-              <div class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5">
-                <button
-                  type="button"
-                  class="w-full flex items-center gap-2 text-inherit bg-transparent border-none cursor-pointer p-0"
-                  @click="toggleFolder(folder.id)"
-                >
-                  <span class="w-3 text-xs text-center">{{ isFolderExpanded(folder.id) ? 'v' : '>' }}</span>
-                  <span class="truncate flex-1 text-left">{{ folder.name }}</span>
-                  <span class="text-[11px] opacity-60">{{ folder.sessions.length }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="px-2 py-0.5 text-[11px] rounded-md bg-transparent border border-border-light dark:border-border-dark cursor-pointer"
-                  @click.stop="renameFolder(folder)"
-                >
-                  R
-                </button>
-                <button
-                  type="button"
-                  class="px-2 py-0.5 text-[11px] rounded-md bg-transparent border border-border-light dark:border-border-dark cursor-pointer"
-                  @click.stop="deleteFolder(folder)"
-                >
-                  D
-                </button>
-              </div>
-              <ul
-                v-if="isFolderExpanded(folder.id)"
-                class="list-none m-0 pl-4 space-y-0.5"
-              >
-                <li
-                  v-for="session in folder.sessions"
-                  :key="session.id"
-                  :class="[
-                    'px-3 py-2 rounded-xl cursor-pointer text-sm transition-all flex items-center gap-2',
-                    currentSessionId === session.id
-                      ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
-                      : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
-                  ]"
-                  @click="switchSession(session.id)"
-                >
-                  <span class="truncate block flex-1">{{ session.name || `Session ${session.id}` }}</span>
-                  <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="renameSessionItem(session)">R</button>
-                  <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="moveSessionItem(session)">M</button>
-                  <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="removeSessionItemFromFolder(session)">U</button>
-                  <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="deleteSessionItem(session)">D</button>
-                </li>
-              </ul>
-            </div>
-            <ul class="list-none m-0 p-0 space-y-0.5">
-              <li
-                v-for="session in ungroupedSessions"
-                :key="session.id"
-                :class="[
-                  'px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all flex items-center gap-2',
-                  currentSessionId === session.id
-                    ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
-                    : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
-                ]"
-                @click="switchSession(session.id)"
-              >
-                <span class="truncate block flex-1">{{ session.name || `Session ${session.id}` }}</span>
-                <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="renameSessionItem(session)">R</button>
-                <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="moveSessionItem(session)">M</button>
-                <button type="button" class="px-1.5 py-0.5 text-[10px] rounded bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click.stop="deleteSessionItem(session)">D</button>
-              </li>
-            </ul>
-            <div
-              v-if="sidebarFolders.length === 0 && ungroupedSessions.length === 0"
-              class="px-3 py-4 text-sm text-text-secondary-light dark:text-text-secondary-dark"
-            >
-              No sessions yet
-            </div>
-          </div>
->>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
         </div>
 
         <!-- Bottom Actions -->
@@ -384,7 +299,7 @@
           <div class="flex items-end">
             <textarea
               v-model="inputMessage"
-              placeholder="问点什�?.."
+              placeholder="问点什么..."
               @keydown.enter.exact.prevent="sendMessage"
               :disabled="loading"
               ref="messageInput"
@@ -449,7 +364,7 @@
                 @click="triggerAvatarUpload"
                 :disabled="uploadingAvatar"
               >
-                {{ uploadingAvatar ? '上传�?..' : '上传头像' }}
+                {{ uploadingAvatar ? '上传中...' : '上传头像' }}
               </button>
               <span class="text-xs text-text-secondary-light dark:text-text-secondary-dark">支持 JPG、PNG、WEBP，大小不超过 2MB</span>
             </div>
@@ -601,7 +516,6 @@ export default {
     const router = useRouter()
     const isSidebarCollapsed = ref(false)
     const isDark = ref(false)
-<<<<<<< HEAD
     const sessions = ref({}) // 仍保留平铺的数据结构管理消息状态
     
     // ----------- 文件夹 & 会话树状态 -----------
@@ -623,13 +537,9 @@ export default {
     const moveSessionForm = ref({ sessionId: '', folderId: '' })
     const submittingMoveSession = ref(false)
     // -------------------------------------------
-
-=======
-    const sessions = ref({})
     const sessionFolders = ref([])
     const ungroupedSessionIds = ref([])
     const expandedFolders = ref({})
->>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
     const currentSessionId = ref(null)
     const tempSession = ref(false)
     const currentMessages = ref([])
@@ -669,13 +579,13 @@ export default {
     })
     const modelOptions = MODEL_OPTIONS
 
-    // 用于中断当前请求，保证停止按钮和异常处理共用同一�?controller�?
+    // 用于中断当前请求，保证停止按钮和异常处理共用同一 controller。
     const activeAbortController = ref(null)
-    // 记录当前流式响应对应的会�?ID，新会话开始时会先使用 temp�?
+    // 记录当前流式响应对应的会话 ID，新会话开始时会先使用 temp。
     const activeStreamingSessionId = ref(null)
-    // 指向当前 assistant 消息，便于更新停止、超时和失败状态�?
+    // 指向当前 assistant 消息，便于更新停止、超时和失败状态。
     const activeAssistantIndex = ref(-1)
-    // 区分用户手动停止与请求异常中断�?
+    // 区分用户手动停止与请求异常中断。
     const manualStopRequested = ref(false)
 
     const renderMarkdown = (text) => {
@@ -687,7 +597,7 @@ export default {
         .replace(/\n/g, '<br>')
     }
 
-    // 统一后端返回和前端临时消息的状态值�?
+    // 统一后端返回和前端临时消息的状态值。
     const normalizeMessageStatus = (status) => {
       if (!status) return 'completed'
       const normalized = String(status).toLowerCase()
@@ -739,7 +649,7 @@ export default {
       }
     }
 
-    // 确保会话对象一定存在，避免新会话切换或异步返回时访问空对象�?
+    // 确保会话对象一定存在，避免新会话切换或异步返回时访问空对象。
     const ensureSessionEntry = (sessionId) => {
       const normalizedId = String(sessionId || '')
       if (!normalizedId || normalizedId === 'temp') {
@@ -817,6 +727,7 @@ export default {
         ...expandedFolders.value,
         [key]: !isFolderExpanded(key)
       }
+      collapsedFolders.value[key] = !collapsedFolders.value[key]
     }
 
     const ensureSessionListed = (sessionId) => {
@@ -948,7 +859,7 @@ export default {
       try {
         parsed = JSON.parse(data)
       } catch {
-        // 非法 JSON 直接忽略，避免把协议数据漏到聊天内容里�?
+        // 非法 JSON 直接忽略，避免把协议数据漏到聊天内容里。
         return
       }
 
@@ -1042,25 +953,17 @@ export default {
       }
     }
 
-    const toggleFolder = (folderId) => {
-      collapsedFolders.value[folderId] = !collapsedFolders.value[folderId]
-    }
-
     const loadSessions = async () => {
       try {
         const response = await api.get('/AI/chat/session-tree')
         if (response.data && response.data.status_code === 1000 && response.data.tree) {
-<<<<<<< HEAD
           const tree = response.data.tree
           foldersList.value = tree.folders || []
           ungroupedSessionsList.value = tree.ungrouped_sessions || []
-          
-=======
-          applySessionTree(response.data.tree)
-          return
-        }
-        if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.sessions)) {
->>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
+          applySessionTree({
+            folders: tree.folders || [],
+            ungroupedSessions: tree.ungroupedSessions || tree.ungrouped_sessions || []
+          })
           const sessionMap = {}
           // Initialize flat sessions map and collapsed states
           foldersList.value.forEach(f => {
@@ -1755,7 +1658,7 @@ export default {
 
       const fileName = file.name.toLowerCase()
       if (!fileName.endsWith('.md') && !fileName.endsWith('.txt')) {
-        ElMessage.error('只支持上�?.md �?.txt 文件')
+        ElMessage.error('只支持上传 .md 或 .txt 文件')
         if (fileInput.value) {
           fileInput.value.value = ''
         }
@@ -1805,7 +1708,7 @@ export default {
       // Add user message with image preview
       currentMessages.value.push({
         role: 'user',
-        content: `已上传图�? ${file.name}`,
+        content: `已上传图片 ${file.name}`,
         imageUrl: imageUrl,
         meta: buildMessageMeta('completed')
       })
@@ -1840,7 +1743,7 @@ export default {
         console.error('Image recognition error:', error)
         currentMessages.value.push({
           role: 'assistant',
-          content: `[错误] 无法连接到服务器或识别失�? ${error.message}`,
+          content: `[错误] 无法连接到服务器或识别失败: ${error.message}`,
           meta: buildMessageMeta('failed')
         })
       } finally {
@@ -2104,7 +2007,6 @@ export default {
     return {
       isSidebarCollapsed,
       isDark,
-<<<<<<< HEAD
       sessions: computed(() => Object.values(sessions.value)),
       
       // -- Folders & Session --
@@ -2130,11 +2032,8 @@ export default {
       submitRenameSession,
       submitMoveSession,
       // ----------------------
-
-=======
       sidebarFolders,
       ungroupedSessions,
->>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
       currentSessionId,
       tempSession,
       currentMessages,
@@ -2167,7 +2066,6 @@ export default {
       getUserDisplayName,
       getUserInitial,
       isFolderExpanded,
-      toggleFolder,
       toggleUserMenu,
       playTTS,
       createFolder,
@@ -2217,4 +2115,3 @@ aside ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
 }
 </style>
-

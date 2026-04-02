@@ -1,4 +1,5 @@
 module.exports = {
+  parallel: false,
   devServer: {
     port: 8080,
     proxy: {

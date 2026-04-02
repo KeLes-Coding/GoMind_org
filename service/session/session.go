@@ -7,13 +7,11 @@ import (
 	myredis "GopherAI/common/redis"
 	messageDAO "GopherAI/dao/message"
 	sessionDAO "GopherAI/dao/session"
-	sessionFolderDAO "GopherAI/dao/session_folder"
 	"GopherAI/model"
 	"context"
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,21 +44,6 @@ func ensureOwnedSession(userName string, sessionID string) (*model.Session, code
 	}
 
 	return sess, code.CodeSuccess
-}
-
-func ensureOwnedFolder(userID int64, folderID int64) (*model.SessionFolder, code.Code) {
-	folder, err := sessionFolderDAO.GetSessionFolderByID(folderID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, code.CodeRecordNotFound
-		}
-		log.Println("ensureOwnedFolder GetSessionFolderByID error:", err)
-		return nil, code.CodeServerBusy
-	}
-	if folder.UserID != userID {
-		return nil, code.CodeForbidden
-	}
-	return folder, code.CodeSuccess
 }
 
 // persistSummaryIfChanged 閸欘亜婀幗妯款洣绾喖鐤勯崣妯哄閺冭泛娲栭崘娆愭殶閹诡喖绨遍敍宀勪缉閸忓秵鐦℃潪顔款嚞濮瑰倿鍏橀弴瀛樻煀 session閵?
@@ -537,164 +520,3 @@ func ChatStreamSend(ctx context.Context, userName string, sessionID string, user
 }
 
 // RenameSession renames a session owned by the current user.
-func RenameSession(userName string, sessionID string, title string) code.Code {
-	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
-		return code_
-	}
-
-	title = strings.TrimSpace(title)
-	if title == "" || len(title) > 100 {
-		return code.CodeInvalidParams
-	}
-
-	if err := sessionDAO.UpdateSessionTitle(sessionID, title); err != nil {
-		log.Println("RenameSession UpdateSessionTitle error:", err)
-		return code.CodeServerBusy
-	}
-
-	return code.CodeSuccess
-}
-
-// DeleteSession soft-deletes a session and clears in-memory helper state.
-func DeleteSession(userName string, sessionID string) code.Code {
-	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
-		return code_
-	}
-
-	if err := sessionDAO.DeleteSession(sessionID); err != nil {
-		log.Println("DeleteSession DeleteSession error:", err)
-		return code.CodeServerBusy
-	}
-
-	aihelper.GetGlobalManager().RemoveAIHelper(userName, sessionID)
-	return code.CodeSuccess
-}
-
-func GetSessionTree(userID int64, userName string) (*model.SessionListTreeResponse, code.Code) {
-	folders, err := sessionFolderDAO.GetSessionFoldersByUserID(userID)
-	if err != nil {
-		log.Println("GetSessionTree GetSessionFoldersByUserID error:", err)
-		return nil, code.CodeServerBusy
-	}
-
-	sessions, err := sessionDAO.GetSessionsByUserName(userName)
-	if err != nil {
-		log.Println("GetSessionTree GetSessionsByUserName error:", err)
-		return nil, code.CodeServerBusy
-	}
-
-	folderMap := make(map[int64]*model.SessionFolderInfo, len(folders))
-	response := &model.SessionListTreeResponse{
-		Folders:           make([]model.SessionFolderInfo, 0, len(folders)),
-		UngroupedSessions: make([]model.SessionTreeItem, 0),
-	}
-
-	for _, folder := range folders {
-		response.Folders = append(response.Folders, model.SessionFolderInfo{
-			ID:       folder.ID,
-			Name:     folder.Name,
-			Sessions: make([]model.SessionTreeItem, 0),
-		})
-		folderMap[folder.ID] = &response.Folders[len(response.Folders)-1]
-	}
-
-	for _, sess := range sessions {
-		item := model.SessionTreeItem{SessionID: sess.ID, Title: sess.Title}
-		if sess.FolderID != nil {
-			if folderInfo, ok := folderMap[*sess.FolderID]; ok {
-				folderInfo.Sessions = append(folderInfo.Sessions, item)
-				continue
-			}
-		}
-		response.UngroupedSessions = append(response.UngroupedSessions, item)
-	}
-
-	return response, code.CodeSuccess
-}
-
-func CreateSessionFolder(userID int64, userName string, name string) (*model.SessionFolderInfo, code.Code) {
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 100 {
-		return nil, code.CodeInvalidParams
-	}
-
-	folder, err := sessionFolderDAO.CreateSessionFolder(&model.SessionFolder{
-		UserID:   userID,
-		UserName: userName,
-		Name:     name,
-	})
-	if err != nil {
-		log.Println("CreateSessionFolder CreateSessionFolder error:", err)
-		return nil, code.CodeServerBusy
-	}
-
-	return &model.SessionFolderInfo{
-		ID:       folder.ID,
-		Name:     folder.Name,
-		Sessions: make([]model.SessionTreeItem, 0),
-	}, code.CodeSuccess
-}
-
-func RenameSessionFolder(userID int64, folderID int64, name string) code.Code {
-	if _, code_ := ensureOwnedFolder(userID, folderID); code_ != code.CodeSuccess {
-		return code_
-	}
-
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 100 {
-		return code.CodeInvalidParams
-	}
-
-	if err := sessionFolderDAO.UpdateSessionFolderName(folderID, name); err != nil {
-		log.Println("RenameSessionFolder UpdateSessionFolderName error:", err)
-		return code.CodeServerBusy
-	}
-
-	return code.CodeSuccess
-}
-
-func DeleteSessionFolder(userID int64, folderID int64) code.Code {
-	if _, code_ := ensureOwnedFolder(userID, folderID); code_ != code.CodeSuccess {
-		return code_
-	}
-
-	if err := sessionDAO.ClearSessionFolderIDByFolderID(folderID); err != nil {
-		log.Println("DeleteSessionFolder ClearSessionFolderIDByFolderID error:", err)
-		return code.CodeServerBusy
-	}
-	if err := sessionFolderDAO.DeleteSessionFolder(folderID); err != nil {
-		log.Println("DeleteSessionFolder DeleteSessionFolder error:", err)
-		return code.CodeServerBusy
-	}
-
-	return code.CodeSuccess
-}
-
-func MoveSessionToFolder(userID int64, userName string, sessionID string, folderID int64) code.Code {
-	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
-		return code_
-	}
-	if _, code_ := ensureOwnedFolder(userID, folderID); code_ != code.CodeSuccess {
-		return code_
-	}
-
-	if err := sessionDAO.UpdateSessionFolderID(sessionID, &folderID); err != nil {
-		log.Println("MoveSessionToFolder UpdateSessionFolderID error:", err)
-		return code.CodeServerBusy
-	}
-
-	return code.CodeSuccess
-}
-
-func RemoveSessionFromFolder(userName string, sessionID string) code.Code {
-	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
-		return code_
-	}
-
-	if err := sessionDAO.UpdateSessionFolderID(sessionID, nil); err != nil {
-		log.Println("RemoveSessionFromFolder UpdateSessionFolderID error:", err)
-		return code.CodeServerBusy
-	}
-
-	return code.CodeSuccess
-}

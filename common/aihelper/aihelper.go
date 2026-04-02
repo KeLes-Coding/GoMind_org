@@ -406,30 +406,35 @@ func (a *AIHelper) generateWithRetryAndFallback(
 	if err == nil {
 		return resp, nil
 	}
+	log.Printf("AIHelper %s primary call failed: session=%s model=%s err=%v", operation, a.SessionID, a.model.GetModelType(), err)
 
 	if ctx.Err() != nil {
 		return nil, err
 	}
 
 	observability.RecordModelRetry()
+	log.Printf("AIHelper %s retrying primary model: session=%s model=%s", operation, a.SessionID, a.model.GetModelType())
 	retryStart := time.Now()
 	resp, retryErr := invoke(a.model)
 	observability.RecordModelCall(operation+"_retry", a.model.GetModelType(), retryErr == nil, time.Since(retryStart), len(messages), usedSummary)
 	if retryErr == nil {
 		return resp, nil
 	}
+	log.Printf("AIHelper %s retry failed: session=%s model=%s err=%v", operation, a.SessionID, a.model.GetModelType(), retryErr)
 
 	if a.fallbackModel == nil || ctx.Err() != nil {
 		return nil, retryErr
 	}
 
 	observability.RecordModelFallback()
+	log.Printf("AIHelper %s falling back: session=%s from=%s to=%s", operation, a.SessionID, a.model.GetModelType(), a.fallbackModel.GetModelType())
 	fallbackStart := time.Now()
 	resp, fallbackErr := invoke(a.fallbackModel)
 	observability.RecordModelCall(operation+"_fallback", a.fallbackModel.GetModelType(), fallbackErr == nil, time.Since(fallbackStart), len(messages), usedSummary)
 	if fallbackErr == nil {
 		return resp, nil
 	}
+	log.Printf("AIHelper %s fallback failed: session=%s model=%s err=%v", operation, a.SessionID, a.fallbackModel.GetModelType(), fallbackErr)
 
 	return nil, fallbackErr
 }
@@ -449,6 +454,7 @@ func (a *AIHelper) streamWithRetryAndFallback(
 	if err == nil {
 		return content, nil
 	}
+	log.Printf("AIHelper %s primary stream failed: session=%s model=%s err=%v", operation, a.SessionID, a.model.GetModelType(), err)
 
 	if ctx.Err() != nil {
 		return "", err
@@ -461,24 +467,28 @@ func (a *AIHelper) streamWithRetryAndFallback(
 	}
 
 	observability.RecordModelRetry()
+	log.Printf("AIHelper %s retrying primary stream model: session=%s model=%s", operation, a.SessionID, a.model.GetModelType())
 	retryStart := time.Now()
 	content, retryErr := invoke(a.model)
 	observability.RecordModelCall(operation+"_retry", a.model.GetModelType(), retryErr == nil, time.Since(retryStart), len(messages), usedSummary)
 	if retryErr == nil {
 		return content, nil
 	}
+	log.Printf("AIHelper %s retry stream failed: session=%s model=%s err=%v", operation, a.SessionID, a.model.GetModelType(), retryErr)
 
 	if a.fallbackModel == nil || ctx.Err() != nil {
 		return "", retryErr
 	}
 
 	observability.RecordModelFallback()
+	log.Printf("AIHelper %s falling back stream: session=%s from=%s to=%s", operation, a.SessionID, a.model.GetModelType(), a.fallbackModel.GetModelType())
 	fallbackStart := time.Now()
 	content, fallbackErr := invoke(a.fallbackModel)
 	observability.RecordModelCall(operation+"_fallback", a.fallbackModel.GetModelType(), fallbackErr == nil, time.Since(fallbackStart), len(messages), usedSummary)
 	if fallbackErr == nil {
 		return content, nil
 	}
+	log.Printf("AIHelper %s fallback stream failed: session=%s model=%s err=%v", operation, a.SessionID, a.fallbackModel.GetModelType(), fallbackErr)
 
 	return "", fallbackErr
 }
@@ -489,6 +499,7 @@ func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQu
 	a.AddMessage(userQuestion, userName, true, true)
 
 	if err := a.ensureContextSummary(ctx); err != nil {
+		log.Printf("AIHelper GenerateResponse ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
 
@@ -500,18 +511,23 @@ func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQu
 
 	// 真正的模型调用前先申请并发令牌。
 	// 这样即使外层接口层没有足够细的限流，实例内部也不会无限制地把请求全部压给模型。
+	log.Printf("AIHelper GenerateResponse acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
 	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
 	if err != nil {
+		log.Printf("AIHelper GenerateResponse acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, fmt.Errorf("model concurrency limited: %w", err)
 	}
 	defer releasePermit()
 
+	log.Printf("AIHelper GenerateResponse invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
 	schemaMsg, err := a.generateWithRetryAndFallback(ctx, "generate", messages, usedSummary, func(model AIModel) (*schema.Message, error) {
 		return model.GenerateResponse(ctx, messages)
 	})
 	if err != nil {
+		log.Printf("AIHelper GenerateResponse model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
+	log.Printf("AIHelper GenerateResponse model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(schemaMsg.Content))
 
 	modelMsg := utils.ConvertToModelMessage(a.SessionID, userName, schemaMsg)
 
@@ -527,6 +543,7 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 	a.AddMessage(userQuestion, userName, true, true)
 
 	if err := a.ensureContextSummary(ctx); err != nil {
+		log.Printf("AIHelper StreamResponse ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
 
@@ -536,13 +553,16 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 		usedSummary = true
 	}
 
+	log.Printf("AIHelper StreamResponse acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
 	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
 	if err != nil {
+		log.Printf("AIHelper StreamResponse acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, fmt.Errorf("model concurrency limited: %w", err)
 	}
 	defer releasePermit()
 
 	emitted := false
+	log.Printf("AIHelper StreamResponse invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
 	content, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
 		return !emitted
 	}, func(model AIModel) (string, error) {
@@ -552,8 +572,10 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 		})
 	})
 	if err != nil {
+		log.Printf("AIHelper StreamResponse model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
+	log.Printf("AIHelper StreamResponse model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(content))
 
 	modelMsg := &model.Message{
 		SessionID: a.SessionID,

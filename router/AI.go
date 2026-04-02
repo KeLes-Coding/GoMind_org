@@ -18,20 +18,7 @@ func AIRouter(r *gin.RouterGroup) {
 		r.POST("/chat/send-new-session", ratelimit.LimitChatByIP(), ratelimit.LimitChatByUser(), session.CreateSessionAndSendMessage)
 		r.POST("/chat/send", ratelimit.LimitChatByIP(), ratelimit.LimitChatByUser(), session.ChatSend)
 		r.POST("/chat/history", session.ChatHistory)
-<<<<<<< HEAD
 		// stop is paired with streaming chat so the client can explicitly stop generation.
-=======
-		r.GET("/chat/session-tree", session.GetSessionTree)
-		r.POST("/chat/folder/create", session.CreateFolder)
-		r.POST("/chat/folder/rename", session.RenameFolder)
-		r.POST("/chat/folder/delete", session.DeleteFolder)
-		r.POST("/chat/session/move", session.MoveSession)
-		r.POST("/chat/session/remove-from-folder", session.RemoveSessionFromFolder)
-		r.POST("/chat/session/rename", session.RenameSession)
-		r.POST("/chat/session/delete", session.DeleteSession)
-		// stop 接口用于主动终止当前会话的流式生成。
-		// 它和 send-stream 配套使用，目标是把“只能被动断开连接”升级成“显式停止当前回答”。
->>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
 		r.POST("/chat/stop", session.StopStream)
 		r.POST("/chat/folder/create", session.CreateFolder)
 		r.POST("/chat/folder/rename", session.RenameFolder)

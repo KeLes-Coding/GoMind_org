@@ -10,11 +10,7 @@ type Session struct {
 	ID                  string         `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	UserName            string         `gorm:"index;not null" json:"username"`
 	UserID              int64          `gorm:"index;not null" json:"user_id"`
-<<<<<<< HEAD
 	FolderID            *string        `gorm:"index;type:varchar(36)" json:"folder_id,omitempty"`
-=======
-	FolderID            *int64         `gorm:"index" json:"folder_id,omitempty"`
->>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
 	Title               string         `gorm:"type:varchar(100)" json:"title"`
 	ContextSummary      string         `gorm:"type:text" json:"-"`
 	SummaryMessageCount int            `gorm:"not null;default:0" json:"-"`

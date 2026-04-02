@@ -3,7 +3,9 @@ package mysql
 import (
 	"GopherAI/config"
 	"GopherAI/model"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -59,6 +61,10 @@ func InitMysql() error {
 }
 
 func migration() error {
+	if err := alignSessionSchema(); err != nil {
+		return err
+	}
+
 	return DB.AutoMigrate(
 		new(model.User),
 		new(model.EmailCaptcha),
@@ -67,6 +73,54 @@ func migration() error {
 		new(model.Message),
 		new(model.FileAsset),
 	)
+}
+
+func alignSessionSchema() error {
+	if err := ensureVarchar36Column(config.GetConfig().MysqlDatabaseName, "session_folders", "id", false); err != nil {
+		return err
+	}
+	if err := ensureVarchar36Column(config.GetConfig().MysqlDatabaseName, "sessions", "folder_id", true); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureVarchar36Column(schemaName string, tableName string, columnName string, nullable bool) error {
+	if DB == nil {
+		return errors.New("mysql DB is not initialized")
+	}
+
+	var dataType string
+	err := DB.Raw(`
+		SELECT DATA_TYPE
+		FROM information_schema.columns
+		WHERE table_schema = ? AND table_name = ? AND column_name = ?
+		LIMIT 1
+	`, schemaName, tableName, columnName).Scan(&dataType).Error
+	if err != nil {
+		return err
+	}
+	if dataType == "" {
+		return nil
+	}
+
+	normalized := strings.ToLower(dataType)
+	if normalized == "varchar" || normalized == "char" {
+		return nil
+	}
+
+	nullSQL := "NOT NULL"
+	if nullable {
+		nullSQL = "NULL"
+	}
+
+	alterSQL := fmt.Sprintf(
+		"ALTER TABLE `%s` MODIFY COLUMN `%s` varchar(36) %s",
+		tableName,
+		columnName,
+		nullSQL,
+	)
+	return DB.Exec(alterSQL).Error
 }
 
 func InsertUser(user *model.User) (*model.User, error) {
