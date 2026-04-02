@@ -7,6 +7,10 @@ import (
 	"gorm.io/gorm"
 )
 
+<<<<<<< HEAD
+=======
+// GetSessionsByUserName loads all sessions for a user ordered by creation time.
+>>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
 func GetSessionsByUserName(userName string) ([]model.Session, error) {
 	var sessions []model.Session
 	err := mysql.DB.Where("user_name = ?", userName).Order("updated_at desc").Find(&sessions).Error
@@ -25,17 +29,29 @@ func GetSessionsByFolderID(userName string, folderID string) ([]model.Session, e
 	return sessions, err
 }
 
+<<<<<<< HEAD
+=======
+// CreateSession persists a new session record.
+>>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
 func CreateSession(session *model.Session) (*model.Session, error) {
 	err := mysql.DB.Create(session).Error
 	return session, err
 }
 
+<<<<<<< HEAD
+=======
+// GetSessionByID loads a session by primary key.
+>>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
 func GetSessionByID(sessionID string) (*model.Session, error) {
 	var session model.Session
 	err := mysql.DB.Where("id = ?", sessionID).First(&session).Error
 	return &session, err
 }
 
+<<<<<<< HEAD
+=======
+// UpdateSessionSummary persists the current summary state for a session.
+>>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
 func UpdateSessionSummary(sessionID string, summary string, summaryMessageCount int) error {
 	return mysql.DB.Model(&model.Session{}).
 		Where("id = ?", sessionID).
@@ -45,6 +61,7 @@ func UpdateSessionSummary(sessionID string, summary string, summaryMessageCount 
 		}).Error
 }
 
+<<<<<<< HEAD
 func UpdateSessionTitle(userName string, sessionID string, title string) error {
 	result := mysql.DB.Model(&model.Session{}).
 		Where("id = ? AND user_name = ?", sessionID, userName).
@@ -87,3 +104,30 @@ func SoftDeleteSession(userName string, sessionID string) error {
 	}
 	return nil
 }
+=======
+// UpdateSessionTitle updates a session title.
+func UpdateSessionTitle(sessionID string, title string) error {
+	return mysql.DB.Model(&model.Session{}).
+		Where("id = ?", sessionID).
+		Update("title", title).Error
+}
+
+// DeleteSession soft-deletes a session.
+func DeleteSession(sessionID string) error {
+	return mysql.DB.Delete(&model.Session{}, "id = ?", sessionID).Error
+}
+
+// UpdateSessionFolderID updates the folder association for a session.
+func UpdateSessionFolderID(sessionID string, folderID *int64) error {
+	return mysql.DB.Model(&model.Session{}).
+		Where("id = ?", sessionID).
+		Update("folder_id", folderID).Error
+}
+
+// ClearSessionFolderIDByFolderID clears folder references for all sessions under a folder.
+func ClearSessionFolderIDByFolderID(folderID int64) error {
+	return mysql.DB.Model(&model.Session{}).
+		Where("folder_id = ?", folderID).
+		Update("folder_id", nil).Error
+}
+>>>>>>> 8b8125bb7c712b316afa9e1ad7389df2e321a22f
