@@ -45,6 +45,17 @@ func UpdateSessionSummary(sessionID string, summary string, summaryMessageCount 
 		}).Error
 }
 
+// UpdateSessionProgress 把摘要状态和正式 version 一起推进，避免两次更新之间出现中间态。
+func UpdateSessionProgress(sessionID string, version int64, summary string, summaryMessageCount int) error {
+	return mysql.DB.Model(&model.Session{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]interface{}{
+			"context_summary":       summary,
+			"summary_message_count": summaryMessageCount,
+			"version":               version,
+		}).Error
+}
+
 func UpdateSessionTitle(userName string, sessionID string, title string) error {
 	result := mysql.DB.Model(&model.Session{}).
 		Where("id = ? AND user_name = ?", sessionID, userName).

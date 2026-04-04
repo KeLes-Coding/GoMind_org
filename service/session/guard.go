@@ -96,35 +96,47 @@ func allowChatRateLimit(ctx context.Context, userName string) bool {
 // 1. 本地 session 锁，保证单实例下同一会话串行；
 // 2. Redis 分布式锁，保证多实例下尽量同样串行；
 // 3. 使用 defer 做统一释放，避免中途 return 时遗留锁。
-func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func() codeExecutorResult) codeExecutorResult {
+func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func(context.Context) codeExecutorResult) codeExecutorResult {
 	localLock := globalSessionLocalLockManager.getLock(sessionID)
 	waitStart := time.Now()
 	localLock.Lock()
 	defer localLock.Unlock()
 	observability.RecordSessionWait(time.Since(waitStart))
 
-	distributedLock, err := myredis.AcquireSessionDistributedLock(ctx, sessionID)
+	execCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	distributedLock, err := myredis.AcquireSessionDistributedLock(execCtx, sessionID)
 	if err != nil {
 		// Redis 锁是多实例增强能力，不是单机正确性的唯一前提。
 		// 所以这里明确降级为“仅本地锁保护”，同时把事实打到日志和观测里。
 		observability.RecordSessionRedisLockDegrade()
-		logSessionTrace(ctx, "redis_lock_degrade", "err=%v", err)
+		logSessionTrace(execCtx, "redis_lock_degrade", "mode=%s err=%v", myredis.CurrentMode(), err)
 		log.Println("withSessionExecutionGuard acquire redis session lock degraded:", err)
-		return fn()
+		return fn(execCtx)
 	}
 	if distributedLock == nil && myredis.IsAvailable() {
 		observability.RecordSessionLockBusy()
-		logSessionTrace(ctx, "redis_lock_busy", "detail=distributed_lock_conflict")
+		logSessionTrace(execCtx, "redis_lock_busy", "detail=distributed_lock_conflict")
 		return codeExecutorResult{busy: true}
 	}
+	if distributedLock == nil && !myredis.IsAvailable() {
+		observability.RecordSessionRedisLockDegrade()
+		logSessionTrace(execCtx, "redis_mode_degraded", "detail=local_lock_only")
+		return fn(execCtx)
+	}
 	if distributedLock != nil {
+		distributedLock.StartWatchdog(execCtx, func() {
+			logSessionTrace(execCtx, "redis_lock_lost", "detail=watchdog_detected_token_lost")
+			cancel()
+		})
 		defer func() {
-			_ = myredis.ReleaseSessionDistributedLock(ctx, distributedLock)
+			_ = myredis.ReleaseSessionDistributedLock(execCtx, distributedLock)
 		}()
 	}
 
-	logSessionTrace(ctx, "guard_enter", "detail=session_guard_entered")
-	return fn()
+	logSessionTrace(execCtx, "guard_enter", "mode=%s", myredis.CurrentMode())
+	return fn(execCtx)
 }
 
 type codeExecutorResult struct {

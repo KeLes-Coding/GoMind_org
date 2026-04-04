@@ -47,17 +47,15 @@ func ensureOwnedSession(userName string, sessionID string) (*model.Session, code
 }
 
 // persistSummaryIfChanged 閸欘亜婀幗妯款洣绾喖鐤勯崣妯哄閺冭泛娲栭崘娆愭殶閹诡喖绨遍敍宀勪缉閸忓秵鐦℃潪顔款嚞濮瑰倿鍏橀弴瀛樻煀 session閵?
-func persistSummaryIfChanged(sessionID string, beforeSummary string, beforeCount int, helper *aihelper.AIHelper) code.Code {
+func persistSessionProgress(sessionID string, helper *aihelper.AIHelper) code.Code {
 	afterSummary, afterCount := helper.GetSummaryState()
-	if beforeSummary == afterSummary && beforeCount == afterCount {
-		return code.CodeSuccess
-	}
-
-	if err := sessionDAO.UpdateSessionSummary(sessionID, afterSummary, afterCount); err != nil {
-		log.Println("persistSummaryIfChanged UpdateSessionSummary error:", err)
+	nextVersion := helper.GetVersion() + 1
+	if err := sessionDAO.UpdateSessionProgress(sessionID, nextVersion, afterSummary, afterCount); err != nil {
+		log.Println("persistSessionProgress UpdateSessionProgress error:", err)
 		return code.CodeServerBusy
 	}
 
+	helper.SetVersion(nextVersion)
 	return code.CodeSuccess
 }
 
@@ -68,10 +66,15 @@ func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 		return
 	}
 
-	if err := myredis.SaveSessionHotState(ctx, helper.ExportHotState()); err != nil {
+	result, err := myredis.SaveSessionHotState(ctx, helper.ExportHotState())
+	if err != nil {
 		observability.RecordRedisHotStateSaveFail()
 		logSessionTrace(ctx, "hot_state_save_fail", "err=%v", err)
 		log.Println("persistHelperHotState SaveSessionHotState error:", err)
+		return
+	}
+	if result == myredis.SessionHotStateSaveIgnoredStale {
+		logSessionTrace(ctx, "hot_state_save_ignored", "detail=stale_snapshot")
 	}
 }
 
@@ -173,6 +176,7 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 	manager := aihelper.GetGlobalManager()
 	if helper, exists := manager.GetAIHelper(userName, sessionID); exists {
 		observability.RecordHelperRecover(observability.HelperRecoverSourceProcess)
+		helper.SetVersion(sess.Version)
 		helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
 		if code_ := syncHelperWithDatabase(sessionID, helper); code_ != code.CodeSuccess {
 			return nil, code_
@@ -195,6 +199,8 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 	if len(msgs) > 0 {
 		helper.LoadMessages(msgs)
 	}
+	helper.SetVersion(sess.Version)
+	helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
 
 	// 缁楊兛绨╂潪顔煎磳缁狙囧櫡瀵洖鍙?Redis 閻戭厾濮搁幀浣告彥閻撗嶇礉娴ｅ棜绻栭柌灞肩矝閻掓湹绻氶悾?DB 閸ョ偞鏂佹担婊€璐熼崗婊冪俺閻喓娴夐幁銏狀槻閵?
 	// 娑旂喎姘ㄩ弰顖濐嚛閿涙艾鍘涙穱婵婄槈閳ユ粏鍤︾亸鎴ｅ厴閹垹顦查垾婵撶礉閸愬秶鏁?Redis 閻戭厼鎻╅悡褎濡搁張鈧潻鎴犵崶閸欙絿濮搁幀浣剿夐崶鐐存降閵?
@@ -204,14 +210,18 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 		logSessionTrace(ctx, "hot_state_read_fail", "err=%v", err)
 		log.Println("getOrCreateHelperWithHistory GetSessionHotState error:", err)
 	} else if hotState != nil {
-		observability.RecordRedisHotStateLookup(true)
-		observability.RecordHelperRecover(observability.HelperRecoverSourceRedis)
-		helper.LoadHotState(hotState)
+		if hotState.Version >= sess.Version {
+			observability.RecordRedisHotStateLookup(true)
+			observability.RecordHelperRecover(observability.HelperRecoverSourceRedis)
+			helper.LoadHotState(hotState)
+		} else {
+			observability.RecordRedisHotStateLookup(false)
+			logSessionTrace(ctx, "hot_state_stale", "redis_version=%d db_version=%d", hotState.Version, sess.Version)
+		}
 	} else {
 		observability.RecordRedisHotStateLookup(false)
 	}
 	observability.RecordHelperRecover(observability.HelperRecoverSourceDB)
-	helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
 	if code_ := syncHelperWithDatabase(sessionID, helper); code_ != code.CodeSuccess {
 		return nil, code_
 	}
@@ -264,23 +274,22 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 	ctx, trace := newSessionTrace(ctx, "create_sync", createdSession.ID, modelType)
 	logSessionTrace(ctx, "start", "user=%s", userName)
 
-	result := withSessionExecutionGuard(ctx, createdSession.ID, func() codeExecutorResult {
-		helper, code_ := getOrSyncHelperWithHistory(ctx, userName, createdSession, modelType)
+	result := withSessionExecutionGuard(ctx, createdSession.ID, func(execCtx context.Context) codeExecutorResult {
+		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, createdSession, modelType)
 		if code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 
-		beforeSummary, beforeCount := helper.GetSummaryState()
-		aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
+		aiResponse, err := helper.GenerateResponse(userName, execCtx, userQuestion)
 		if err != nil {
 			log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSummaryIfChanged(createdSession.ID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		if code_ = persistSessionProgress(createdSession.ID, helper); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 
-		persistHelperHotState(ctx, helper)
+		persistHelperHotState(execCtx, helper)
 		return codeExecutorResult{
 			code:       code.CodeSuccess,
 			aiResponse: aiResponse.Content,
@@ -351,8 +360,8 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 	}
 
 	// 娴犲氦绻栭柌灞界磻婵铔嬮弬鎵畱閳ユ粈绱扮拠婵囧⒔鐞涘奔绻氶幎?+ 閻戭厾濮搁幀浣告礀閸愭瑢鈧繈鎽肩捄顖樷偓?
-	result := withSessionExecutionGuard(ctx, sessionID, func() codeExecutorResult {
-		helper, code_ := getOrSyncHelperWithHistory(ctx, userName, sess, modelType)
+	result := withSessionExecutionGuard(ctx, sessionID, func(execCtx context.Context) codeExecutorResult {
+		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, modelType)
 		if code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
@@ -367,19 +376,18 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 			flusher.Flush()
 		}
 
-		beforeSummary, beforeCount := helper.GetSummaryState()
-		if _, err := helper.StreamResponse(userName, ctx, cb, userQuestion); err != nil {
+		if _, err := helper.StreamResponse(userName, execCtx, cb, userQuestion); err != nil {
 			log.Println("StreamMessageToExistingSession StreamResponse error:", err)
-			if ctx.Err() != nil {
+			if execCtx.Err() != nil {
 				observability.RecordStreamDisconnect()
 			}
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		if code_ = persistSessionProgress(sessionID, helper); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 
-		persistHelperHotState(ctx, helper)
+		persistHelperHotState(execCtx, helper)
 		return codeExecutorResult{code: code.CodeSuccess}
 	})
 	if result.err != nil {
@@ -445,23 +453,22 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 	}
 
 	// 閺備即鎽肩捄顖氭躬鏉╂瑩鍣烽幓鎰鏉╂柨娲栭敍灞芥倵闂堛垻娈戦弮褔鈧槒绶禒鍛箽閻ｆ瑤缍旂€靛湱鍙庨敍灞界杽闂勫懍绗夋导姘晙鐠ф澘鍩岄妴?
-	result := withSessionExecutionGuard(ctx, sessionID, func() codeExecutorResult {
-		helper, code_ := getOrSyncHelperWithHistory(ctx, userName, sess, modelType)
+	result := withSessionExecutionGuard(ctx, sessionID, func(execCtx context.Context) codeExecutorResult {
+		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, modelType)
 		if code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 
-		beforeSummary, beforeCount := helper.GetSummaryState()
-		aiResponse, err := helper.GenerateResponse(userName, ctx, userQuestion)
+		aiResponse, err := helper.GenerateResponse(userName, execCtx, userQuestion)
 		if err != nil {
 			log.Println("ChatSend GenerateResponse error:", err)
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		if code_ = persistSessionProgress(sessionID, helper); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 
-		persistHelperHotState(ctx, helper)
+		persistHelperHotState(execCtx, helper)
 		return codeExecutorResult{
 			code:       code.CodeSuccess,
 			aiResponse: aiResponse.Content,

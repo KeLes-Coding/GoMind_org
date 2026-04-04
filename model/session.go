@@ -7,16 +7,18 @@ import (
 )
 
 type Session struct {
-	ID                  string         `gorm:"primaryKey;type:varchar(36)" json:"id"`
-	UserName            string         `gorm:"index;not null" json:"username"`
-	UserID              int64          `gorm:"index;not null" json:"user_id"`
-	FolderID            *string        `gorm:"index;type:varchar(36)" json:"folder_id,omitempty"`
-	Title               string         `gorm:"type:varchar(100)" json:"title"`
-	ContextSummary      string         `gorm:"type:text" json:"-"`
-	SummaryMessageCount int            `gorm:"not null;default:0" json:"-"`
-	CreatedAt           time.Time      `json:"created_at"`
-	UpdatedAt           time.Time      `json:"updated_at"`
-	DeletedAt           gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                  string  `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	UserName            string  `gorm:"index;not null" json:"username"`
+	UserID              int64   `gorm:"index;not null" json:"user_id"`
+	FolderID            *string `gorm:"index;type:varchar(36)" json:"folder_id,omitempty"`
+	Title               string  `gorm:"type:varchar(100)" json:"title"`
+	ContextSummary      string  `gorm:"type:text" json:"-"`
+	SummaryMessageCount int     `gorm:"not null;default:0" json:"-"`
+	// Version 是会话一致性的正式版本号，用来约束 Redis 热状态恢复和后续状态推进。
+	Version   int64          `gorm:"not null;default:1" json:"version"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 type SessionInfo struct {

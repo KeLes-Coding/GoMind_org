@@ -35,6 +35,12 @@ type AISnapshot struct {
 	SessionWaitMsMax             int64         `json:"session_wait_ms_max"`
 	SessionLockBusyTotal         int64         `json:"session_lock_busy_total"`
 	SessionRedisLockDegradeTotal int64         `json:"session_redis_lock_degrade_total"`
+	SessionLockWatchdogRefresh   int64         `json:"session_lock_watchdog_refresh_total"`
+	SessionLockWatchdogLost      int64         `json:"session_lock_watchdog_lost_total"`
+	RedisMode                    string        `json:"redis_mode"`
+	RedisDegradedEnterTotal      int64         `json:"redis_degraded_enter_total"`
+	RedisDegradedRecoverTotal    int64         `json:"redis_degraded_recover_total"`
+	SessionBusyInDegradedTotal   int64         `json:"session_busy_in_degraded_total"`
 	HelperRecoverProcess         int64         `json:"helper_recover_process_total"`
 	HelperRecoverRedis           int64         `json:"helper_recover_redis_total"`
 	HelperRecoverDB              int64         `json:"helper_recover_db_total"`
@@ -132,6 +138,12 @@ type aiObserver struct {
 	sessionWaitMsMax             int64
 	sessionLockBusyTotal         int64
 	sessionRedisLockDegradeTotal int64
+	sessionLockWatchdogRefresh   int64
+	sessionLockWatchdogLost      int64
+	redisMode                    string
+	redisDegradedEnterTotal      int64
+	redisDegradedRecoverTotal    int64
+	sessionBusyInDegradedTotal   int64
 	helperRecoverProcess         int64
 	helperRecoverRedis           int64
 	helperRecoverDB              int64
@@ -163,8 +175,9 @@ type aiObserver struct {
 }
 
 var globalAIObserver = &aiObserver{
-	requests: make(map[string]*requestCounter),
-	models:   make(map[string]*modelCounter),
+	requests:  make(map[string]*requestCounter),
+	models:    make(map[string]*modelCounter),
+	redisMode: "unknown",
 }
 
 func requestKey(operation string, modelType string) string {
@@ -296,6 +309,51 @@ func RecordSessionRedisLockDegrade() {
 	defer globalAIObserver.mu.Unlock()
 
 	globalAIObserver.sessionRedisLockDegradeTotal++
+}
+
+// RecordSessionLockWatchdogRefresh 记录锁续约成功次数。
+func RecordSessionLockWatchdogRefresh() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.sessionLockWatchdogRefresh++
+}
+
+// RecordSessionLockWatchdogLost 记录锁资格丢失次数。
+func RecordSessionLockWatchdogLost() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.sessionLockWatchdogLost++
+}
+
+// RecordRedisModeChange 记录 Redis 运行模式切换。
+func RecordRedisModeChange(mode string) {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	if mode == "" {
+		return
+	}
+	if globalAIObserver.redisMode == mode {
+		return
+	}
+
+	if mode == "degraded" {
+		globalAIObserver.redisDegradedEnterTotal++
+	}
+	if globalAIObserver.redisMode == "degraded" && mode == "normal" {
+		globalAIObserver.redisDegradedRecoverTotal++
+	}
+	globalAIObserver.redisMode = mode
+}
+
+// RecordSessionBusyInDegraded 记录 Redis 降级模式下返回 busy 的次数。
+func RecordSessionBusyInDegraded() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.sessionBusyInDegradedTotal++
 }
 
 // RecordHelperRecover 记录 helper 的恢复来源。
@@ -513,6 +571,12 @@ func SnapshotAI() AISnapshot {
 		SessionWaitMsMax:             globalAIObserver.sessionWaitMsMax,
 		SessionLockBusyTotal:         globalAIObserver.sessionLockBusyTotal,
 		SessionRedisLockDegradeTotal: globalAIObserver.sessionRedisLockDegradeTotal,
+		SessionLockWatchdogRefresh:   globalAIObserver.sessionLockWatchdogRefresh,
+		SessionLockWatchdogLost:      globalAIObserver.sessionLockWatchdogLost,
+		RedisMode:                    globalAIObserver.redisMode,
+		RedisDegradedEnterTotal:      globalAIObserver.redisDegradedEnterTotal,
+		RedisDegradedRecoverTotal:    globalAIObserver.redisDegradedRecoverTotal,
+		SessionBusyInDegradedTotal:   globalAIObserver.sessionBusyInDegradedTotal,
 		HelperRecoverProcess:         globalAIObserver.helperRecoverProcess,
 		HelperRecoverRedis:           globalAIObserver.helperRecoverRedis,
 		HelperRecoverDB:              globalAIObserver.helperRecoverDB,

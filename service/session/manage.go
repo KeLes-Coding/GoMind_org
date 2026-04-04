@@ -1,11 +1,14 @@
 package session
 
 import (
+	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
 	"GopherAI/common/mysql"
+	myredis "GopherAI/common/redis"
 	sessionDAO "GopherAI/dao/session"
 	sessionfolderDAO "GopherAI/dao/session_folder"
 	"GopherAI/model"
+	"context"
 	"errors"
 	"log"
 	"strings"
@@ -256,6 +259,18 @@ func DeleteSession(userName string, sessionID string) code.Code {
 		}
 		log.Println("DeleteSession SoftDeleteSession error:", err)
 		return code.CodeServerBusy
+	}
+
+	// 会话删除成功后，需要同步清理进程内 helper、Redis 热状态和仍在运行的流式任务。
+	aihelper.GetGlobalManager().RemoveAIHelper(userName, sessionID)
+	if _, stopCode := globalActiveStreamRegistry.stop(userName, sessionID); stopCode != code.CodeSuccess && stopCode != code.CodeChatNotRunning {
+		log.Println("DeleteSession stop active stream error:", stopCode)
+	}
+	if err := myredis.DeleteSessionHotState(context.Background(), sessionID); err != nil {
+		log.Println("DeleteSession DeleteSessionHotState error:", err)
+	}
+	if err := myredis.DeleteSessionLock(context.Background(), sessionID); err != nil {
+		log.Println("DeleteSession DeleteSessionLock error:", err)
 	}
 	return code.CodeSuccess
 }

@@ -89,8 +89,8 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 	activeTask := globalActiveStreamRegistry.register(userName, sessionID, cancel)
 	defer globalActiveStreamRegistry.unregister(sessionID)
 
-	result := withSessionExecutionGuard(runCtx, sessionID, func() codeExecutorResult {
-		helper, code_ := getOrSyncHelperWithHistory(runCtx, userName, sess, modelType)
+	result := withSessionExecutionGuard(runCtx, sessionID, func(execCtx context.Context) codeExecutorResult {
+		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, modelType)
 		if code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
@@ -119,15 +119,14 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 			flusher.Flush()
 		}
 
-		beforeSummary, beforeCount := helper.GetSummaryState()
-		if _, err := helper.StreamResponse(userName, runCtx, cb, userQuestion); err != nil {
+		if _, err := helper.StreamResponse(userName, execCtx, cb, userQuestion); err != nil {
 			log.Println("StreamMessageToExistingSessionWithControl StreamResponse error:", err)
 
 			partialContent := activeTask.snapshot()
-			if runCtx.Err() != nil {
+			if execCtx.Err() != nil {
 				observability.RecordStreamDisconnect()
-				persistInterruptedAssistantMessage(helper, userName, partialContent, resolveInterruptedMessageStatus(runCtx))
-				return codeExecutorResult{code: mapContextErrorToCode(runCtx)}
+				persistInterruptedAssistantMessage(helper, userName, partialContent, resolveInterruptedMessageStatus(execCtx))
+				return codeExecutorResult{code: mapContextErrorToCode(execCtx)}
 			}
 
 			// 对于非 ctx 驱动的异常，这里仍然尽量保留已经产生的部分内容，
@@ -136,11 +135,11 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 			return codeExecutorResult{code: code.AIModelFail}
 		}
 
-		if code_ = persistSummaryIfChanged(sessionID, beforeSummary, beforeCount, helper); code_ != code.CodeSuccess {
+		if code_ = persistSessionProgress(sessionID, helper); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 
-		persistHelperHotState(runCtx, helper)
+		persistHelperHotState(execCtx, helper)
 		return codeExecutorResult{code: code.CodeSuccess}
 	})
 	if result.err != nil {

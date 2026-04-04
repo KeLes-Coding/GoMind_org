@@ -93,7 +93,6 @@ func (a *AIHelper) AddMessageWithStatus(Content string, UserName string, IsUser 
 	// 写切片时必须加锁；否则同一个 session 并发写入会有数据竞争风险。
 	a.mu.Lock()
 	a.messages = append(a.messages, &userMsg)
-	a.version++
 	a.mu.Unlock()
 
 	if Save {
@@ -186,7 +185,6 @@ func (a *AIHelper) LoadMessages(messages []model.Message) {
 		msg.SessionID = a.SessionID
 		a.messages = append(a.messages, &msg)
 	}
-	a.version++
 }
 
 // SetSaveFunc 允许外部注入消息持久化策略，便于测试或切换持久化实现。
@@ -213,7 +211,6 @@ func (a *AIHelper) SetSummaryState(summary string, summaryMessageCount int) {
 		summaryMessageCount = len(a.messages)
 	}
 	a.summaryMessageCount = summaryMessageCount
-	a.version++
 }
 
 // GetSummaryState 返回当前 helper 的摘要快照，供 service 判断是否需要回写数据库。
@@ -221,6 +218,24 @@ func (a *AIHelper) GetSummaryState() (string, int) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.contextSummary, a.summaryMessageCount
+}
+
+// GetVersion 返回当前 helper 绑定的会话正式版本号。
+func (a *AIHelper) GetVersion() int64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.version
+}
+
+// SetVersion 用显式版本覆盖 helper 当前版本，避免恢复或持久化时继续沿用旧值。
+func (a *AIHelper) SetVersion(version int64) {
+	if version <= 0 {
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.version = version
 }
 
 // GetMessages 返回当前会话的内存消息快照，避免外部直接修改内部切片。
@@ -314,7 +329,6 @@ func (a *AIHelper) ReconcileMessages(dbMessages []model.Message) {
 	}
 
 	a.messages = mergedMessages
-	a.version++
 }
 
 // ensureContextSummary 保证“超过窗口之外的更早消息”都被压缩进摘要。
@@ -363,7 +377,6 @@ func (a *AIHelper) ensureContextSummary(ctx context.Context) error {
 
 	a.contextSummary = newSummary
 	a.summaryMessageCount = targetSummaryCount
-	a.version++
 	return nil
 }
 

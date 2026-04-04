@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"GopherAI/common/observability"
 	"GopherAI/config"
 	"context"
 	"fmt"
@@ -16,6 +17,15 @@ var Rdb *redisCli.Client
 
 var ctx = context.Background()
 var redisAvailable atomic.Bool
+
+func setAvailability(available bool) {
+	redisAvailable.Store(available)
+	if available {
+		observability.RecordRedisModeChange("normal")
+		return
+	}
+	observability.RecordRedisModeChange("degraded")
+}
 
 func Init() error {
 	conf := config.GetConfig()
@@ -36,17 +46,26 @@ func Init() error {
 	defer cancel()
 
 	if err := Rdb.Ping(pingCtx).Err(); err != nil {
-		redisAvailable.Store(false)
+		setAvailability(false)
 		return err
 	}
 
 	// 只要启动期探活成功，就允许业务优先走 Redis。
-	redisAvailable.Store(true)
+	setAvailability(true)
+	setAvailability(true)
 	return nil
 }
 
 func IsAvailable() bool {
 	return Rdb != nil && redisAvailable.Load()
+}
+
+// CurrentMode 返回 Redis 当前运行模式，便于上层显式区分 normal / degraded。
+func CurrentMode() string {
+	if IsAvailable() {
+		return "normal"
+	}
+	return "degraded"
 }
 
 // AcquireLock 获取分布式锁
@@ -76,7 +95,7 @@ func SetCaptchaForEmail(email, captcha string) error {
 	expire := 2 * time.Minute
 	if err := Rdb.Set(ctx, key, captcha, expire).Err(); err != nil {
 		// 运行期一旦发现 Redis 失败，后续请求直接走降级分支，避免每次阻塞等待。
-		redisAvailable.Store(false)
+		setAvailability(false)
 		return err
 	}
 	return nil
@@ -95,7 +114,7 @@ func ValidateCaptchaForEmail(email, userInput string) (bool, error) {
 		}
 
 		// 区分“验证码不存在”和“Redis 不可用”，让上层决定是否回退数据库。
-		redisAvailable.Store(false)
+		setAvailability(false)
 		return false, err
 	}
 
@@ -109,7 +128,7 @@ func DeleteCaptchaForEmail(email string) error {
 
 	key := GenerateCaptcha(email)
 	if err := Rdb.Del(ctx, key).Err(); err != nil {
-		redisAvailable.Store(false)
+		setAvailability(false)
 		return err
 	}
 	return nil
@@ -137,7 +156,7 @@ func initRedisIndexWithPrefix(ctx context.Context, indexName, prefix string, dim
 	}
 
 	if !strings.Contains(err.Error(), "Unknown index name") {
-		redisAvailable.Store(false)
+		setAvailability(false)
 		return fmt.Errorf("check redis index failed: %w", err)
 	}
 
@@ -174,7 +193,7 @@ func initRedisIndexWithPrefix(ctx context.Context, indexName, prefix string, dim
 	}
 
 	if err := Rdb.Do(ctx, createArgs...).Err(); err != nil {
-		redisAvailable.Store(false)
+		setAvailability(false)
 		return fmt.Errorf("create redis index failed: %w", err)
 	}
 
@@ -194,7 +213,7 @@ func DeleteRedisIndex(ctx context.Context, filename string) error {
 		if strings.Contains(err.Error(), "Unknown index name") {
 			return nil
 		}
-		redisAvailable.Store(false)
+		setAvailability(false)
 		return fmt.Errorf("delete redis index failed: %w", err)
 	}
 
@@ -243,7 +262,7 @@ func DeleteKeys(ctx context.Context, keys []string) error {
 	}
 
 	if err := Rdb.Del(ctx, keys...).Err(); err != nil {
-		redisAvailable.Store(false)
+		setAvailability(false)
 		return err
 	}
 	return nil
