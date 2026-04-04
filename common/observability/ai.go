@@ -37,6 +37,9 @@ type AISnapshot struct {
 	SessionRedisLockDegradeTotal int64         `json:"session_redis_lock_degrade_total"`
 	SessionLockWatchdogRefresh   int64         `json:"session_lock_watchdog_refresh_total"`
 	SessionLockWatchdogLost      int64         `json:"session_lock_watchdog_lost_total"`
+	SessionOwnerRouteMismatch    int64         `json:"session_owner_route_mismatch_total"`
+	SessionOwnerLeaseRefresh     int64         `json:"session_owner_lease_refresh_total"`
+	SessionOwnerLeaseLost        int64         `json:"session_owner_lease_lost_total"`
 	RedisMode                    string        `json:"redis_mode"`
 	RedisDegradedEnterTotal      int64         `json:"redis_degraded_enter_total"`
 	RedisDegradedRecoverTotal    int64         `json:"redis_degraded_recover_total"`
@@ -140,6 +143,9 @@ type aiObserver struct {
 	sessionRedisLockDegradeTotal int64
 	sessionLockWatchdogRefresh   int64
 	sessionLockWatchdogLost      int64
+	sessionOwnerRouteMismatch    int64
+	sessionOwnerLeaseRefresh     int64
+	sessionOwnerLeaseLost        int64
 	redisMode                    string
 	redisDegradedEnterTotal      int64
 	redisDegradedRecoverTotal    int64
@@ -325,6 +331,30 @@ func RecordSessionLockWatchdogLost() {
 	defer globalAIObserver.mu.Unlock()
 
 	globalAIObserver.sessionLockWatchdogLost++
+}
+
+// RecordSessionOwnerRouteMismatch 记录命中了非首选 owner 实例的次数。
+func RecordSessionOwnerRouteMismatch() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.sessionOwnerRouteMismatch++
+}
+
+// RecordSessionOwnerLeaseRefresh 记录 owner lease 续约成功次数。
+func RecordSessionOwnerLeaseRefresh() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.sessionOwnerLeaseRefresh++
+}
+
+// RecordSessionOwnerLeaseLost 记录 owner lease 丢失次数。
+func RecordSessionOwnerLeaseLost() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.sessionOwnerLeaseLost++
 }
 
 // RecordRedisModeChange 记录 Redis 运行模式切换。
@@ -573,6 +603,9 @@ func SnapshotAI() AISnapshot {
 		SessionRedisLockDegradeTotal: globalAIObserver.sessionRedisLockDegradeTotal,
 		SessionLockWatchdogRefresh:   globalAIObserver.sessionLockWatchdogRefresh,
 		SessionLockWatchdogLost:      globalAIObserver.sessionLockWatchdogLost,
+		SessionOwnerRouteMismatch:    globalAIObserver.sessionOwnerRouteMismatch,
+		SessionOwnerLeaseRefresh:     globalAIObserver.sessionOwnerLeaseRefresh,
+		SessionOwnerLeaseLost:        globalAIObserver.sessionOwnerLeaseLost,
 		RedisMode:                    globalAIObserver.redisMode,
 		RedisDegradedEnterTotal:      globalAIObserver.redisDegradedEnterTotal,
 		RedisDegradedRecoverTotal:    globalAIObserver.redisDegradedRecoverTotal,

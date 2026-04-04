@@ -44,3 +44,18 @@ func GenerateSessionLockKey(sessionID string) string {
 func GenerateSessionHotStateKey(sessionID string) string {
 	return fmt.Sprintf("ai:session:hot:%s", sessionID)
 }
+
+// GenerateSessionOwnerLeaseKey 为 session owner lease 生成 Redis key。
+func GenerateSessionOwnerLeaseKey(sessionID string) string {
+	return fmt.Sprintf("ai:session:owner:%s", sessionID)
+}
+
+// GenerateSessionOwnerFenceKey 为 session owner fencing counter 生成 Redis key。
+func GenerateSessionOwnerFenceKey(sessionID string) string {
+	return fmt.Sprintf("ai:session:owner:fence:%s", sessionID)
+}
+
+// GenerateChatInstanceHeartbeatKey 为聊天实例心跳生成 Redis key。
+func GenerateChatInstanceHeartbeatKey(instanceID string) string {
+	return fmt.Sprintf("ai:instance:chat:%s", instanceID)
+}

@@ -46,8 +46,31 @@ func ensureOwnedSession(userName string, sessionID string) (*model.Session, code
 	return sess, code.CodeSuccess
 }
 
+// ensureSessionWriteOwnership 在真正写 DB / Redis 前再次校验 owner fencing 资格。
+// 这样即使旧 owner 的执行流还没完全退出，只要 owner lease 已被新实例接管，它也不能继续尾写。
+func ensureSessionWriteOwnership(ctx context.Context, sessionID string) code.Code {
+	guard := sessionOwnerGuardFromContext(ctx)
+	if guard == nil || guard.SessionID != sessionID {
+		return code.CodeSuccess
+	}
+	valid, err := myredis.ValidateSessionOwnerFence(ctx, sessionID, guard.OwnerID, guard.FenceToken)
+	if err != nil {
+		logSessionTrace(ctx, "owner_fence_validate_fail", "err=%v", err)
+		log.Println("ensureSessionWriteOwnership ValidateSessionOwnerFence error:", err)
+		return code.CodeServerBusy
+	}
+	if !valid {
+		logSessionTrace(ctx, "owner_fence_reject", "owner=%s fence=%d", guard.OwnerID, guard.FenceToken)
+		return code.AIModelCancelled
+	}
+	return code.CodeSuccess
+}
+
 // persistSessionProgress 将 helper 当前的摘要状态和版本号持久化到 session。
-func persistSessionProgress(sessionID string, helper *aihelper.AIHelper) code.Code {
+func persistSessionProgress(ctx context.Context, sessionID string, helper *aihelper.AIHelper) code.Code {
+	if code_ := ensureSessionWriteOwnership(ctx, sessionID); code_ != code.CodeSuccess {
+		return code_
+	}
 	afterSummary, afterCount := helper.GetSummaryState()
 	nextVersion := helper.GetVersion() + 1
 	if err := sessionDAO.UpdateSessionProgress(sessionID, nextVersion, afterSummary, afterCount); err != nil {
@@ -65,8 +88,27 @@ func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 	if helper == nil {
 		return
 	}
+	guard := sessionOwnerGuardFromContext(ctx)
+	if guard != nil && guard.SessionID == helper.SessionID {
+		valid, err := myredis.ValidateSessionOwnerFence(ctx, helper.SessionID, guard.OwnerID, guard.FenceToken)
+		if err != nil {
+			observability.RecordRedisHotStateSaveFail()
+			logSessionTrace(ctx, "hot_state_owner_validate_fail", "err=%v", err)
+			log.Println("persistHelperHotState ValidateSessionOwnerFence error:", err)
+			return
+		}
+		if !valid {
+			logSessionTrace(ctx, "hot_state_owner_reject", "owner=%s fence=%d", guard.OwnerID, guard.FenceToken)
+			return
+		}
+	}
 
-	result, err := myredis.SaveSessionHotState(ctx, helper.ExportHotState())
+	hotState := helper.ExportHotState()
+	if guard != nil && guard.SessionID == helper.SessionID {
+		hotState.OwnerID = guard.OwnerID
+		hotState.FenceToken = guard.FenceToken
+	}
+	result, err := myredis.SaveSessionHotState(ctx, hotState)
 	if err != nil {
 		observability.RecordRedisHotStateSaveFail()
 		logSessionTrace(ctx, "hot_state_save_fail", "err=%v", err)
@@ -210,13 +252,24 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 		logSessionTrace(ctx, "hot_state_read_fail", "err=%v", err)
 		log.Println("getOrCreateHelperWithHistory GetSessionHotState error:", err)
 	} else if hotState != nil {
-		if hotState.Version >= sess.Version {
+		currentLease, leaseErr := myredis.GetSessionOwnerLeaseDetail(ctx, sessionID)
+		if leaseErr != nil {
+			logSessionTrace(ctx, "owner_lease_read_fail", "err=%v", leaseErr)
+		}
+		// 第三阶段补充：如果热状态和当前 owner lease 的 fence token 冲突，
+		// 即使 version 没落后，也不能继续信任这份热快照，避免旧 owner 的同版本尾写被重新恢复。
+		if hotState.Version >= sess.Version && (currentLease == nil || hotState.FenceToken >= currentLease.FenceToken) {
 			observability.RecordRedisHotStateLookup(true)
 			observability.RecordHelperRecover(observability.HelperRecoverSourceRedis)
 			helper.LoadHotState(hotState)
 		} else {
 			observability.RecordRedisHotStateLookup(false)
-			logSessionTrace(ctx, "hot_state_stale", "redis_version=%d db_version=%d", hotState.Version, sess.Version)
+			logSessionTrace(ctx, "hot_state_stale", "redis_version=%d db_version=%d redis_fence=%d current_fence=%d", hotState.Version, sess.Version, hotState.FenceToken, func() int64 {
+				if currentLease == nil {
+					return 0
+				}
+				return currentLease.FenceToken
+			}())
 		}
 	} else {
 		observability.RecordRedisHotStateLookup(false)
@@ -285,7 +338,7 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 			log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSessionProgress(createdSession.ID, helper); code_ != code.CodeSuccess {
+		if code_ = persistSessionProgress(execCtx, createdSession.ID, helper); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 
@@ -383,7 +436,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 			}
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSessionProgress(sessionID, helper); code_ != code.CodeSuccess {
+		if code_ = persistSessionProgress(execCtx, sessionID, helper); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 
@@ -464,7 +517,7 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 			log.Println("ChatSend GenerateResponse error:", err)
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSessionProgress(sessionID, helper); code_ != code.CodeSuccess {
+		if code_ = persistSessionProgress(execCtx, sessionID, helper); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 

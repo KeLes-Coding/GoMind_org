@@ -20,6 +20,8 @@ type SessionHotMessage struct {
 // 不承载模型实例、锁、函数指针等运行时对象。
 type SessionHotState struct {
 	SessionID           string              `json:"session_id"`
+	OwnerID             string              `json:"owner_id"`
+	FenceToken          int64               `json:"fence_token"`
 	Version             int64               `json:"version"`
 	UpdatedAt           time.Time           `json:"updated_at"`
 	ContextSummary      string              `json:"context_summary"`

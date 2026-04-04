@@ -4,6 +4,7 @@ import (
 	"GopherAI/common/mysql"
 	"GopherAI/common/rabbitmq"
 	"GopherAI/common/redis"
+	rt "GopherAI/common/runtime"
 	"GopherAI/config"
 	"GopherAI/router"
 	"GopherAI/worker"
@@ -25,6 +26,7 @@ func main() {
 	// 3. all：开发环境下一把启动 API + 全部 worker。
 	role := flag.String("role", "server", "process role: server, worker, all")
 	flag.Parse()
+	rt.InitInstanceInfo(*role)
 
 	conf := config.GetConfig()
 	host := conf.MainConfig.Host
@@ -47,6 +49,7 @@ func main() {
 	// 当前先统一使用一个根 context 管理进程级生命周期。
 	// 后续如果要做优雅停机，可以在这里对接 signal 和 cancel。
 	ctx := context.Background()
+	redis.StartChatInstanceHeartbeat(ctx)
 	switch *role {
 	case "server":
 		// server 模式也需要跑聊天链路的 relay / persisted_version 补偿。

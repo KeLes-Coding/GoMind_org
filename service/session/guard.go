@@ -4,6 +4,7 @@ import (
 	"GopherAI/common/code"
 	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
+	rt "GopherAI/common/runtime"
 	"context"
 	"log"
 	"sync"
@@ -16,6 +17,31 @@ const (
 	defaultChatRateLimit       = 12
 	defaultChatRateLimitWindow = 30 * time.Second
 )
+
+type sessionOwnerGuardContextKey string
+
+const ownerGuardContextKey sessionOwnerGuardContextKey = "session-owner-guard"
+
+type sessionOwnerGuard struct {
+	SessionID   string
+	OwnerID     string
+	FenceToken  int64
+}
+
+func withSessionOwnerGuard(ctx context.Context, guard *sessionOwnerGuard) context.Context {
+	if guard == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ownerGuardContextKey, guard)
+}
+
+func sessionOwnerGuardFromContext(ctx context.Context) *sessionOwnerGuard {
+	if ctx == nil {
+		return nil
+	}
+	guard, _ := ctx.Value(ownerGuardContextKey).(*sessionOwnerGuard)
+	return guard
+}
 
 // sessionLocalLockManager 用于在单机内保证同一个 session 串行推进。
 // 第二轮接入 Redis 分布式锁后，它仍然保留，作为“本地正确性兜底”。
@@ -105,6 +131,57 @@ func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func(co
 
 	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	if myredis.IsAvailable() && rt.IsOwnerEligible() {
+		preferredOwner, activeInstances, err := myredis.ResolvePreferredSessionOwner(execCtx, sessionID)
+		if err != nil {
+			observability.RecordSessionRedisLockDegrade()
+			logSessionTrace(execCtx, "owner_route_degrade", "err=%v", err)
+			log.Println("withSessionExecutionGuard resolve preferred session owner degraded:", err)
+		} else {
+			currentInstanceID := rt.CurrentInstanceID()
+			currentLease, ownerErr := myredis.GetSessionOwnerLeaseDetail(execCtx, sessionID)
+			if ownerErr != nil {
+				observability.RecordSessionRedisLockDegrade()
+				logSessionTrace(execCtx, "owner_lease_read_degrade", "err=%v", ownerErr)
+				log.Println("withSessionExecutionGuard get session owner lease degraded:", ownerErr)
+			}
+			currentOwner := ""
+			if currentLease != nil {
+				currentOwner = currentLease.OwnerID
+			}
+
+			// 如果当前实例既不是 hash 首选 owner，也不是现存 lease owner，就直接返回 busy。
+			// 这样可以减少同一 session 在多实例之间漂移，而不用先上请求转发。
+			if preferredOwner != "" && preferredOwner != currentInstanceID && currentOwner != currentInstanceID {
+				observability.RecordSessionOwnerRouteMismatch()
+				logSessionTrace(execCtx, "owner_route_mismatch", "preferred=%s current=%s active=%d current_owner=%s", preferredOwner, currentInstanceID, len(activeInstances), currentOwner)
+				return codeExecutorResult{busy: true}
+			}
+
+			ownerLease, ownerState, err := myredis.AcquireOrRefreshSessionOwnerLease(execCtx, sessionID, currentInstanceID)
+			if err != nil {
+				observability.RecordSessionRedisLockDegrade()
+				logSessionTrace(execCtx, "owner_lease_degrade", "err=%v", err)
+				log.Println("withSessionExecutionGuard acquire session owner lease degraded:", err)
+			} else if ownerLease == nil {
+				observability.RecordSessionOwnerRouteMismatch()
+				logSessionTrace(execCtx, "owner_lease_busy", "current=%s owner=%s state=%s", currentInstanceID, ownerState, myredis.CurrentMode())
+				return codeExecutorResult{busy: true}
+			} else {
+				execCtx = withSessionOwnerGuard(execCtx, &sessionOwnerGuard{
+					SessionID:  sessionID,
+					OwnerID:    ownerLease.OwnerID,
+					FenceToken: ownerLease.FenceToken,
+				})
+				logSessionTrace(execCtx, "owner_lease_ready", "owner=%s preferred=%s fence=%d state=%s", currentInstanceID, preferredOwner, ownerLease.FenceToken, ownerState)
+				ownerLease.StartSessionOwnerWatchdog(execCtx, func() {
+					logSessionTrace(execCtx, "owner_lease_lost", "detail=watchdog_detected_owner_takeover")
+					cancel()
+				})
+			}
+		}
+	}
 
 	distributedLock, err := myredis.AcquireSessionDistributedLock(execCtx, sessionID)
 	if err != nil {

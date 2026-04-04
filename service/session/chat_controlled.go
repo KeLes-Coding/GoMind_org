@@ -135,7 +135,7 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 			return codeExecutorResult{code: code.AIModelFail}
 		}
 
-		if code_ = persistSessionProgress(sessionID, helper); code_ != code.CodeSuccess {
+		if code_ = persistSessionProgress(execCtx, sessionID, helper); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
 

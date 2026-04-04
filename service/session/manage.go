@@ -272,6 +272,9 @@ func DeleteSession(userName string, sessionID string) code.Code {
 	if err := myredis.DeleteSessionLock(context.Background(), sessionID); err != nil {
 		log.Println("DeleteSession DeleteSessionLock error:", err)
 	}
+	if err := myredis.DeleteSessionOwnerLease(context.Background(), sessionID); err != nil {
+		log.Println("DeleteSession DeleteSessionOwnerLease error:", err)
+	}
 	return code.CodeSuccess
 }
 
