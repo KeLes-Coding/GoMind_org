@@ -32,6 +32,9 @@ type Message struct {
 	MessageKey string `gorm:"type:varchar(64);uniqueIndex;not null" json:"message_key"`
 	// SessionID 关联所属会话。
 	SessionID string `gorm:"index;not null;type:varchar(36)" json:"session_id"`
+	// SessionVersion 表示这条消息属于会话的哪一次正式推进版本。
+	// 第二阶段用它来判断 persisted_version 能否安全推进，而不是只看消息总数猜测。
+	SessionVersion int64 `gorm:"index;not null;default:0" json:"session_version"`
 	// UserName 保留消息所属用户，便于排障和辅助查询。
 	UserName string `gorm:"type:varchar(20)" json:"username"`
 	// Content 是消息正文。

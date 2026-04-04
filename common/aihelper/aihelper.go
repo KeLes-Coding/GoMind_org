@@ -3,18 +3,16 @@ package aihelper
 import (
 	"GopherAI/common/observability"
 	"GopherAI/common/rabbitmq"
-	messageDAO "GopherAI/dao/message"
+	outboxDAO "GopherAI/dao/outbox"
 	"GopherAI/model"
 	"GopherAI/utils"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
-	"gorm.io/gorm"
 )
 
 // AIHelper 绑定一个具体会话的模型实例与消息上下文。
@@ -45,25 +43,47 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 	return &AIHelper{
 		model:    model_,
 		messages: make([]*model.Message, 0),
-		// 默认通过 RabbitMQ 异步落库，降低聊天主链路上的数据库写入压力。
+		// 第二阶段开始，消息先写入 outbox，再尝试即时发布到 MQ。
+		// 这样既保留“主链路尽量异步”的体验，也把“发布失败后还能补偿重放”的基线落到了数据库里。
 		saveFunc: func(msg *model.Message) (*model.Message, error) {
-			// 先尝试走 MQ，只有在 MQ 当前不可用或发布失败时，才退回同步落库。
-			// 这样主链路仍然以“异步削峰”为主，但在 MQ 故障场景下不会直接失去可用性。
-			data := rabbitmq.GenerateMessageMQParam(msg.MessageKey, msg.SessionID, msg.Content, msg.UserName, msg.IsUser, string(msg.Status))
+			data := rabbitmq.GenerateMessageMQParam(
+				msg.MessageKey,
+				msg.SessionID,
+				msg.SessionVersion,
+				msg.Content,
+				msg.UserName,
+				msg.IsUser,
+				string(msg.Status),
+			)
+			now := time.Now()
+			outboxEvent := &model.MessageOutbox{
+				MessageKey:     msg.MessageKey,
+				SessionID:      msg.SessionID,
+				SessionVersion: msg.SessionVersion,
+				Status:         model.MessageOutboxStatusPending,
+				Payload:        string(data),
+				NextAttemptAt:  now,
+			}
+			if err := outboxDAO.SaveMessageOutbox(outboxEvent); err != nil {
+				return msg, err
+			}
+
+			// 先做一次即时发布，尽量维持原来的低延迟异步体验。
+			// 即时发布失败时不把消息丢掉，而是把失败信息留在 outbox，交给 relay worker 后续重试。
 			if rabbitmq.RMQMessage != nil {
 				if err := rabbitmq.RMQMessage.Publish(data); err == nil {
+					if markErr := outboxDAO.MarkMessageOutboxPublished(msg.MessageKey); markErr != nil {
+						log.Println("AIHelper save message mark outbox published error:", markErr)
+					}
 					return msg, nil
+				} else if markErr := outboxDAO.MarkMessageOutboxPublishFailed(msg.MessageKey, err.Error()); markErr != nil {
+					log.Println("AIHelper save message mark outbox publish failed error:", markErr)
 				}
 			}
 
+			// 这里不再直接同步落 message 表，而是明确交给 outbox 补偿链路处理。
+			// 这样消息最终是通过同一条“发布 -> 消费 -> 落库 -> 回执”路径收敛，避免出现多套真相源。
 			observability.RecordMQFallback()
-			persistedMsg, err := messageDAO.CreateMessage(msg)
-			if err != nil && !errors.Is(err, gorm.ErrDuplicatedKey) {
-				return msg, err
-			}
-			if persistedMsg != nil {
-				*msg = *persistedMsg
-			}
 			return msg, nil
 		},
 		SessionID: SessionID,
@@ -82,12 +102,15 @@ func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save
 // 这类中断场景需要把“消息内容”和“消息最终状态”一起落到持久化层。
 func (a *AIHelper) AddMessageWithStatus(Content string, UserName string, IsUser bool, Save bool, status model.MessageStatus) *model.Message {
 	userMsg := model.Message{
-		MessageKey: utils.GenerateUUID(),
-		SessionID:  a.SessionID,
-		Content:    Content,
-		UserName:   UserName,
-		IsUser:     IsUser,
-		Status:     status,
+		MessageKey:     utils.GenerateUUID(),
+		SessionID:      a.SessionID,
+		// 当前一轮对话里的消息都归属到“下一次正式会话推进版本”。
+		// 这样消息异步落库后，就可以按 session_version 推进 persisted_version。
+		SessionVersion: a.GetVersion() + 1,
+		Content:        Content,
+		UserName:       UserName,
+		IsUser:         IsUser,
+		Status:         status,
 	}
 
 	// 写切片时必须加锁；否则同一个 session 并发写入会有数据竞争风险。

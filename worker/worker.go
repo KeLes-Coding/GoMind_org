@@ -29,9 +29,11 @@ func StartVectorizeWorker(ctx context.Context) error {
 }
 
 // StartAllWorkers 用于单机一体化运行。
-// 这次除了原有的向量化 worker，还会顺带启动一个“任务补偿 worker”：
+// 当前会顺带启动三类后台 worker：
 // 1. 向量化 worker 负责真正处理文件；
-// 2. 补偿 worker 负责把上传成功但没成功入队的文件补发到 MQ。
+// 2. 文件补偿 worker 负责把上传成功但没成功入队的文件补发到 MQ；
+// 3. 聊天 outbox relay worker 负责补偿消息发布；
+// 4. 会话补偿 worker 负责推进聊天链路的 persisted_version 水位。
 func StartAllWorkers(ctx context.Context) {
 	go func() {
 		if err := StartVectorizeWorker(ctx); err != nil {
@@ -42,6 +44,18 @@ func StartAllWorkers(ctx context.Context) {
 	go func() {
 		if err := StartVectorTaskCompensationWorker(ctx); err != nil {
 			log.Printf("Vector task compensation worker error: %v", err)
+		}
+	}()
+
+	go func() {
+		if err := StartSessionPersistenceCompensationWorker(ctx); err != nil {
+			log.Printf("Session persistence compensation worker error: %v", err)
+		}
+	}()
+
+	go func() {
+		if err := StartMessageOutboxRelayWorker(ctx); err != nil {
+			log.Printf("Message outbox relay worker error: %v", err)
 		}
 	}()
 

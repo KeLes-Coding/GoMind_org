@@ -5,6 +5,7 @@ import (
 	"GopherAI/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func GetSessionsByUserName(userName string) ([]model.Session, error) {
@@ -54,6 +55,69 @@ func UpdateSessionProgress(sessionID string, version int64, summary string, summ
 			"summary_message_count": summaryMessageCount,
 			"version":               version,
 		}).Error
+}
+
+// ListSessionsWithPersistenceLag 列出“正式版本已推进，但持久化水位尚未追平”的会话。
+func ListSessionsWithPersistenceLag(limit int) ([]model.Session, error) {
+	var sessions []model.Session
+	query := mysql.DB.
+		Where("version > persisted_version").
+		Order("updated_at asc")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	err := query.Find(&sessions).Error
+	return sessions, err
+}
+
+// TryAdvancePersistedVersionIfReady 在消息已经可靠落库后尝试推进 persisted_version。
+// 当前规则要求同一个 session_version 下至少已经持久化了一条用户消息和一条 assistant 消息，
+// 避免只写入半轮对话时就把水位错误推进。
+func TryAdvancePersistedVersionIfReady(sessionID string, targetVersion int64) (bool, error) {
+	if sessionID == "" || targetVersion <= 0 {
+		return false, nil
+	}
+
+	var advanced bool
+	err := mysql.DB.Transaction(func(tx *gorm.DB) error {
+		var session model.Session
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", sessionID).First(&session).Error; err != nil {
+			return err
+		}
+		if session.PersistedVersion >= targetVersion || session.Version < targetVersion {
+			return nil
+		}
+
+		var userCount int64
+		if err := tx.Model(&model.Message{}).
+			Where("session_id = ? AND session_version = ? AND is_user = ?", sessionID, targetVersion, true).
+			Count(&userCount).Error; err != nil {
+			return err
+		}
+		if userCount == 0 {
+			return nil
+		}
+
+		var assistantCount int64
+		if err := tx.Model(&model.Message{}).
+			Where("session_id = ? AND session_version = ? AND is_user = ?", sessionID, targetVersion, false).
+			Count(&assistantCount).Error; err != nil {
+			return err
+		}
+		if assistantCount == 0 {
+			return nil
+		}
+
+		result := tx.Model(&model.Session{}).
+			Where("id = ? AND persisted_version < ?", sessionID, targetVersion).
+			Update("persisted_version", targetVersion)
+		if result.Error != nil {
+			return result.Error
+		}
+		advanced = result.RowsAffected > 0
+		return nil
+	})
+	return advanced, err
 }
 
 func UpdateSessionTitle(userName string, sessionID string, title string) error {

@@ -2,6 +2,8 @@ package rabbitmq
 
 import (
 	messageDAO "GopherAI/dao/message"
+	outboxDAO "GopherAI/dao/outbox"
+	sessionDAO "GopherAI/dao/session"
 	"GopherAI/model"
 	"encoding/json"
 	"errors"
@@ -13,24 +15,26 @@ import (
 // MessageMQParam 是写入 RabbitMQ 的消息体。
 // 这里显式携带 MessageKey，用它作为消费端幂等键。
 type MessageMQParam struct {
-	MessageKey string `json:"message_key"`
-	SessionID  string `json:"session_id"`
-	Content    string `json:"content"`
-	UserName   string `json:"user_name"`
-	IsUser     bool   `json:"is_user"`
+	MessageKey     string `json:"message_key"`
+	SessionID      string `json:"session_id"`
+	SessionVersion int64  `json:"session_version"`
+	Content        string `json:"content"`
+	UserName       string `json:"user_name"`
+	IsUser         bool   `json:"is_user"`
 	// Status 跟随消息一并进入 MQ，保证异步落库链路不会丢失状态语义。
 	Status string `json:"status"`
 }
 
 // GenerateMessageMQParam 把一条消息序列化为 MQ 负载。
-func GenerateMessageMQParam(messageKey string, sessionID string, content string, userName string, isUser bool, status string) []byte {
+func GenerateMessageMQParam(messageKey string, sessionID string, sessionVersion int64, content string, userName string, isUser bool, status string) []byte {
 	param := MessageMQParam{
-		MessageKey: messageKey,
-		SessionID:  sessionID,
-		Content:    content,
-		UserName:   userName,
-		IsUser:     isUser,
-		Status:     status,
+		MessageKey:     messageKey,
+		SessionID:      sessionID,
+		SessionVersion: sessionVersion,
+		Content:        content,
+		UserName:       userName,
+		IsUser:         isUser,
+		Status:         status,
 	}
 	data, _ := json.Marshal(param)
 	return data
@@ -49,16 +53,23 @@ func MQMessage(msg *amqp.Delivery) error {
 	}
 
 	newMsg := &model.Message{
-		MessageKey: param.MessageKey,
-		SessionID:  param.SessionID,
-		Content:    param.Content,
-		UserName:   param.UserName,
-		IsUser:     param.IsUser,
-		Status:     model.MessageStatus(param.Status),
+		MessageKey:     param.MessageKey,
+		SessionID:      param.SessionID,
+		SessionVersion: param.SessionVersion,
+		Content:        param.Content,
+		UserName:       param.UserName,
+		IsUser:         param.IsUser,
+		Status:         model.MessageStatus(param.Status),
 	}
 
 	_, err := messageDAO.CreateMessage(newMsg)
 	if err != nil && !errors.Is(err, gorm.ErrDuplicatedKey) {
+		return err
+	}
+	if _, err := sessionDAO.TryAdvancePersistedVersionIfReady(param.SessionID, param.SessionVersion); err != nil {
+		return err
+	}
+	if err := outboxDAO.MarkMessageOutboxDelivered(param.MessageKey); err != nil {
 		return err
 	}
 

@@ -71,6 +71,7 @@ func migration() error {
 		new(model.SessionFolder),
 		new(model.Session),
 		new(model.Message),
+		new(model.MessageOutbox),
 		new(model.FileAsset),
 	)
 }

@@ -6,3 +6,4 @@ bin/
 vue-frontend/dist/
 logs/
 uploads/
+.VSCodeCounter/

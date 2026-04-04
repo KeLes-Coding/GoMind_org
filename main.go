@@ -20,7 +20,7 @@ func StartServer(addr string, port int) error {
 
 func main() {
 	// role 是这一轮加入的最小进程角色拆分：
-	// 1. server：只跑 API；
+	// 1. server：跑 API，并顺带启动聊天链路必需的轻量补偿 worker；
 	// 2. worker：跑全部后台 worker，包括向量化消费和补偿扫描；
 	// 3. all：开发环境下一把启动 API + 全部 worker。
 	role := flag.String("role", "server", "process role: server, worker, all")
@@ -49,6 +49,18 @@ func main() {
 	ctx := context.Background()
 	switch *role {
 	case "server":
+		// server 模式也需要跑聊天链路的 relay / persisted_version 补偿。
+		// 否则如果只启动 API，不启动独立 worker，消息 outbox 会无人处理。
+		go func() {
+			if err := worker.StartMessageOutboxRelayWorker(ctx); err != nil {
+				log.Printf("Message outbox relay worker error: %v", err)
+			}
+		}()
+		go func() {
+			if err := worker.StartSessionPersistenceCompensationWorker(ctx); err != nil {
+				log.Printf("Session persistence compensation worker error: %v", err)
+			}
+		}()
 		if err := StartServer(host, port); err != nil {
 			panic(err)
 		}
