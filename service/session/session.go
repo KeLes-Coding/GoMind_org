@@ -18,17 +18,17 @@ import (
 	"gorm.io/gorm"
 )
 
-// buildAIConfig 缂佺喍绔撮弸鍕偓鐘衬侀崹瀣灥婵瀵查崣鍌涙殶閿涘矂浼╅崗宥呮倱濮濄儱鎷板ù浣哥础闁炬崘鐭鹃柌宥咁槻閹疯壈顥婇柊宥囩枂閵?
+// buildAIConfig 构造创建 AIHelper 时需要的基础配置。
 func buildAIConfig(userName string, userID int64) map[string]interface{} {
 	return map[string]interface{}{
-		"apiKey":   "your-api-key", // TODO: 閸氬海鐢绘禒搴ㄥ帳缂冾喕鑵戣箛鍐╁灗閻滎垰顣ㄩ崣姗€鍣虹拠璇插絿
-		"username": userName,       // MCP 缁涘膩閸ㄥ娓剁憰浣虹叀闁挸缍嬮崜宥囨暏閹寸柉闊╂禒?
-		"userID":   userID,         // RAG 濡€崇€烽棁鈧憰?userID 閺屻儴顕楅弬鍥︽
+		"apiKey":   "your-api-key", // TODO: 改为从安全配置中读取真实密钥。
+		"username": userName,       // 供 MCP 等个性化能力识别当前用户。
+		"userID":   userID,         // 供 RAG 等能力关联当前用户身份。
 	}
 }
 
-// ensureOwnedSession 缂佺喍绔撮弽锟犵崣娴兼俺鐦介弰顖氭儊鐎涙ê婀敍灞间簰閸欏﹥妲搁崥锕€鐫樻禍搴＄秼閸撳秶鏁ら幋鏋偓?
-// 閺佺増宓佹惔鎾圭鐠愶絼绱扮拠婵堟埂閻╃鎷伴弶鍐鏉堝湱鏅敍灞肩瑝閼宠棄褰ч棃鐘虹箥鐞涘本妞?helper 閸掋倖鏌囨导姘崇樈閺勵垰鎯侀崥鍫熺《閵?
+// ensureOwnedSession 校验会话是否存在且归当前用户所有。
+// 后续所有读写操作都应先经过该检查，避免越权访问其他用户会话。
 func ensureOwnedSession(userName string, sessionID string) (*model.Session, code.Code) {
 	sess, err := sessionDAO.GetSessionByID(sessionID)
 	if err != nil {
@@ -46,7 +46,7 @@ func ensureOwnedSession(userName string, sessionID string) (*model.Session, code
 	return sess, code.CodeSuccess
 }
 
-// persistSummaryIfChanged 閸欘亜婀幗妯款洣绾喖鐤勯崣妯哄閺冭泛娲栭崘娆愭殶閹诡喖绨遍敍宀勪缉閸忓秵鐦℃潪顔款嚞濮瑰倿鍏橀弴瀛樻煀 session閵?
+// persistSessionProgress 将 helper 当前的摘要状态和版本号持久化到 session。
 func persistSessionProgress(sessionID string, helper *aihelper.AIHelper) code.Code {
 	afterSummary, afterCount := helper.GetSummaryState()
 	nextVersion := helper.GetVersion() + 1
@@ -59,8 +59,8 @@ func persistSessionProgress(sessionID string, helper *aihelper.AIHelper) code.Co
 	return code.CodeSuccess
 }
 
-// persistHelperHotState 閹?helper 瑜版挸澧犻惃鍕氦闁插繒鍎归悩鑸碘偓浣告彥閻撗冨晸閸?Redis閵?
-// 鏉╂瑩鍣烽弫鍛壈娑撳秵濡?Redis 瑜版挾婀￠惄鍛婄爱閿涘本澧嶆禒銉ュ晸婢惰精瑙﹂崣顏囶唶閺冦儱绻旈敍灞肩瑝闂冪粯鏌囨稉鏄忎喊婢垛晠鎽肩捄顖樷偓?
+// persistHelperHotState 将 helper 的热状态写入 Redis。
+// 写入失败只记录观测信息，不影响主流程返回结果。
 func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 	if helper == nil {
 		return
@@ -78,11 +78,11 @@ func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 	}
 }
 
-// syncHelperWithDatabase 閸︺劉鈧粎鎴风紒顓熺厙娑擃亙绱扮拠婵嗗閳ユ繃鐗庨崙鍡樻拱閸?helper 娑撳孩鏆熼幑顔肩氨濞戝牊浼呴悩鑸碘偓浣碘偓?
-// 鐟欏嫬鍨弰顖ょ窗
-// 1. DB 閺堚偓閺傜増绉烽幁顖氬嚒缂佸繐婀張顒€婀撮敍姘愁嚛閺勫孩婀伴崷鎷屽殾鐏忔垳绗夐拃钘夋倵娴?DB閿涘奔绻氶悾娆愭拱閸?buffer閵?
-// 2. 閺堫剙婀撮張鈧弬鐗堢Х閹垰鍑￠拃钘夌氨閿涘奔绲?DB 閺堚偓閺傜増绉烽幁顖欑瑝閸︺劍婀伴崷甯窗鐠囧瓨妲戦張顒€婀寸紓鐑樼Х閹垽绱濋幐?DB 鐞涖儱娲栭妴?
-// 3. 閺堫剙婀撮張鈧弬鐗堢Х閹垱婀拃钘夌氨閿涙俺顕╅弰搴㈡拱閸︽澘褰查懗浠嬵暙閸忓牞绱遍崣顏呮箒瑜?DB 閺堚偓閺傜増绉烽幁顖欑瘍鐡掑﹨绻冩禍鍡樻拱閸︾増娓堕崥搴濈閺夆€冲嚒閹镐椒绠欓崠鏍ㄧХ閹垱妞傞敍灞惧閸嬫矮绻氱€瑰牓鍣搁弸鍕┾偓?
+// syncHelperWithDatabase 将内存中的 helper 与数据库消息状态对齐。
+// 对齐策略：
+// 1. 如果 DB 最新消息已经存在于 helper 中，仅在消息数量落后时补齐缺口。
+// 2. 如果 helper 还没有加载任何消息，则直接从 DB 全量加载。
+// 3. 如果 helper 与 DB 的最新消息不一致，则按情况做全量对账，保证顺序和内容一致。
 func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Code {
 	latestDBMessage, err := messageDAO.GetLatestMessageBySessionID(sessionID)
 	if err != nil {
@@ -93,7 +93,7 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 		return code.CodeServerBusy
 	}
 
-	// DB 閺堚偓閺傜増绉烽幁顖氬嚒閸︺劍婀伴崷甯礉鐠囧瓨妲戦張顒€婀村▽鈩冩箒閽€钘夋倵娴滃孩鏆熼幑顔肩氨閿涘奔绗夐棁鈧憰浣瑰瑏 DB 閸欏秴鎮滅憰鍡欐磰閺堫剙婀?buffer閵?
+	// DB 最新消息已经在 helper 中，说明本地缓冲至少包含 DB 的最新状态。
 	if helper.HasMessageKey(latestDBMessage.MessageKey) {
 		dbMessageCount, err := messageDAO.GetMessageCountBySessionID(sessionID)
 		if err != nil {
@@ -101,8 +101,8 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 			return code.CodeServerBusy
 		}
 
-		// 閸楀厖濞囬垾婊勬付閸氬簼绔撮弶鈩冪Х閹垪鈧繂顕稉濠佺啊閿涘奔绡冩稉宥勫敩鐞涖劋鑵戦梻瀛樼梾閺堝宸遍崣锝冣偓?
-		// 婵″倹鐏夐張顒€婀村鍙夊瘮娑斿懎瀵插☉鍫熶紖閺佺増鐦?DB 鐏忔埊绱濇禒宥囧姧鐟曚礁浠涙稉鈧▎鈥茬箽鐎瑰牆顕鎰┾偓?
+		// 若 DB 记录数更多，说明有消息已写库但未进入当前 helper，需要重新对账补齐。
+		// 这里统一走 ReconcileMessages，避免依赖局部增量修补的顺序假设。
 		if int64(helper.GetPersistedMessageCount()) < dbMessageCount {
 			dbMessages, err := messageDAO.GetMessagesBySessionID(sessionID)
 			if err != nil {
@@ -127,7 +127,7 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 
 	localLatestPersistedMessage := helper.GetLatestPersistedMessage()
 	if localLatestPersistedMessage == nil {
-		// 閺堫剙婀撮崣顏呮箒鐏忔碍婀拃钘夌氨閻ㄥ嫭绉烽幁顖涙閿涘奔绗夐懗鍊燁唨 DB 閸欏秴鎮滅憰鍡欐磰閺堫剙婀撮妴?
+		// helper 中还没有已持久化消息，当前无需做增量比较。
 		return code.CodeSuccess
 	}
 
@@ -137,7 +137,7 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 		return code.CodeServerBusy
 	}
 
-	// 閺堫剙婀撮張鈧弬鐗堢Х閹垰鍑＄紒蹇撴躬 DB閿涘奔绲?DB 閺堚偓閺傜増绉烽幁顖氬祱娑撳秴婀張顒€婀撮敍宀冾嚛閺勫孩婀伴崷?helper 缂傝桨绨￠崥搴ｇ敾濞戝牊浼呴妴?
+	// helper 最新消息已落库，但与 DB 最新消息不一致，直接全量对账即可恢复一致性。
 	if localLatestExistsInDB {
 		dbMessages, err := messageDAO.GetMessagesBySessionID(sessionID)
 		if err != nil {
@@ -148,9 +148,9 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 		return code.CodeSuccess
 	}
 
-	// 鐠ф澘鍩屾潻娆撳櫡鐠囧瓨妲戦敍姘拱閸︾増娓堕弬鐗堢Х閹垰鐨婚張顏囨儰鎼存搫绱濋張顒€婀?buffer 妫板棗鍘涙禍?DB閵?
-	// 鏉╂瑦妞傞崣顏呮箒瑜?DB 閺堚偓閺傜増绉烽幁顖氬嚒缂佸繋绗夐弰顖椻偓婊勬拱閸︾増娓堕崥搴濈閺夆€冲嚒閹镐椒绠欓崠鏍ㄧХ閹垪鈧繃妞傞敍?
-	// 閹靛秷顕╅弰搴濊⒈鏉堢懓褰查懗浠嬪厴閸氬嫯鍤滅紓杞扮啊娑撯偓闁劌鍨庨敍宀勬付鐟曚礁浠涙穱婵嗙暓闁插秵鐎妴?
+	// helper 最新消息尚未落库时，如果 DB 最新消息正好等于 helper 的最新已持久化消息，
+	// 说明未落库部分只是本地新增缓冲内容，不需要用 DB 覆盖。
+	// 其他情况则以 DB 为准重新对账，避免出现分叉。
 	if localLatestPersistedMessage.MessageKey == latestDBMessage.MessageKey {
 		return code.CodeSuccess
 	}
@@ -164,9 +164,9 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 	return code.CodeSuccess
 }
 
-// getOrSyncHelperWithHistory 娴兼ê鍘涙径宥囨暏瑜版挸澧犳潻娑氣柤娑擃厾娈?helper閿?
-// 婵″倹鐏?helper 娑撳秴鐡ㄩ崷顭掔礉鐏忓彉绮犻弫鐗堝祦鎼存挸娲栭弨鎯у坊閸欏弶绉烽幁顖ょ幢
-// 婵″倹鐏?helper 瀹告彃鐡ㄩ崷顭掔礉鐏忓崬婀紒褏鐢绘导姘崇樈閸撳秴浠涙稉鈧▎鈩冩拱閸?DB 閻ㄥ嫬鐣ㄩ崗銊ヮ嚠姒绘劑鈧?
+// getOrSyncHelperWithHistory 获取当前会话的 helper，并补齐历史上下文。
+// 优先复用进程内缓存；如果没有，再从 DB/Redis 恢复状态并与数据库做一次对齐。
+// 这样既保留热状态恢复速度，也保证最终状态与 DB 一致。
 func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *model.Session, modelType string) (*aihelper.AIHelper, code.Code) {
 	if !aihelper.IsSupportedModelType(modelType) {
 		return nil, code.CodeInvalidParams
@@ -190,7 +190,7 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 		return nil, code.AIModelFail
 	}
 
-	// helper 妫ｆ牗顐兼潻娑樺弳瑜版挸澧犳潻娑氣柤閺冭绱濋棁鈧憰浣风矤閺佺増宓佹惔鎾虫礀閺€鐐Х閹垰宸婚崣璇х礉閹垹顦叉导姘崇樈娑撳﹣绗呴弬鍥モ偓?
+	// 新建 helper 后先加载 DB 历史消息，确保基础上下文完整。
 	msgs, err := messageDAO.GetMessagesBySessionID(sessionID)
 	if err != nil {
 		log.Println("getOrCreateHelperWithHistory GetMessagesBySessionID error:", err)
@@ -202,8 +202,8 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 	helper.SetVersion(sess.Version)
 	helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
 
-	// 缁楊兛绨╂潪顔煎磳缁狙囧櫡瀵洖鍙?Redis 閻戭厾濮搁幀浣告彥閻撗嶇礉娴ｅ棜绻栭柌灞肩矝閻掓湹绻氶悾?DB 閸ョ偞鏂佹担婊€璐熼崗婊冪俺閻喓娴夐幁銏狀槻閵?
-	// 娑旂喎姘ㄩ弰顖濐嚛閿涙艾鍘涙穱婵婄槈閳ユ粏鍤︾亸鎴ｅ厴閹垹顦查垾婵撶礉閸愬秶鏁?Redis 閻戭厼鎻╅悡褎濡搁張鈧潻鎴犵崶閸欙絿濮搁幀浣剿夐崶鐐存降閵?
+	// 尝试用 Redis 热状态加速恢复；只有版本不落后于 DB 时才采纳，
+	// 否则继续以 DB 状态为准，避免把旧快照覆盖到新会话上。
 	hotState, err := myredis.GetSessionHotState(ctx, sessionID)
 	if err != nil {
 		observability.RecordRedisHotStateLookup(false)
@@ -230,8 +230,8 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 	return helper, code.CodeSuccess
 }
 
-// GetUserSessionsByUserName 娴犲孩鏆熼幑顔肩氨鐠囪褰囨导姘崇樈閸掓銆冮妴?
-// 娴兼俺鐦介崚妤勩€冪仦鐐扮艾娑撴艾濮熼惇鐔烘祲閿涘奔绗夐懗鎴掔贩鐠ф牞绻樼粙瀣敶 helper 閻ㄥ嫮鏁撻崨钘夋噯閺堢喆鈧?
+// GetUserSessionsByUserName 获取用户的会话列表，只返回前端展示所需字段。
+// 这里不暴露内部 helper 或持久化细节。
 func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
 	sessions, err := sessionDAO.GetSessionsByUserName(userName)
 	if err != nil {
@@ -249,7 +249,7 @@ func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
 	return sessionInfos, nil
 }
 
-// CreateSessionAndSendMessage 閸掓稑缂撻弬棰佺窗鐠囨繂鑻熼崣鎴︹偓浣侯儑娑撯偓閺夆剝绉烽幁顖樷偓?
+// CreateSessionAndSendMessage 创建新会话并同步返回首轮回复。
 func CreateSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, modelType string) (string, string, code.Code) {
 	requestStart := time.Now()
 	if !allowChatRateLimit(ctx, userName) {
@@ -261,7 +261,7 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 		ID:       uuid.New().String(),
 		UserName: userName,
 		UserID:   userID,
-		// 閸忓牅绻氶幐浣哄箛閺堝楠囬崫浣筋嚔娑斿绱伴悽銊╊浕閺夛繝妫舵０妯圭稊娑撹桨绱扮拠婵囩垼妫版ǜ鈧?
+		// 默认使用用户首问作为会话标题，后续可由用户自行重命名。
 		Title: userQuestion,
 	}
 	createdSession, err := sessionDAO.CreateSession(newSession)
@@ -317,8 +317,8 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 	return createdSession.ID, result.aiResponse, code.CodeSuccess
 }
 
-// CreateStreamSessionOnly 閸欘亜鍨卞杞扮窗鐠囨繐绱濇稉宥呭絺闁焦绉烽幁顖樷偓?
-// 濞翠礁绱￠崷鐑樻珯閸忓牅绗呴崣?sessionID閿涘苯鍟€瀵偓婵瀵旂紒顓熷腹濞翠降鈧?
+// CreateStreamSessionOnly 仅创建流式会话，不立即触发模型回复。
+// 适用于需要先拿到 sessionID，再分步推送流式内容的场景。
 func CreateStreamSessionOnly(userName string, userID int64, userQuestion string) (string, code.Code) {
 	newSession := &model.Session{
 		ID:       uuid.New().String(),
@@ -334,7 +334,7 @@ func CreateStreamSessionOnly(userName string, userID int64, userQuestion string)
 	return createdSession.ID, code.CodeSuccess
 }
 
-// StreamMessageToExistingSession 閸氭垵鍑￠張澶夌窗鐠囨繂褰傞柅浣风閺夆剝绁﹀蹇旂Х閹垬鈧?
+// StreamMessageToExistingSession 向已有会话发送消息，并以 SSE 方式流式返回结果。
 func StreamMessageToExistingSession(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
 	requestStart := time.Now()
 	ctx, _ = newSessionTrace(ctx, "chat_stream", sessionID, modelType)
@@ -359,7 +359,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		return code_
 	}
 
-	// 娴犲氦绻栭柌灞界磻婵铔嬮弬鎵畱閳ユ粈绱扮拠婵囧⒔鐞涘奔绻氶幎?+ 閻戭厾濮搁幀浣告礀閸愭瑢鈧繈鎽肩捄顖樷偓?
+	// 同一会话的流式生成也需要串行执行，避免并发写入造成上下文错乱。
 	result := withSessionExecutionGuard(ctx, sessionID, func(execCtx context.Context) codeExecutorResult {
 		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, modelType)
 		if code_ != code.CodeSuccess {
@@ -367,7 +367,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		}
 
 		cb := func(msg string) {
-			// SSE 閸楀繗顔呯憰浣圭湴濮ｅ繋閲滈悧鍥唽闁姤瀵?data 鐞涘矁绶崙鐚寸礉楠炶泛婀В蹇旑偧閸愭瑥鍙嗛崥搴ｇ彌閸?flush閵?
+			// SSE 需要按 data: <chunk> 后跟两个换行的格式持续写出，并在每次写后 flush。
 			_, err := writer.Write([]byte("data: " + msg + "\n\n"))
 			if err != nil {
 				log.Println("StreamMessageToExistingSession Write error:", err)
@@ -421,7 +421,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 	return code.CodeSuccess
 }
 
-// CreateStreamSessionAndSendMessage 閸掓稑缂撴导姘崇樈閸氬海鐝涢崡瀹犺泲濞翠礁绱￠崶鐐差槻閵?
+// CreateStreamSessionAndSendMessage 创建会话并立即开始流式回复。
 func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, modelType string, writer http.ResponseWriter) (string, code.Code) {
 	sessionID, code_ := CreateStreamSessionOnly(userName, userID, userQuestion)
 	if code_ != code.CodeSuccess {
@@ -436,7 +436,7 @@ func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, use
 	return sessionID, code.CodeSuccess
 }
 
-// ChatSend 閸氭垵鍑￠張澶夌窗鐠囨繂褰傞柅浣告倱濮濄儲绉烽幁顖樷偓?
+// ChatSend 向已有会话发送消息，并同步返回完整回复。
 func ChatSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
 	requestStart := time.Now()
 	ctx, _ = newSessionTrace(ctx, "chat_sync", sessionID, modelType)
@@ -452,7 +452,7 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 		return "", code_
 	}
 
-	// 閺備即鎽肩捄顖氭躬鏉╂瑩鍣烽幓鎰鏉╂柨娲栭敍灞芥倵闂堛垻娈戦弮褔鈧槒绶禒鍛箽閻ｆ瑤缍旂€靛湱鍙庨敍灞界杽闂勫懍绗夋导姘晙鐠ф澘鍩岄妴?
+	// 同一会话的同步生成同样通过执行保护串行化，避免状态竞争。
 	result := withSessionExecutionGuard(ctx, sessionID, func(execCtx context.Context) codeExecutorResult {
 		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, modelType)
 		if code_ != code.CodeSuccess {
@@ -495,8 +495,8 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 	return result.aiResponse, code.CodeSuccess
 }
 
-// GetChatHistory 娴犲孩鏆熼幑顔肩氨鐠囪褰囬崢鍡楀蕉濞戝牊浼呴妴?
-// 閸樺棗褰堕幒銉ュ經瀵缚鐨熼崣顖涗划婢跺秵鈧冩嫲娑撯偓閼峰瓨鈧嶇礉閸ョ姵顒濊箛鍛淬€忔禒銉︽殶閹诡喖绨辨稉顓犳畱濞戝牊浼呯拋鏉跨秿娑撳搫鍣妴?
+// GetChatHistory 获取会话历史消息，并转换为接口返回结构。
+// 这里只透出前端所需字段，避免把内部存储结构直接暴露出去。
 func GetChatHistory(userName string, sessionID string) ([]model.History, code.Code) {
 	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
 		return nil, code_
@@ -510,7 +510,7 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 
 	history := make([]model.History, 0, len(messages))
 	for _, msg := range messages {
-		// 閻╁瓨甯存担璺ㄦ暏閹镐椒绠欓崠鏍畱 IsUser 鐎涙顔岄敍宀勪缉閸忓秴鍟€闁俺绻冩總鍥т紦娴ｅ秶瀵藉ù瀣Х閹垵闊╂禒濮愨偓?
+		// 保留 IsUser 字段，供前端区分用户消息与模型消息。
 		history = append(history, model.History{
 			IsUser:  msg.IsUser,
 			Content: msg.Content,
@@ -521,7 +521,7 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 	return history, code.CodeSuccess
 }
 
-// ChatStreamSend 閸氭垵鍑￠張澶夌窗鐠囨繂褰傞柅浣圭ウ瀵繑绉烽幁顖樷偓?
+// ChatStreamSend 是 StreamMessageToExistingSession 的简单封装。
 func ChatStreamSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
 	return StreamMessageToExistingSession(ctx, userName, sessionID, userQuestion, modelType, writer)
 }
