@@ -46,7 +46,7 @@ func traceFromContext(ctx context.Context) *sessionTrace {
 func logSessionTrace(ctx context.Context, stage string, format string, args ...interface{}) {
 	trace := traceFromContext(ctx)
 	if trace == nil {
-		log.Printf("session_trace stage=%s "+format, append([]interface{}{stage}, args...)...)
+		log.Printf("session_trace | stage=%s | "+format, append([]interface{}{stage}, args...)...)
 		return
 	}
 
@@ -59,7 +59,7 @@ func logSessionTrace(ctx context.Context, stage string, format string, args ...i
 		time.Since(trace.StartTime).Milliseconds(),
 	}
 	log.Printf(
-		"session_trace stage=%s request_id=%s operation=%s session_id=%s requested_model=%s elapsed_ms=%d "+format,
+		"session_trace | stage=%s | request_id=%s | operation=%s | session_id=%s | requested_model=%s | elapsed_ms=%d | "+format,
 		append(prefixArgs, args...)...,
 	)
 }

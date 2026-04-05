@@ -1,6 +1,7 @@
 package main
 
 import (
+	applog "GopherAI/common/logger"
 	"GopherAI/common/mysql"
 	"GopherAI/common/rabbitmq"
 	"GopherAI/common/redis"
@@ -27,6 +28,9 @@ func main() {
 	role := flag.String("role", "server", "process role: server, worker, all")
 	flag.Parse()
 	rt.InitInstanceInfo(*role)
+	if err := applog.Init(); err != nil {
+		log.Println("init logger error, fallback to stdout only:", err)
+	}
 
 	conf := config.GetConfig()
 	host := conf.MainConfig.Host

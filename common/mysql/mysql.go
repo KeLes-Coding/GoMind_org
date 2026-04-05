@@ -1,17 +1,19 @@
 package mysql
 
 import (
+	applog "GopherAI/common/logger"
 	"GopherAI/config"
 	"GopherAI/model"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
@@ -26,11 +28,27 @@ func InitMysql() error {
 
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=true&loc=Local", username, password, host, port, dbname, charset)
 
-	var log logger.Interface
+	var gormLog gormlogger.Interface
 	if gin.Mode() == "debug" {
-		log = logger.Default.LogMode(logger.Info)
+		gormLog = gormlogger.New(
+			log.New(applog.Writer(), "", log.LstdFlags),
+			gormlogger.Config{
+				SlowThreshold:             200 * time.Millisecond,
+				LogLevel:                  gormlogger.Info,
+				IgnoreRecordNotFoundError: true,
+				Colorful:                  false,
+			},
+		)
 	} else {
-		log = logger.Default
+		gormLog = gormlogger.New(
+			log.New(applog.Writer(), "", log.LstdFlags),
+			gormlogger.Config{
+				SlowThreshold:             500 * time.Millisecond,
+				LogLevel:                  gormlogger.Warn,
+				IgnoreRecordNotFoundError: true,
+				Colorful:                  false,
+			},
+		)
 	}
 
 	db, err := gorm.Open(mysql.New(mysql.Config{
@@ -41,7 +59,7 @@ func InitMysql() error {
 		DontSupportRenameColumn:   true,
 		SkipInitializeWithVersion: false,
 	}), &gorm.Config{
-		Logger: log,
+		Logger: gormLog,
 	})
 	if err != nil {
 		return err

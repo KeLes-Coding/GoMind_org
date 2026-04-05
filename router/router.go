@@ -1,6 +1,7 @@
 package router
 
 import (
+	applog "GopherAI/common/logger"
 	"GopherAI/middleware/jwt"
 
 	"github.com/gin-gonic/gin"
@@ -8,7 +9,9 @@ import (
 
 func InitRouter() *gin.Engine {
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.LoggerWithFormatter(applog.GinFormatter))
+	r.Use(gin.Recovery())
 	enterRouter := r.Group("/api/v1")
 	{
 		RegisterUserRouter(enterRouter.Group("/user"))
