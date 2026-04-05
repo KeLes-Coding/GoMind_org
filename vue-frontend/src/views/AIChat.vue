@@ -184,6 +184,7 @@
             >
               <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleSettings">Settings</button>
               <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="openModelConfigDialog">Model Configs</button>
+              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="openFileManagerDialog">File Management</button>
               <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" :disabled="!currentSessionId || tempSession || loading" @click="handleSyncHistoryFromMenu">Sync history</button>
               <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleLogout">Log out</button>
             </div>
@@ -433,23 +434,23 @@
           </div>
 
           <div class="space-y-2">
-            <label class="block text-sm">Display name</label>
-            <input v-model="profileForm.name" type="text" maxlength="50" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none" />
+            <label class="block text-sm dark:text-text-primary-dark">Display name</label>
+            <input v-model="profileForm.name" type="text" maxlength="50" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none dark:text-text-primary-dark" />
           </div>
 
           <div class="space-y-2">
-            <label class="block text-sm">Username</label>
-            <input :value="userProfile.username || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none" disabled />
+            <label class="block text-sm dark:text-text-primary-dark">Username</label>
+            <input :value="userProfile.username || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none dark:text-text-secondary-dark" disabled />
           </div>
 
           <div class="space-y-2">
-            <label class="block text-sm">Email</label>
-            <input :value="userProfile.email || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none" disabled />
+            <label class="block text-sm dark:text-text-primary-dark">Email</label>
+            <input :value="userProfile.email || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none dark:text-text-secondary-dark" disabled />
           </div>
 
           <div class="space-y-2">
-            <label class="block text-sm">Bio</label>
-            <textarea v-model="profileForm.bio" rows="4" maxlength="255" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none resize-none"></textarea>
+            <label class="block text-sm dark:text-text-primary-dark">Bio</label>
+            <textarea v-model="profileForm.bio" rows="4" maxlength="255" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none resize-none dark:text-text-primary-dark"></textarea>
           </div>
         </div>
         <template #footer>
@@ -550,6 +551,9 @@
       <!-- Model Config Dialog -->
       <ModelConfigDialog v-model="modelConfigDialogVisible" @configsChanged="refreshConfigs" />
 
+      <!-- File Manager Dialog -->
+      <FileManagerDialog v-model="fileManagerVisible" />
+
     </section>
   </div>
 </template>
@@ -561,6 +565,7 @@ import { useRouter } from 'vue-router'
 import api, { refreshClient } from '../utils/api'
 import { ensureAccessToken, clearTokens } from '../utils/token'
 import ModelConfigDialog from './components/ModelConfigDialog.vue'
+import FileManagerDialog from './components/FileManagerDialog.vue'
 
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'timeout', 'failed', 'partial'])
 
@@ -573,11 +578,11 @@ const CHAT_MODE_LABELS = {
 
 export default {
   name: 'AIChat',
-  components: { ModelConfigDialog },
+  components: { ModelConfigDialog, FileManagerDialog },
   setup() {
     const router = useRouter()
     const isSidebarCollapsed = ref(false)
-    const isDark = ref(false)
+    const isDark = ref(true)
     const sessions = ref({}) // 仍保留平铺的数据结构管理消息状态
     
     // ----------- 文件夹 & 会话树状态 -----------
@@ -705,6 +710,12 @@ export default {
     const openModelConfigDialog = () => {
       userMenuVisible.value = false
       modelConfigDialogVisible.value = true
+    }
+
+    const fileManagerVisible = ref(false)
+    const openFileManagerDialog = () => {
+      userMenuVisible.value = false
+      fileManagerVisible.value = true
     }
     // -------------------------------------------
 
@@ -1012,6 +1023,7 @@ export default {
           })
           currentSessionId.value = newSid
           tempSession.value = false
+          loadSessions()
         }
         return
       }
@@ -1747,6 +1759,7 @@ export default {
           currentSessionId.value = sessionId
           tempSession.value = false
           currentMessages.value = [...sessions.value[sessionId].messages]
+          loadSessions()
         } else {
           throw new Error(response.data?.status_msg || 'Send failed')
         }
@@ -1810,7 +1823,7 @@ export default {
         })
 
         if (response.data && response.data.status_code === 1000) {
-          ElMessage.success('文件上传成功')
+          ElMessage.success('文件上传成功，请至 File Management 查看状态')
         } else {
           ElMessage.error(response.data?.status_msg || '文件上传失败')
         }
@@ -2201,6 +2214,8 @@ export default {
       renderMarkdown,
       cropImageStyle,
       modelOptions,
+      fileManagerVisible,
+      openFileManagerDialog,
       // -- Model Config --
       modelConfigDialogVisible,
       availableConfigs,

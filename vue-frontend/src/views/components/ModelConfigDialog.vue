@@ -103,13 +103,13 @@
     <!-- Create / Edit Mode -->
     <div v-else class="space-y-4">
       <div class="space-y-1.5">
-        <label class="block text-sm font-medium">配置名称</label>
-        <input v-model="form.name" type="text" maxlength="100" placeholder="例如：DeepSeek 正式环境" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none text-sm focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow" />
+        <label class="block text-sm font-medium dark:text-text-primary-dark">配置名称</label>
+        <input v-model="form.name" type="text" maxlength="100" placeholder="例如：DeepSeek 正式环境" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none text-sm focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow dark:text-text-primary-dark" />
       </div>
 
       <div class="space-y-1.5">
-        <label class="block text-sm font-medium">Provider</label>
-        <select v-model="form.provider" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none text-sm cursor-pointer focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow">
+        <label class="block text-sm font-medium dark:text-text-primary-dark">Provider</label>
+        <select v-model="form.provider" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none text-sm cursor-pointer focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow dark:text-text-primary-dark">
           <option value="" disabled class="bg-surface-light dark:bg-surface-dark">选择 Provider</option>
           <option v-for="p in providerOptions" :key="p.provider" :value="p.provider" class="bg-surface-light dark:bg-surface-dark">
             {{ p.displayName }}{{ !p.isImplemented ? ' (暂未接入)' : '' }}
@@ -124,23 +124,23 @@
       </div>
 
       <div class="space-y-1.5">
-        <label class="block text-sm font-medium">Model</label>
-        <input v-model="form.model" type="text" maxlength="100" placeholder="例如：deepseek-chat" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none text-sm focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow" />
+        <label class="block text-sm font-medium dark:text-text-primary-dark">Model</label>
+        <input v-model="form.model" type="text" maxlength="100" placeholder="例如：deepseek-chat" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none text-sm focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow dark:text-text-primary-dark" />
       </div>
 
       <div class="space-y-1.5">
-        <label class="block text-sm font-medium">API Key</label>
-        <input v-model="form.apiKey" type="password" :placeholder="mode === 'edit' ? '留空表示沿用旧 Key' : '请输入 API Key'" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none text-sm font-mono focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow" />
+        <label class="block text-sm font-medium dark:text-text-primary-dark">API Key</label>
+        <input v-model="form.apiKey" type="password" :placeholder="mode === 'edit' ? '留空表示沿用旧 Key' : '请输入 API Key'" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none text-sm font-mono focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow dark:text-text-primary-dark" />
       </div>
 
       <div class="space-y-1.5">
-        <label class="block text-sm font-medium">Base URL <span class="text-text-secondary-light dark:text-text-secondary-dark font-normal">(可选)</span></label>
-        <input v-model="form.baseUrl" type="text" placeholder="例如：https://api.deepseek.com" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none text-sm focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow" />
+        <label class="block text-sm font-medium dark:text-text-primary-dark">Base URL <span class="text-text-secondary-light dark:text-text-secondary-dark font-normal">(可选)</span></label>
+        <input v-model="form.baseUrl" type="text" placeholder="例如：https://api.deepseek.com" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none text-sm focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark transition-shadow dark:text-text-primary-dark" />
       </div>
 
       <div class="flex items-center gap-2">
         <input v-model="form.isDefault" type="checkbox" id="configDefault" class="accent-accent-light dark:accent-accent-dark" />
-        <label for="configDefault" class="text-sm cursor-pointer select-none">设为默认配置</label>
+        <label for="configDefault" class="text-sm cursor-pointer select-none dark:text-text-primary-dark">设为默认配置</label>
       </div>
 
       <!-- Test Connectivity -->
