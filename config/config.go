@@ -89,6 +89,11 @@ type StorageConfig struct {
 	PresignExpirySeconds       int    `toml:"presignExpirySeconds"`
 }
 
+type LogConfig struct {
+	Path      string `toml:"path"`
+	MaxSizeMB int    `toml:"maxSizeMB"`
+}
+
 type Config struct {
 	EmailConfig        `toml:"emailConfig"`
 	RedisConfig        `toml:"redisConfig"`
@@ -100,6 +105,7 @@ type Config struct {
 	RagModelConfig     `toml:"ragModelConfig"`
 	VoiceServiceConfig `toml:"voiceServiceConfig"`
 	StorageConfig      `toml:"storageConfig"`
+	LogConfig          `toml:"logConfig"`
 }
 
 type RedisKeyConfig struct {

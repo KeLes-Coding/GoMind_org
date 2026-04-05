@@ -340,6 +340,7 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 
 	ctx, trace := newSessionTrace(ctx, "create_sync", createdSession.ID, resolved.ModelType)
 	logSessionTrace(ctx, "start", "user=%s", userName)
+	logResolvedSelection(ctx, resolved)
 
 	result := withSessionExecutionGuard(ctx, createdSession.ID, func(execCtx context.Context) codeExecutorResult {
 		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, createdSession, resolved)
@@ -422,6 +423,7 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 	requestStart := time.Now()
 	ctx, _ = newSessionTrace(ctx, "chat_stream", sessionID, resolved.ModelType)
 	logSessionTrace(ctx, "start", "user=%s", userName)
+	logResolvedSelection(ctx, resolved)
 	observability.RecordStreamActiveDelta(1)
 	defer observability.RecordStreamActiveDelta(-1)
 	if !allowChatRateLimit(ctx, userName) {
@@ -531,6 +533,7 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 	requestStart := time.Now()
 	ctx, _ = newSessionTrace(ctx, "chat_sync", sessionID, resolved.ModelType)
 	logSessionTrace(ctx, "start", "user=%s", userName)
+	logResolvedSelection(ctx, resolved)
 	if !allowChatRateLimit(ctx, userName) {
 		observability.RecordRequest("chat_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", code.CodeTooManyRequests

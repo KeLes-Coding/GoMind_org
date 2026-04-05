@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"GopherAI/common/applog"
 	"GopherAI/common/mysql"
 	"GopherAI/common/observability"
 	"GopherAI/common/redis"
@@ -317,7 +318,7 @@ func (r *RAGQuery) RetrieveFromUserFiles(ctx context.Context, userID int64, quer
 	files, err := fileDAO.GetReadyFilesByOwner(ctx, userID)
 	if err != nil || len(files) == 0 {
 		observability.RecordRAGQuery(false, 0, 0)
-		log.Printf("RAG no-hit: user_id=%d reason=no_ready_files db_err=%v", userID, err)
+		applog.Userf("RAG no-hit: user_id=%d reason=no_ready_files db_err=%v", userID, err)
 		return nil, fmt.Errorf("no ready files found for user")
 	}
 
@@ -339,7 +340,7 @@ func (r *RAGQuery) RetrieveFromUserFiles(ctx context.Context, userID int64, quer
 		// 3. 一旦补成功，后续请求就不再需要再走兼容分支。
 		repaired, repairErr := EnsureUnifiedIndexCoverage(ctx, files)
 		if repairErr != nil {
-			log.Printf("RAG unified index self-heal failed: user_id=%d repaired=%d err=%v", userID, repaired, repairErr)
+			applog.Userf("RAG unified index self-heal failed: user_id=%d repaired=%d err=%v", userID, repaired, repairErr)
 		}
 		if repaired > 0 || unifiedErr != nil {
 			docs, unifiedErr = r.RetrieveFromScope(ctx, query, scope)
@@ -349,14 +350,14 @@ func (r *RAGQuery) RetrieveFromUserFiles(ctx context.Context, userID int64, quer
 
 	if len(filteredDocs) == 0 {
 		observability.RecordRAGQuery(false, 0, 0)
-		log.Printf("RAG no-hit: user_id=%d reason=no_retrievable_documents ready_files=%d unified_err=%v", userID, len(files), unifiedErr)
+		applog.Userf("RAG no-hit: user_id=%d reason=no_retrievable_documents ready_files=%d unified_err=%v", userID, len(files), unifiedErr)
 		return nil, fmt.Errorf("no retrievable documents found for user")
 	}
 
 	finalDocs := finalizeRetrievedDocuments(filteredDocs)
 	hitFileCount := countUniqueHitFiles(finalDocs)
 	observability.RecordRAGQuery(true, len(finalDocs), hitFileCount)
-	log.Printf("RAG hit: user_id=%d mode=unified hit_chunks=%d hit_files=%d query=%q", userID, len(finalDocs), hitFileCount, query)
+	applog.Userf("RAG hit: user_id=%d mode=unified hit_chunks=%d hit_files=%d query=%q", userID, len(finalDocs), hitFileCount, query)
 	return finalDocs, nil
 }
 

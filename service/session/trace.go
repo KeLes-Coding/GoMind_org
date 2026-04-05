@@ -1,8 +1,9 @@
 package session
 
 import (
+	"GopherAI/common/applog"
 	"context"
-	"log"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,7 +47,7 @@ func traceFromContext(ctx context.Context) *sessionTrace {
 func logSessionTrace(ctx context.Context, stage string, format string, args ...interface{}) {
 	trace := traceFromContext(ctx)
 	if trace == nil {
-		log.Printf("session_trace | stage=%s | "+format, append([]interface{}{stage}, args...)...)
+		applog.Userf("session_trace stage=%s "+format, append([]interface{}{stage}, args...)...)
 		return
 	}
 
@@ -58,8 +59,30 @@ func logSessionTrace(ctx context.Context, stage string, format string, args ...i
 		trace.RequestedModelType,
 		time.Since(trace.StartTime).Milliseconds(),
 	}
-	log.Printf(
-		"session_trace | stage=%s | request_id=%s | operation=%s | session_id=%s | requested_model=%s | elapsed_ms=%d | "+format,
+	applog.Userf(
+		"session_trace stage=%s request_id=%s operation=%s session_id=%s requested_model=%s elapsed_ms=%d "+format,
 		append(prefixArgs, args...)...,
+	)
+}
+
+func logResolvedSelection(ctx context.Context, resolved *resolvedChatRequest) {
+	if resolved == nil {
+		return
+	}
+
+	configID := "nil"
+	if resolved.RuntimeConfig.LLMConfigID != nil {
+		configID = fmt.Sprintf("%d", *resolved.RuntimeConfig.LLMConfigID)
+	}
+
+	logSessionTrace(
+		ctx,
+		"resolved_selection",
+		"chat_mode=%s provider=%s config_id=%s model=%s base_url=%s",
+		resolved.ChatMode,
+		resolved.RuntimeConfig.Provider,
+		configID,
+		resolved.RuntimeConfig.ModelName,
+		resolved.RuntimeConfig.BaseURL,
 	)
 }

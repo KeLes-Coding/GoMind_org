@@ -69,6 +69,7 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 	requestStart := time.Now()
 	ctx, _ = newSessionTrace(ctx, "chat_stream", sessionID, resolved.ModelType)
 	logSessionTrace(ctx, "start", "user=%s", userName)
+	logResolvedSelection(ctx, resolved)
 	observability.RecordStreamActiveDelta(1)
 	defer observability.RecordStreamActiveDelta(-1)
 

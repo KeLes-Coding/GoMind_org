@@ -1,12 +1,12 @@
 package mysql
 
 import (
-	applog "GopherAI/common/logger"
+	"GopherAI/common/applog"
 	"GopherAI/config"
 	"GopherAI/model"
 	"errors"
 	"fmt"
-	"log"
+	stdlog "log"
 	"strings"
 	"time"
 
@@ -29,26 +29,21 @@ func InitMysql() error {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=true&loc=Local", username, password, host, port, dbname, charset)
 
 	var gormLog gormlogger.Interface
+	gormWriter := stdlog.New(applog.FullWriter(), "\r\n", stdlog.LstdFlags)
 	if gin.Mode() == "debug" {
-		gormLog = gormlogger.New(
-			log.New(applog.Writer(), "", log.LstdFlags),
-			gormlogger.Config{
-				SlowThreshold:             200 * time.Millisecond,
-				LogLevel:                  gormlogger.Info,
-				IgnoreRecordNotFoundError: true,
-				Colorful:                  false,
-			},
-		)
+		gormLog = gormlogger.New(gormWriter, gormlogger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  gormlogger.Info,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		})
 	} else {
-		gormLog = gormlogger.New(
-			log.New(applog.Writer(), "", log.LstdFlags),
-			gormlogger.Config{
-				SlowThreshold:             500 * time.Millisecond,
-				LogLevel:                  gormlogger.Warn,
-				IgnoreRecordNotFoundError: true,
-				Colorful:                  false,
-			},
-		)
+		gormLog = gormlogger.New(gormWriter, gormlogger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		})
 	}
 
 	db, err := gorm.Open(mysql.New(mysql.Config{

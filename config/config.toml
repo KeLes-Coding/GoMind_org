@@ -69,3 +69,7 @@ autoCreateBucket = true
 objectPrefix = ""
 uploadPresignExpirySeconds = 300
 presignExpirySeconds = 300
+
+[logConfig]
+path = "logs/gomind.log"
+maxSizeMB = 20

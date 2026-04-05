@@ -141,6 +141,7 @@
                       <el-dropdown-item command="delete" class="text-red-500">删除</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
+                </el-dropdown>
               </template>
             </li>
           </ul>
@@ -668,7 +669,7 @@ export default {
 
     const loadConfigsMeta = async () => {
       try {
-        const res = await api.get('/v1/AI/configs/meta')
+        const res = await api.get('/AI/configs/meta')
         if (res.data?.status_code === 1000) {
           configsMeta.value = {
             providers: res.data.providers || [],
@@ -682,7 +683,7 @@ export default {
 
     const loadAvailableConfigs = async () => {
       try {
-        const res = await api.get('/v1/AI/configs')
+        const res = await api.get('/AI/configs')
         if (res.data?.status_code === 1000 && res.data.configs) {
           availableConfigs.value = res.data.configs
           // 自动选择默认配置

@@ -94,6 +94,7 @@ func CreateUserConfig(userID int64, input CreateConfigInput) (*model.UserLLMConf
 		IsDefault:  input.IsDefault,
 		IsEnabled:  true,
 		SourceType: aihelper.SourceTypeUser,
+		ExtraJSON:  "{}",
 	}
 	created, err := llmConfigDAO.CreateUserLLMConfig(entity)
 	if err != nil {

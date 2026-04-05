@@ -1,7 +1,7 @@
 package main
 
 import (
-	applog "GopherAI/common/logger"
+	"GopherAI/common/applog"
 	"GopherAI/common/mysql"
 	"GopherAI/common/rabbitmq"
 	"GopherAI/common/redis"
@@ -28,11 +28,14 @@ func main() {
 	role := flag.String("role", "server", "process role: server, worker, all")
 	flag.Parse()
 	rt.InitInstanceInfo(*role)
-	if err := applog.Init(); err != nil {
-		log.Println("init logger error, fallback to stdout only:", err)
-	}
 
 	conf := config.GetConfig()
+	if err := applog.Setup(applog.Config{
+		Path:      conf.LogConfig.Path,
+		MaxSizeMB: conf.LogConfig.MaxSizeMB,
+	}); err != nil {
+		log.Println("applog setup degraded, fallback to default stderr:", err)
+	}
 	host := conf.MainConfig.Host
 	port := conf.MainConfig.Port
 

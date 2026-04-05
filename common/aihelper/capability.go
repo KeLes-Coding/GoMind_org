@@ -1,6 +1,7 @@
 package aihelper
 
 import (
+	"GopherAI/common/applog"
 	"GopherAI/common/observability"
 	"GopherAI/common/rag"
 	"context"
@@ -66,7 +67,7 @@ func (c *RAGChatCapability) GetChatMode() string { return ChatModeRAG }
 func (c *RAGChatCapability) buildRAGMessages(ctx context.Context, messages []*schema.Message) ([]*schema.Message, error) {
 	ragQuery, err := rag.NewRAGQuery(ctx, c.userID)
 	if err != nil {
-		log.Printf("Failed to create RAG query (user may not have uploaded file): %v", err)
+		applog.Userf("RAG fallback: failed to create query user_id=%d err=%v", c.userID, err)
 		observability.RecordRAGFallback()
 		return nil, err
 	}
@@ -78,7 +79,7 @@ func (c *RAGChatCapability) buildRAGMessages(ctx context.Context, messages []*sc
 	query := lastMessage.Content
 	docs, err := ragQuery.RetrieveDocuments(ctx, query)
 	if err != nil {
-		log.Printf("Failed to retrieve documents: %v", err)
+		applog.Userf("RAG fallback: retrieve failed user_id=%d query=%q err=%v", c.userID, query, err)
 		observability.RecordRAGFallback()
 		return nil, err
 	}

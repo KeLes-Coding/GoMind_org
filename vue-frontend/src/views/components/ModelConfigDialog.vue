@@ -115,6 +115,9 @@
             {{ p.displayName }}{{ !p.isImplemented ? ' (暂未接入)' : '' }}
           </option>
         </select>
+        <p v-if="metaLoadFailed" class="text-xs text-amber-500 mt-1">
+          Provider 列表加载失败，当前显示的是前端兜底选项。请检查 `/AI/configs/meta` 接口或登录状态。
+        </p>
         <p v-if="selectedProviderNotImplemented" class="text-xs text-amber-500 mt-1">
           ⚠ 此 Provider 当前尚未接入后端 SDK，配置后暂时无法用于聊天。
         </p>
@@ -177,9 +180,52 @@
 </template>
 
 <script>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../utils/api'
+
+const FALLBACK_PROVIDER_OPTIONS = [
+  {
+    provider: 'openai_compatible',
+    displayName: 'OpenAI Compatible',
+    isImplemented: true,
+    supportedChatModes: ['chat', 'rag', 'mcp', 'rag_mcp'],
+    supportsConfigTest: true,
+    supportsToolCalling: true,
+    supportsEmbedding: true,
+    supportsMultiModalFuture: false
+  },
+  {
+    provider: 'claude',
+    displayName: 'Claude',
+    isImplemented: false,
+    supportedChatModes: [],
+    supportsConfigTest: false,
+    supportsToolCalling: false,
+    supportsEmbedding: false,
+    supportsMultiModalFuture: false
+  },
+  {
+    provider: 'gemini',
+    displayName: 'Gemini',
+    isImplemented: false,
+    supportedChatModes: [],
+    supportsConfigTest: false,
+    supportsToolCalling: false,
+    supportsEmbedding: false,
+    supportsMultiModalFuture: false
+  },
+  {
+    provider: 'ollama',
+    displayName: 'Ollama',
+    isImplemented: true,
+    supportedChatModes: ['chat', 'rag', 'mcp', 'rag_mcp'],
+    supportsConfigTest: true,
+    supportsToolCalling: false,
+    supportsEmbedding: false,
+    supportsMultiModalFuture: false
+  }
+]
 
 export default {
   name: 'ModelConfigDialog',
@@ -201,6 +247,7 @@ export default {
     const testResult = ref('') // '' | 'success' | 'fail'
     const editingId = ref(null)
     const providerOptions = ref([])
+    const metaLoadFailed = ref(false)
 
     const form = ref({
       name: '',
@@ -226,20 +273,26 @@ export default {
     })
 
     const loadMeta = async () => {
+      metaLoadFailed.value = false
       try {
-        const res = await api.get('/v1/AI/configs/meta')
+        const res = await api.get('/AI/configs/meta')
         if (res.data?.status_code === 1000 && res.data.providers) {
-          providerOptions.value = res.data.providers
+          providerOptions.value = res.data.providers.length ? res.data.providers : FALLBACK_PROVIDER_OPTIONS
+        } else {
+          providerOptions.value = FALLBACK_PROVIDER_OPTIONS
+          metaLoadFailed.value = true
         }
       } catch (e) {
         console.error('Load meta error:', e)
+        providerOptions.value = FALLBACK_PROVIDER_OPTIONS
+        metaLoadFailed.value = true
       }
     }
 
     const loadConfigs = async () => {
       loadingList.value = true
       try {
-        const res = await api.get('/v1/AI/configs')
+        const res = await api.get('/AI/configs')
         if (res.data?.status_code === 1000 && res.data.configs) {
           configs.value = res.data.configs
         } else {
@@ -257,7 +310,8 @@ export default {
       mode.value = 'create'
       editingId.value = null
       testResult.value = ''
-      form.value = { name: '', provider: '', apiKey: '', baseUrl: '', model: '', isDefault: false }
+      const defaultProvider = providerOptions.value.find(item => item.isImplemented)?.provider || providerOptions.value[0]?.provider || ''
+      form.value = { name: '', provider: defaultProvider, apiKey: '', baseUrl: '', model: '', isDefault: false }
     }
 
     const startEdit = (config) => {
@@ -284,7 +338,7 @@ export default {
       testingConfig.value = true
       testResult.value = ''
       try {
-        const res = await api.post('/v1/AI/configs/test', {
+        const res = await api.post('/AI/configs/test', {
           provider: form.value.provider,
           apiKey: form.value.apiKey,
           baseUrl: form.value.baseUrl,
@@ -312,9 +366,9 @@ export default {
         }
         let res
         if (mode.value === 'create') {
-          res = await api.post('/v1/AI/configs', payload)
+          res = await api.post('/AI/configs', payload)
         } else {
-          res = await api.put(`/v1/AI/configs/${editingId.value}`, payload)
+          res = await api.put(`/AI/configs/${editingId.value}`, payload)
         }
         if (res.data?.status_code === 1000) {
           ElMessage.success(mode.value === 'create' ? '配置已创建' : '配置已更新')
@@ -338,7 +392,7 @@ export default {
           '删除确认',
           { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
         )
-        const res = await api.delete(`/v1/AI/configs/${config.id}`)
+        const res = await api.delete(`/AI/configs/${config.id}`)
         if (res.data?.status_code === 1000) {
           ElMessage.success('已删除')
           await loadConfigs()
@@ -353,7 +407,7 @@ export default {
 
     const setDefault = async (configId) => {
       try {
-        const res = await api.post(`/v1/AI/configs/${configId}/default`)
+        const res = await api.post(`/AI/configs/${configId}/default`)
         if (res.data?.status_code === 1000) {
           ElMessage.success('已设为默认')
           await loadConfigs()
@@ -397,6 +451,10 @@ export default {
       }
     })
 
+    onMounted(() => {
+      loadMeta()
+    })
+
     return {
       visible,
       mode,
@@ -407,6 +465,7 @@ export default {
       testResult,
       form,
       providerOptions,
+      metaLoadFailed,
       selectedProviderNotImplemented,
       canTest,
       canSubmit,
