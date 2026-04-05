@@ -31,6 +31,10 @@ type (
 		controller.Response
 		Sessions []model.SessionInfo `json:"sessions,omitempty"`
 	}
+	GetSessionInfoResponse struct {
+		controller.Response
+		Session *model.SessionInfo `json:"session,omitempty"`
+	}
 	CreateSessionAndSendMessageRequest struct {
 		UserQuestion string `json:"question" binding:"required"`
 		ModelType    string `json:"modelType,omitempty"`
@@ -121,6 +125,28 @@ func GetUserSessionsByUserName(c *gin.Context) {
 
 	res.Success()
 	res.Sessions = userSessions
+	c.JSON(http.StatusOK, res)
+}
+
+// GetSessionInfo 返回单个会话的绑定配置和模式信息。
+// 前端可以用它在进入聊天页时稳定回显当前会话配置，而不必依赖本地缓存。
+func GetSessionInfo(c *gin.Context) {
+	res := new(GetSessionInfoResponse)
+	userName := c.GetString("userName")
+	sessionID := c.Param("id")
+	if sessionID == "" {
+		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
+		return
+	}
+
+	info, code_ := session.GetSessionInfo(userName, sessionID)
+	if code_ != code.CodeSuccess {
+		c.JSON(http.StatusOK, res.CodeOf(code_))
+		return
+	}
+
+	res.Success()
+	res.Session = info
 	c.JSON(http.StatusOK, res)
 }
 

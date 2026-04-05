@@ -5,8 +5,11 @@ import (
 	"GopherAI/common/code"
 	llmConfigDAO "GopherAI/dao/llm_config"
 	"GopherAI/model"
+	"context"
 	"strings"
+	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"gorm.io/gorm"
 )
 
@@ -29,6 +32,28 @@ type UpdateConfigInput struct {
 	Model     string
 	IsDefault bool
 	IsEnabled *bool
+}
+
+// TestConfigInput 用于测试一组尚未保存或已保存的配置是否可用。
+// 它不要求一定先落库，便于前端在保存前先做一次快速连通性验证。
+type TestConfigInput struct {
+	Provider string
+	APIKey   string
+	BaseURL  string
+	Model    string
+}
+
+// ProviderCapabilityItem 表示返回给 controller 的 Provider 能力矩阵项。
+// 这里单独定义 service 侧结构，避免 controller 直接依赖底层 aihelper 细节。
+type ProviderCapabilityItem struct {
+	Provider                 string
+	DisplayName              string
+	IsImplemented            bool
+	SupportedChatModes       []string
+	SupportsConfigTest       bool
+	SupportsToolCalling      bool
+	SupportsEmbedding        bool
+	SupportsMultiModalFuture bool
 }
 
 // ListUserConfigs 查询当前用户的全部模型配置。
@@ -132,6 +157,69 @@ func SetDefaultUserConfig(userID int64, id int64) code.Code {
 	return code.CodeSuccess
 }
 
+// ListProviderCapabilities 返回当前后端已声明的 Provider 能力矩阵。
+func ListProviderCapabilities() []ProviderCapabilityItem {
+	raw := aihelper.ListProviderCapabilities()
+	items := make([]ProviderCapabilityItem, 0, len(raw))
+	for _, item := range raw {
+		items = append(items, ProviderCapabilityItem{
+			Provider:                 item.Provider,
+			DisplayName:              item.DisplayName,
+			IsImplemented:            item.IsImplemented,
+			SupportedChatModes:       append([]string(nil), item.SupportedChatModes...),
+			SupportsConfigTest:       item.SupportsConfigTest,
+			SupportsToolCalling:      item.SupportsToolCalling,
+			SupportsEmbedding:        item.SupportsEmbedding,
+			SupportsMultiModalFuture: item.SupportsMultiModalFuture,
+		})
+	}
+	return items
+}
+
+// ListSupportedChatModes 返回系统级 chat_mode 列表，供前端做统一枚举展示。
+func ListSupportedChatModes() []string {
+	return aihelper.ListSupportedChatModes()
+}
+
+// TestConfigConnectivity 用一次最小模型调用验证配置是否可用。
+// 当前阶段先支持已经落地 Provider 的连通性测试，不支持的 Provider 直接返回参数错误。
+func TestConfigConnectivity(input TestConfigInput) code.Code {
+	config, ok := normalizeConfigInput("connectivity-check", input.Provider, input.APIKey, input.BaseURL, input.Model, false)
+	if !ok {
+		return code.CodeInvalidParams
+	}
+	if config.Provider != aihelper.ProviderOllama && config.APIKey == "" {
+		return code.CodeInvalidParams
+	}
+
+	modelType, ok := aihelper.ResolveProviderModelType(config.Provider)
+	if !ok {
+		return code.CodeInvalidParams
+	}
+
+	runtimeConfig := aihelper.RuntimeConfig{
+		Provider:  config.Provider,
+		APIKey:    config.APIKey,
+		BaseURL:   config.BaseURL,
+		ModelName: config.Model,
+		ChatMode:  aihelper.ChatModeChat,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	provider, err := aihelper.GetGlobalFactory().CreateProvider(ctx, modelType, runtimeConfig)
+	if err != nil {
+		return code.CodeInvalidParams
+	}
+
+	_, err = provider.Generate(ctx, aihelperBuildConnectivityMessages())
+	if err != nil {
+		return code.AIModelFail
+	}
+	return code.CodeSuccess
+}
+
 // normalizeConfigInput 统一做名称、Provider、模型名和 key 的基础校验与去空格处理。
 func normalizeConfigInput(name, provider, apiKey, baseURL, modelName string, requireAPIKey bool) (*model.UserLLMConfig, bool) {
 	normalizedName := strings.TrimSpace(name)
@@ -154,4 +242,14 @@ func normalizeConfigInput(name, provider, apiKey, baseURL, modelName string, req
 		BaseURL:  normalizedBaseURL,
 		Model:    normalizedModel,
 	}, true
+}
+
+// aihelperBuildConnectivityMessages 构造最小化的连通性探测请求，避免浪费过多 token。
+func aihelperBuildConnectivityMessages() []*schema.Message {
+	return []*schema.Message{
+		{
+			Role:    schema.User,
+			Content: "请只回复 OK。",
+		},
+	}
 }

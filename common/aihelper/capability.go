@@ -101,12 +101,27 @@ type MCPChatCapability struct {
 	mcpClient  *client.Client
 }
 
+// RAGMCPChatCapability 表示“先检索增强，再做 MCP 工具编排”的组合模式。
+// 这样第三阶段里，RAG 与 MCP 就不再是互斥选择，而是可以复用同一套编排链路组合运行。
+type RAGMCPChatCapability struct {
+	rag *RAGChatCapability
+	mcp *MCPChatCapability
+}
+
 // NewMCPChatCapability 创建 MCP 工具编排能力。
 // 当前先沿用系统级 MCP server 地址，不把 server 配置放进用户数据库。
 func NewMCPChatCapability(username string) *MCPChatCapability {
 	return &MCPChatCapability{
 		username:   username,
 		mcpBaseURL: "http://localhost:8081/mcp",
+	}
+}
+
+// NewRAGMCPChatCapability 创建 RAG + MCP 组合能力。
+func NewRAGMCPChatCapability(userID int64, username string) *RAGMCPChatCapability {
+	return &RAGMCPChatCapability{
+		rag: NewRAGChatCapability(userID),
+		mcp: NewMCPChatCapability(username),
 	}
 }
 
@@ -190,6 +205,27 @@ func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatPro
 }
 
 func (c *MCPChatCapability) GetChatMode() string { return ChatModeMCP }
+
+// GenerateResponse 先尽量做 RAG 增强，再进入 MCP 工具编排。
+// 如果检索链路临时不可用，则自动降级为“只走 MCP”，避免把整个请求直接打失败。
+func (c *RAGMCPChatCapability) GenerateResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message) (*schema.Message, error) {
+	ragMessages, err := c.rag.buildRAGMessages(ctx, messages)
+	if err != nil {
+		return c.mcp.GenerateResponse(ctx, provider, messages)
+	}
+	return c.mcp.GenerateResponse(ctx, provider, ragMessages)
+}
+
+// StreamResponse 与同步模式保持一致：优先做 RAG 增强，失败时降级为纯 MCP。
+func (c *RAGMCPChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (string, error) {
+	ragMessages, err := c.rag.buildRAGMessages(ctx, messages)
+	if err != nil {
+		return c.mcp.StreamResponse(ctx, provider, messages, cb)
+	}
+	return c.mcp.StreamResponse(ctx, provider, ragMessages, cb)
+}
+
+func (c *RAGMCPChatCapability) GetChatMode() string { return ChatModeRAGMCP }
 
 // buildPromptMessages 用“替换最后一条用户消息”的方式构造编排提示词，
 // 这样前面的多轮上下文和摘要消息都能保持不变。

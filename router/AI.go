@@ -13,13 +13,16 @@ func AIRouter(r *gin.RouterGroup) {
 	// Chat-related routes.
 	{
 		r.GET("/configs", session.ListLLMConfigs)
+		r.GET("/configs/meta", session.GetLLMConfigMeta)
 		r.GET("/configs/:id", session.GetLLMConfig)
 		r.POST("/configs", session.CreateLLMConfig)
+		r.POST("/configs/test", session.TestLLMConfig)
 		r.PUT("/configs/:id", session.UpdateLLMConfig)
 		r.DELETE("/configs/:id", session.DeleteLLMConfig)
 		r.POST("/configs/:id/default", session.SetDefaultLLMConfig)
 
 		r.GET("/chat/sessions", session.GetUserSessionsByUserName)
+		r.GET("/chat/session/:id", session.GetSessionInfo)
 		r.GET("/chat/session-tree", session.GetSessionTree)
 		r.GET("/chat/observability", session.GetAIObservability)
 		r.POST("/chat/send-new-session", ratelimit.LimitChatByIP(), ratelimit.LimitChatByUser(), session.CreateSessionAndSendMessage)

@@ -297,6 +297,18 @@ func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
 	return sessionInfos, nil
 }
 
+// GetSessionInfo 返回单个会话的基础信息和当前绑定的配置摘要。
+// 这里用于聊天页回显当前会话正在使用的配置和模式。
+func GetSessionInfo(userName string, sessionID string) (*model.SessionInfo, code.Code) {
+	sess, code_ := ensureOwnedSession(userName, sessionID)
+	if code_ != code.CodeSuccess {
+		return nil, code_
+	}
+
+	info := buildSessionInfo(*sess)
+	return &info, code.CodeSuccess
+}
+
 // CreateSessionAndSendMessage 创建新会话并同步返回首轮回复。
 func CreateSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, req ChatRequest) (string, string, code.Code) {
 	resolved, code_ := resolveChatRequest(userName, userID, req, nil)

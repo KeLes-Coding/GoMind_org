@@ -27,9 +27,28 @@ type Session struct {
 }
 
 type SessionInfo struct {
-	SessionID string `json:"sessionId"`
-	Title     string `json:"name"`
-	FolderID  string `json:"folderId,omitempty"`
+	SessionID          string                     `json:"sessionId"`
+	Title              string                     `json:"name"`
+	FolderID           string                     `json:"folderId,omitempty"`
+	LLMConfigID        *int64                     `json:"llmConfigId,omitempty"`
+	ChatMode           string                     `json:"chatMode,omitempty"`
+	LLMConfigName      string                     `json:"llmConfigName,omitempty"`
+	Provider           string                     `json:"provider,omitempty"`
+	Model              string                     `json:"model,omitempty"`
+	ProviderCapability *SessionProviderCapability `json:"providerCapability,omitempty"`
+}
+
+// SessionProviderCapability 表示当前会话绑定配置对应的 Provider 能力摘要。
+// 这里和配置接口保持接近的结构，方便前端直接复用同一套展示逻辑。
+type SessionProviderCapability struct {
+	Provider                 string   `json:"provider"`
+	DisplayName              string   `json:"displayName"`
+	IsImplemented            bool     `json:"isImplemented"`
+	SupportedChatModes       []string `json:"supportedChatModes"`
+	SupportsConfigTest       bool     `json:"supportsConfigTest"`
+	SupportsToolCalling      bool     `json:"supportsToolCalling"`
+	SupportsEmbedding        bool     `json:"supportsEmbedding"`
+	SupportsMultiModalFuture bool     `json:"supportsMultiModalFuture"`
 }
 
 type SessionFolderDetail struct {

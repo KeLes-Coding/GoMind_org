@@ -116,6 +116,14 @@ func (f *AIModelFactory) CreateCapability(config RuntimeConfig) (ChatCapability,
 			return nil, fmt.Errorf("MCP chat mode requires username")
 		}
 		return NewMCPChatCapability(config.Username), nil
+	case ChatModeRAGMCP:
+		if config.UserID == 0 {
+			return nil, fmt.Errorf("RAG+MCP chat mode requires userID")
+		}
+		if config.Username == "" {
+			return nil, fmt.Errorf("RAG+MCP chat mode requires username")
+		}
+		return NewRAGMCPChatCapability(config.UserID, config.Username), nil
 	default:
 		return nil, unsupportedChatModeError(config.ChatMode)
 	}

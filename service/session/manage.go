@@ -292,14 +292,3 @@ func ensureOwnedFolder(userID int64, folderID string) (*model.SessionFolder, cod
 	}
 	return folder, code.CodeSuccess
 }
-
-func buildSessionInfo(sess model.Session) model.SessionInfo {
-	info := model.SessionInfo{
-		SessionID: sess.ID,
-		Title:     sess.Title,
-	}
-	if sess.FolderID != nil {
-		info.FolderID = *sess.FolderID
-	}
-	return info
-}

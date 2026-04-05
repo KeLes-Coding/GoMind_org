@@ -46,10 +46,6 @@ func resolveChatRequest(userName string, userID int64, req ChatRequest, sess *mo
 	if !aihelper.IsSupportedChatMode(chatMode) {
 		return nil, code.CodeInvalidParams
 	}
-	// 当前阶段还没有实现组合 capability，因此先显式拒绝 chat_rag_mcp。
-	if chatMode == aihelper.ChatModeRAGMCP {
-		return nil, code.CodeInvalidParams
-	}
 
 	runtimeConfig := aihelper.RuntimeConfig{
 		Username: userName,
@@ -168,28 +164,10 @@ func mapLegacyModelTypeToChatMode(modelType string) string {
 // mapChatModeToRuntimeModelType 把聊天模式映射到底层 Provider 类型。
 // 第一阶段里，RAG/MCP 都已经改为 capability，因此这里统一回到 OpenAI-compatible Provider。
 func mapChatModeToRuntimeModelType(chatMode string, provider string) (string, bool) {
-	switch chatMode {
-	case aihelper.ChatModeChat:
-		if provider == aihelper.ProviderOllama {
-			return aihelper.ModelTypeOllama, true
-		}
-		if provider == aihelper.ProviderOpenAICompatible {
-			return aihelper.ModelTypeOpenAI, true
-		}
-		return "", false
-	case aihelper.ChatModeRAG:
-		if provider == aihelper.ProviderOpenAICompatible {
-			return aihelper.ModelTypeOpenAI, true
-		}
-		return "", false
-	case aihelper.ChatModeMCP:
-		if provider == aihelper.ProviderOpenAICompatible {
-			return aihelper.ModelTypeOpenAI, true
-		}
-		return "", false
-	default:
+	if !aihelper.SupportsChatModeForProvider(provider, chatMode) {
 		return "", false
 	}
+	return aihelper.ResolveProviderModelType(provider)
 }
 
 // persistResolvedChatSelection 负责把“本次请求最终生效的配置和模式”回写到 session。
