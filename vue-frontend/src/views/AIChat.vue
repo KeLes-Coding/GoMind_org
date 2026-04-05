@@ -11,12 +11,12 @@
     <!-- Gemini-Style Sidebar -->
     <aside
       :class="[
-        'flex flex-col flex-shrink-0 transition-all duration-300 ease-in-out z-40 border-r',
+        'flex flex-col flex-shrink-0 transition-[width] duration-300 ease-in-out z-40 border-r',
         'bg-[#F5F5F5] dark:bg-[#171717] border-black/5 dark:border-white/5',
         isSidebarCollapsed ? 'w-[68px] overflow-hidden' : 'w-[260px] overflow-hidden'
       ]"
     >
-      <div class="flex flex-col h-full w-[260px] transition-all duration-300 ease-in-out" :class="isSidebarCollapsed ? '-ml-[2px]' : ''">
+      <div class="flex flex-col h-full w-[260px]">
         <!-- Top: Sidebar Toggle + New Chat -->
         <div class="flex items-center gap-2 px-3 pt-3 pb-1">
           <button
@@ -44,8 +44,9 @@
         </div>
 
         <!-- Conversation History -->
-        <div class="flex-1 overflow-y-auto pt-2 relative transition-opacity duration-300" :class="isSidebarCollapsed ? 'opacity-0 pointer-events-none px-1' : 'opacity-100 px-2'">
-          <div class="px-3 pb-2 flex items-center justify-between">
+        <div class="flex-1 overflow-y-auto pt-2 relative">
+          <div :class="isSidebarCollapsed ? 'hidden' : 'opacity-100 px-2 transition-opacity duration-300'">
+            <div class="px-3 pb-2 flex items-center justify-between">
             <span class="text-xs font-medium text-text-secondary-light dark:text-text-secondary-dark tracking-wider">近期</span>
             <button
               class="p-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-text-secondary-light dark:text-text-secondary-dark bg-transparent border-none"
@@ -140,10 +141,10 @@
                       <el-dropdown-item command="delete" class="text-red-500">删除</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
-                </el-dropdown>
               </template>
             </li>
           </ul>
+          </div>
         </div>
 
         <!-- Bottom Actions -->
@@ -201,43 +202,6 @@
         </div>
 
         <div class="flex items-center gap-3 ml-auto flex-wrap justify-end">
-          <!-- Config Dropdown -->
-          <div class="toolbar-select-wrap max-w-[180px]">
-            <select
-              v-model="selectedConfigId"
-              class="toolbar-select"
-              :disabled="loading || !availableConfigs.length"
-              @change="onConfigChange"
-            >
-              <option v-for="config in availableConfigs" :key="config.id" :value="config.id" class="bg-surface-light dark:bg-surface-dark">
-                {{ config.name }}{{ config.isDefault ? ' ★' : '' }}
-              </option>
-            </select>
-            <span class="toolbar-select-icon" aria-hidden="true">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </span>
-          </div>
-
-          <!-- Mode Dropdown -->
-          <div class="toolbar-select-wrap max-w-[150px]">
-            <select
-              v-model="selectedChatMode"
-              class="toolbar-select"
-              :disabled="loading || !availableChatModes.length"
-            >
-              <option v-for="mode in availableChatModes" :key="mode" :value="mode" class="bg-surface-light dark:bg-surface-dark">
-                {{ chatModeLabel(mode) }}
-              </option>
-            </select>
-            <span class="toolbar-select-icon" aria-hidden="true">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </span>
-          </div>
-
           <label class="flex items-center gap-1.5 text-sm cursor-pointer select-none">
             <input id="streamingMode" v-model="isStreaming" type="checkbox" class="accent-accent-light dark:accent-accent-dark" :disabled="loading" />
             <span class="hidden sm:inline">流式</span>
@@ -347,7 +311,7 @@
             />
           </div>
 
-          <div class="flex items-end">
+          <div class="flex items-end pb-1 pr-1">
             <textarea
               v-model="inputMessage"
               placeholder="问点什么..."
@@ -357,6 +321,45 @@
               rows="1"
               class="flex-1 max-h-40 min-h-[44px] bg-transparent border-none outline-none resize-none px-4 py-2 text-base text-text-primary-light dark:text-text-primary-dark placeholder-text-secondary-light dark:placeholder-text-secondary-dark"
             ></textarea>
+
+            <!-- Config and Mode Selection in Input Area -->
+            <div class="flex flex-col sm:flex-row items-center gap-1 mb-0 mx-1 opacity-60 hover:opacity-100 focus-within:opacity-100 transition-opacity">
+              <div class="toolbar-select-wrap max-w-[130px] !bg-black/5 dark:!bg-white/5 !border-none !rounded-xl">
+                <select
+                  v-model="selectedConfigId"
+                  class="toolbar-select !py-1.5 !px-2.5 !pr-7 !text-xs !min-h-[36px] bg-transparent font-medium"
+                  @change="onConfigChange"
+                >
+                  <option value="" disabled v-if="!availableConfigs.length">No Config</option>
+                  <option v-for="config in availableConfigs" :key="config.id" :value="config.id" class="bg-surface-light dark:bg-surface-dark">
+                    {{ config.name }}{{ config.isDefault ? ' ★' : '' }}
+                  </option>
+                </select>
+                <span class="toolbar-select-icon right-1.5" aria-hidden="true">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                </span>
+              </div>
+              
+              <div class="toolbar-select-wrap max-w-[110px] !bg-black/5 dark:!bg-white/5 !border-none !rounded-xl">
+                <select
+                  v-model="selectedChatMode"
+                  class="toolbar-select !py-1.5 !px-2.5 !pr-7 !text-xs !min-h-[36px] bg-transparent font-medium"
+                  :disabled="loading || !availableChatModes.length"
+                >
+                  <option v-for="mode in availableChatModes" :key="mode" :value="mode" class="bg-surface-light dark:bg-surface-dark">
+                    {{ chatModeLabel(mode) }}
+                  </option>
+                </select>
+                <span class="toolbar-select-icon right-1.5" aria-hidden="true">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                </span>
+              </div>
+
+              <!-- Config Button -->
+              <button type="button" @click="openModelConfigDialog" class="p-2 w-9 h-9 mr-1 rounded-xl hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors bg-transparent border-none cursor-pointer flex items-center justify-center shrink-0" title="Model Configs">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+              </button>
+            </div>
 
             <!-- Stop Button when streaming and loading -->
             <button
