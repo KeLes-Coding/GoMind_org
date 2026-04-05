@@ -125,10 +125,10 @@
               @click="switchSession(session.sessionId)"
               :title="isSidebarCollapsed ? (session.name || `会话 ${session.sessionId}`) : ''"
             >
-              <!-- Collapsed: icon only -->
+              <!-- Collapsed: title initial only -->
               <template v-if="isSidebarCollapsed">
-                <div class="relative">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+                <div class="relative flex h-8 w-8 items-center justify-center rounded-lg bg-black/5 text-xs font-medium uppercase dark:bg-white/5">
+                  <span class="leading-none">{{ getCollapsedSessionLabel(session) }}</span>
                   <span v-if="currentSessionId === session.sessionId" class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent-light dark:bg-accent-dark"></span>
                 </div>
               </template>
@@ -209,20 +209,43 @@
           <span class="text-lg font-bold tracking-tight select-none">GoMind</span>
         </div>
 
-        <div class="flex items-center gap-3 ml-auto">
+        <div class="flex items-center gap-3 ml-auto flex-wrap justify-end">
           <!-- Config Dropdown -->
-          <select v-model="selectedConfigId" class="px-2 py-1.5 text-sm rounded-lg border border-border-light dark:border-border-dark bg-transparent cursor-pointer outline-none focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark disabled:opacity-50 max-w-[160px]" :disabled="loading" @change="onConfigChange">
-            <option v-for="config in availableConfigs" :key="config.id" :value="config.id" class="bg-surface-light dark:bg-surface-dark">
-              {{ config.name }}{{ config.isDefault ? ' ★' : '' }}
-            </option>
-          </select>
+          <div class="toolbar-select-wrap max-w-[180px]">
+            <select
+              v-model="selectedConfigId"
+              class="toolbar-select"
+              :disabled="loading || !availableConfigs.length"
+              @change="onConfigChange"
+            >
+              <option v-for="config in availableConfigs" :key="config.id" :value="config.id" class="bg-surface-light dark:bg-surface-dark">
+                {{ config.name }}{{ config.isDefault ? ' ★' : '' }}
+              </option>
+            </select>
+            <span class="toolbar-select-icon" aria-hidden="true">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </span>
+          </div>
 
           <!-- Mode Dropdown -->
-          <select v-model="selectedChatMode" class="px-2 py-1.5 text-sm rounded-lg border border-border-light dark:border-border-dark bg-transparent cursor-pointer outline-none focus:ring-1 focus:ring-accent-light dark:focus:ring-accent-dark disabled:opacity-50" :disabled="loading || !availableChatModes.length">
-            <option v-for="mode in availableChatModes" :key="mode" :value="mode" class="bg-surface-light dark:bg-surface-dark">
-              {{ chatModeLabel(mode) }}
-            </option>
-          </select>
+          <div class="toolbar-select-wrap max-w-[150px]">
+            <select
+              v-model="selectedChatMode"
+              class="toolbar-select"
+              :disabled="loading || !availableChatModes.length"
+            >
+              <option v-for="mode in availableChatModes" :key="mode" :value="mode" class="bg-surface-light dark:bg-surface-dark">
+                {{ chatModeLabel(mode) }}
+              </option>
+            </select>
+            <span class="toolbar-select-icon" aria-hidden="true">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </span>
+          </div>
 
           <label class="flex items-center gap-1.5 text-sm cursor-pointer select-none">
             <input id="streamingMode" v-model="isStreaming" type="checkbox" class="accent-accent-light dark:accent-accent-dark" :disabled="loading" />
@@ -1905,6 +1928,11 @@ export default {
       return source ? source.slice(0, 1).toUpperCase() : 'U'
     }
 
+    const getCollapsedSessionLabel = (session) => {
+      const source = String(session?.name || session?.sessionId || '').trim()
+      return source ? source.slice(0, 1).toUpperCase() : '#'
+    }
+
     const toggleUserMenu = () => {
       userMenuVisible.value = !userMenuVisible.value
     }
@@ -2188,6 +2216,7 @@ export default {
       onConfigChange,
       openModelConfigDialog,
       refreshConfigs,
+      getCollapsedSessionLabel,
       // -----------------
       getMessageStatusLabel,
       getMessageMetaStatus,
@@ -2241,5 +2270,68 @@ aside ::-webkit-scrollbar-thumb {
 }
 .dark aside ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
+}
+
+.toolbar-select-wrap {
+  position: relative;
+  display: flex;
+  min-width: 120px;
+  flex: 0 1 auto;
+}
+
+.toolbar-select {
+  width: 100%;
+  min-width: 0;
+  appearance: none;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.88);
+  color: inherit;
+  cursor: pointer;
+  outline: none;
+  padding: 0.45rem 2rem 0.45rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, opacity 0.2s ease;
+}
+
+.toolbar-select:hover:not(:disabled) {
+  border-color: rgba(0, 0, 0, 0.16);
+}
+
+.toolbar-select:focus {
+  border-color: rgba(245, 158, 11, 0.5);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
+}
+
+.toolbar-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.toolbar-select-icon {
+  position: absolute;
+  top: 50%;
+  right: 0.75rem;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  transform: translateY(-50%);
+  color: inherit;
+  opacity: 0.68;
+}
+
+.dark .toolbar-select {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(23, 23, 23, 0.92);
+}
+
+.dark .toolbar-select:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.dark .toolbar-select:focus {
+  border-color: rgba(251, 191, 36, 0.55);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.18);
 }
 </style>
