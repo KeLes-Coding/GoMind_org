@@ -899,7 +899,7 @@ func HasIndexedFileVersion(ctx context.Context, fileID string, version int) (boo
 	query := fmt.Sprintf("@file_id:{%s} @file_version:[%d %d]", escapeRedisTagValue(normalizeTagValue(fileID)), version, version)
 	keys, err := redisPkg.SearchDocumentKeysByQuery(ctx, redis.GenerateUnifiedRAGIndexName(), query, 1)
 	if err != nil {
-		if strings.Contains(err.Error(), "Unknown index name") {
+		if isRedisIndexNotFoundError(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("search indexed file version failed: %w", err)
@@ -961,7 +961,7 @@ func DeleteIndexedFileDocuments(ctx context.Context, fileID string) error {
 	query := fmt.Sprintf("@file_id:{%s}", escapeRedisTagValue(normalizeTagValue(fileID)))
 	keys, err := redisPkg.SearchDocumentKeysByQuery(ctx, redis.GenerateUnifiedRAGIndexName(), query, 1000)
 	if err != nil {
-		if strings.Contains(err.Error(), "Unknown index name") {
+		if isRedisIndexNotFoundError(err) {
 			// 共享索引还没建起来时，说明新链路数据尚不存在，此时删除动作直接视为成功。
 			return nil
 		}
@@ -981,4 +981,13 @@ func atLeast(value, min int) int {
 		return min
 	}
 	return value
+}
+
+func isRedisIndexNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unknown index name") || strings.Contains(msg, "no such index")
 }

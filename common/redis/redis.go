@@ -155,7 +155,7 @@ func initRedisIndexWithPrefix(ctx context.Context, indexName, prefix string, dim
 		return nil
 	}
 
-	if !strings.Contains(err.Error(), "Unknown index name") {
+	if !isRedisIndexNotFoundError(err) {
 		setAvailability(false)
 		return fmt.Errorf("check redis index failed: %w", err)
 	}
@@ -199,6 +199,15 @@ func initRedisIndexWithPrefix(ctx context.Context, indexName, prefix string, dim
 
 	fmt.Println("redis index created")
 	return nil
+}
+
+func isRedisIndexNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unknown index name") || strings.Contains(msg, "no such index")
 }
 
 func DeleteRedisIndex(ctx context.Context, filename string) error {

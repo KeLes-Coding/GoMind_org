@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="$ROOT_DIR/bin"
 APP_BIN="$BIN_DIR/gomind"
 
-ROLE="${ROLE:-server}"
+ROLE="${ROLE:-all}"
 GO_CMD="${GO_CMD:-go}"
 GO_CACHE_DIR="${GOCACHE:-/tmp/go-build}"
 DEFAULT_PROXY="${DEFAULT_PROXY:-http://127.0.0.1:7890}"
