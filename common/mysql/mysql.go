@@ -69,6 +69,7 @@ func migration() error {
 		new(model.User),
 		new(model.EmailCaptcha),
 		new(model.SessionFolder),
+		new(model.UserLLMConfig),
 		new(model.Session),
 		new(model.Message),
 		new(model.MessageOutbox),

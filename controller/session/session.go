@@ -22,6 +22,10 @@ func validateModelType(modelType string) bool {
 	return aihelper.IsSupportedModelType(modelType)
 }
 
+func validateChatMode(chatMode string) bool {
+	return aihelper.IsSupportedChatMode(chatMode)
+}
+
 type (
 	GetUserSessionsResponse struct {
 		controller.Response
@@ -29,7 +33,9 @@ type (
 	}
 	CreateSessionAndSendMessageRequest struct {
 		UserQuestion string `json:"question" binding:"required"`
-		ModelType    string `json:"modelType" binding:"required"`
+		ModelType    string `json:"modelType,omitempty"`
+		LLMConfigID  *int64 `json:"llmConfigId,omitempty"`
+		ChatMode     string `json:"chatMode,omitempty"`
 	}
 
 	CreateSessionAndSendMessageResponse struct {
@@ -40,7 +46,9 @@ type (
 
 	ChatSendRequest struct {
 		UserQuestion string `json:"question" binding:"required"`
-		ModelType    string `json:"modelType" binding:"required"`
+		ModelType    string `json:"modelType,omitempty"`
+		LLMConfigID  *int64 `json:"llmConfigId,omitempty"`
+		ChatMode     string `json:"chatMode,omitempty"`
 		SessionID    string `json:"sessionId,omitempty" binding:"required"`
 	}
 
@@ -125,7 +133,11 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
-	if !validateModelType(req.ModelType) {
+	if req.ModelType != "" && !validateModelType(req.ModelType) {
+		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
+		return
+	}
+	if req.ChatMode != "" && !validateChatMode(req.ChatMode) {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
@@ -133,7 +145,11 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 	ctx, cancel := buildChatTimeoutContext(c, syncChatTimeout)
 	defer cancel()
 
-	sessionID, aiInformation, code_ := session.CreateSessionAndSendMessageWithControl(ctx, userName, userID, req.UserQuestion, req.ModelType)
+	sessionID, aiInformation, code_ := session.CreateSessionAndSendMessageWithControl(ctx, userName, userID, req.UserQuestion, session.ChatRequest{
+		ModelType:   req.ModelType,
+		LLMConfigID: req.LLMConfigID,
+		ChatMode:    req.ChatMode,
+	})
 	if code_ != code.CodeSuccess {
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
@@ -153,7 +169,11 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
 	}
-	if !validateModelType(req.ModelType) {
+	if req.ModelType != "" && !validateModelType(req.ModelType) {
+		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
+		return
+	}
+	if req.ChatMode != "" && !validateChatMode(req.ChatMode) {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
 	}
@@ -168,7 +188,11 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 	ctx, cancel := buildChatTimeoutContext(c, streamChatTimeout)
 	defer cancel()
 
-	sessionID, code_ := session.CreateStreamSessionOnly(userName, userID, req.UserQuestion)
+	sessionID, code_ := session.CreateStreamSessionOnly(userName, userID, req.UserQuestion, session.ChatRequest{
+		ModelType:   req.ModelType,
+		LLMConfigID: req.LLMConfigID,
+		ChatMode:    req.ChatMode,
+	})
 	if code_ != code.CodeSuccess {
 		writeSSEError(c, code_)
 		return
@@ -182,7 +206,11 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 		"type": "ready",
 	})
 
-	code_ = session.ChatStreamSendWithControl(ctx, userName, sessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
+	code_ = session.ChatStreamSendWithControl(ctx, userName, sessionID, req.UserQuestion, session.ChatRequest{
+		ModelType:   req.ModelType,
+		LLMConfigID: req.LLMConfigID,
+		ChatMode:    req.ChatMode,
+	}, http.ResponseWriter(c.Writer))
 	if code_ != code.CodeSuccess {
 		writeSSEError(c, code_)
 		return
@@ -197,7 +225,11 @@ func ChatSend(c *gin.Context) {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
-	if !validateModelType(req.ModelType) {
+	if req.ModelType != "" && !validateModelType(req.ModelType) {
+		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
+		return
+	}
+	if req.ChatMode != "" && !validateChatMode(req.ChatMode) {
 		c.JSON(http.StatusOK, res.CodeOf(code.CodeInvalidParams))
 		return
 	}
@@ -205,7 +237,11 @@ func ChatSend(c *gin.Context) {
 	ctx, cancel := buildChatTimeoutContext(c, syncChatTimeout)
 	defer cancel()
 
-	aiInformation, code_ := session.ChatSendWithControl(ctx, userName, req.SessionID, req.UserQuestion, req.ModelType)
+	aiInformation, code_ := session.ChatSendWithControl(ctx, userName, req.SessionID, req.UserQuestion, session.ChatRequest{
+		ModelType:   req.ModelType,
+		LLMConfigID: req.LLMConfigID,
+		ChatMode:    req.ChatMode,
+	})
 	if code_ != code.CodeSuccess {
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
@@ -223,7 +259,11 @@ func ChatStreamSend(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
 	}
-	if !validateModelType(req.ModelType) {
+	if req.ModelType != "" && !validateModelType(req.ModelType) {
+		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
+		return
+	}
+	if req.ChatMode != "" && !validateChatMode(req.ChatMode) {
 		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
 		return
 	}
@@ -242,7 +282,11 @@ func ChatStreamSend(c *gin.Context) {
 		"type": "ready",
 	})
 
-	code_ := session.ChatStreamSendWithControl(ctx, userName, req.SessionID, req.UserQuestion, req.ModelType, http.ResponseWriter(c.Writer))
+	code_ := session.ChatStreamSendWithControl(ctx, userName, req.SessionID, req.UserQuestion, session.ChatRequest{
+		ModelType:   req.ModelType,
+		LLMConfigID: req.LLMConfigID,
+		ChatMode:    req.ChatMode,
+	}, http.ResponseWriter(c.Writer))
 	if code_ != code.CodeSuccess {
 		writeSSEError(c, code_)
 		return

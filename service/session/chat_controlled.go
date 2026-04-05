@@ -14,8 +14,8 @@ import (
 // CreateSessionAndSendMessageWithControl 在保留原有同步链路的同时，补充了 timeout / cancelled 的错误映射。
 // 原有实现内部大多把这类中断场景归并成 AIModelFail，这里在 controller 切换到新入口后，
 // 可以把“主动取消”和“请求超时”单独返回给前端与面试稿。
-func CreateSessionAndSendMessageWithControl(ctx context.Context, userName string, userID int64, userQuestion string, modelType string) (string, string, code.Code) {
-	sessionID, answer, code_ := CreateSessionAndSendMessage(ctx, userName, userID, userQuestion, modelType)
+func CreateSessionAndSendMessageWithControl(ctx context.Context, userName string, userID int64, userQuestion string, req ChatRequest) (string, string, code.Code) {
+	sessionID, answer, code_ := CreateSessionAndSendMessage(ctx, userName, userID, userQuestion, req)
 	if code_ == code.AIModelFail && ctx != nil && ctx.Err() != nil {
 		return sessionID, answer, mapContextErrorToCode(ctx)
 	}
@@ -24,8 +24,8 @@ func CreateSessionAndSendMessageWithControl(ctx context.Context, userName string
 
 // ChatSendWithControl 和 CreateSessionAndSendMessageWithControl 一样，
 // 主要目的是把同步请求里的 timeout / cancelled 语义从 AIModelFail 中拆出来。
-func ChatSendWithControl(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
-	answer, code_ := ChatSend(ctx, userName, sessionID, userQuestion, modelType)
+func ChatSendWithControl(ctx context.Context, userName string, sessionID string, userQuestion string, req ChatRequest) (string, code.Code) {
+	answer, code_ := ChatSend(ctx, userName, sessionID, userQuestion, req)
 	if code_ == code.AIModelFail && ctx != nil && ctx.Err() != nil {
 		return answer, mapContextErrorToCode(ctx)
 	}
@@ -33,13 +33,13 @@ func ChatSendWithControl(ctx context.Context, userName string, sessionID string,
 }
 
 // CreateStreamSessionAndSendMessageWithControl 先创建会话，再走增强版流式发送链路。
-func CreateStreamSessionAndSendMessageWithControl(ctx context.Context, userName string, userID int64, userQuestion string, modelType string, writer http.ResponseWriter) (string, code.Code) {
-	sessionID, code_ := CreateStreamSessionOnly(userName, userID, userQuestion)
+func CreateStreamSessionAndSendMessageWithControl(ctx context.Context, userName string, userID int64, userQuestion string, req ChatRequest, writer http.ResponseWriter) (string, code.Code) {
+	sessionID, code_ := CreateStreamSessionOnly(userName, userID, userQuestion, req)
 	if code_ != code.CodeSuccess {
 		return "", code_
 	}
 
-	code_ = StreamMessageToExistingSessionWithControl(ctx, userName, sessionID, userQuestion, modelType, writer)
+	code_ = StreamMessageToExistingSessionWithControl(ctx, userName, sessionID, userQuestion, req, writer)
 	if code_ != code.CodeSuccess {
 		return sessionID, code_
 	}
@@ -47,8 +47,8 @@ func CreateStreamSessionAndSendMessageWithControl(ctx context.Context, userName 
 }
 
 // ChatStreamSendWithControl 对已有会话执行增强版流式发送。
-func ChatStreamSendWithControl(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
-	return StreamMessageToExistingSessionWithControl(ctx, userName, sessionID, userQuestion, modelType, writer)
+func ChatStreamSendWithControl(ctx context.Context, userName string, sessionID string, userQuestion string, req ChatRequest, writer http.ResponseWriter) code.Code {
+	return StreamMessageToExistingSessionWithControl(ctx, userName, sessionID, userQuestion, req, writer)
 }
 
 // StreamMessageToExistingSessionWithControl 是新的流式主链路。
@@ -56,28 +56,35 @@ func ChatStreamSendWithControl(ctx context.Context, userName string, sessionID s
 // 1. 为 stop 接口注册 session -> cancelFunc；
 // 2. 在流式回调里持续缓存已输出内容，便于中断时回写 partial / cancelled / timeout；
 // 3. 把 timeout / cancelled 单独映射成明确业务码，而不是一律 AIModelFail。
-func StreamMessageToExistingSessionWithControl(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
+func StreamMessageToExistingSessionWithControl(ctx context.Context, userName string, sessionID string, userQuestion string, req ChatRequest, writer http.ResponseWriter) code.Code {
+	sess, code_ := ensureOwnedSession(userName, sessionID)
+	if code_ != code.CodeSuccess {
+		return code_
+	}
+	resolved, code_ := resolveChatRequest(userName, sess.UserID, req, sess)
+	if code_ != code.CodeSuccess {
+		return code_
+	}
+
 	requestStart := time.Now()
-	ctx, _ = newSessionTrace(ctx, "chat_stream", sessionID, modelType)
+	ctx, _ = newSessionTrace(ctx, "chat_stream", sessionID, resolved.ModelType)
 	logSessionTrace(ctx, "start", "user=%s", userName)
 	observability.RecordStreamActiveDelta(1)
 	defer observability.RecordStreamActiveDelta(-1)
 
 	if !allowChatRateLimit(ctx, userName) {
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.CodeTooManyRequests
 	}
 
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
 		log.Println("StreamMessageToExistingSessionWithControl: streaming unsupported")
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.CodeServerBusy
 	}
-
-	sess, code_ := ensureOwnedSession(userName, sessionID)
-	if code_ != code.CodeSuccess {
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+	if code_ = persistResolvedChatSelection(sess, resolved); code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code_
 	}
 
@@ -90,7 +97,7 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 	defer globalActiveStreamRegistry.unregister(sessionID)
 
 	result := withSessionExecutionGuard(runCtx, sessionID, func(execCtx context.Context) codeExecutorResult {
-		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, modelType)
+		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, resolved)
 		if code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
@@ -145,17 +152,17 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 	if result.err != nil {
 		log.Println("StreamMessageToExistingSessionWithControl execution guard error:", result.err)
 		logSessionTrace(runCtx, "failed", "err=%v", result.err)
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.CodeServerBusy
 	}
 	if result.busy {
 		logSessionTrace(runCtx, "busy", "detail=distributed_lock_busy")
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.CodeTooManyRequests
 	}
 	if result.code != code.CodeSuccess {
 		logSessionTrace(runCtx, "failed", "code=%d", result.code)
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return result.code
 	}
 
@@ -163,15 +170,15 @@ func StreamMessageToExistingSessionWithControl(ctx context.Context, userName str
 		log.Println("StreamMessageToExistingSessionWithControl write DONE error:", err)
 		if runCtx.Err() != nil {
 			observability.RecordStreamDisconnect()
-			observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+			observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 			return mapContextErrorToCode(runCtx)
 		}
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.AIModelFail
 	}
 	flusher.Flush()
 
 	logSessionTrace(runCtx, "success", "detail=stream_done")
-	observability.RecordRequest("chat_stream", modelType, true, time.Since(requestStart))
+	observability.RecordRequest("chat_stream", resolved.ModelType, true, time.Since(requestStart))
 	return code.CodeSuccess
 }

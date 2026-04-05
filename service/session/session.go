@@ -18,15 +18,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// buildAIConfig 构造创建 AIHelper 时需要的基础配置。
-func buildAIConfig(userName string, userID int64) map[string]interface{} {
-	return map[string]interface{}{
-		"apiKey":   "your-api-key", // TODO: 改为从安全配置中读取真实密钥。
-		"username": userName,       // 供 MCP 等个性化能力识别当前用户。
-		"userID":   userID,         // 供 RAG 等能力关联当前用户身份。
-	}
-}
-
 // ensureOwnedSession 校验会话是否存在且归当前用户所有。
 // 后续所有读写操作都应先经过该检查，避免越权访问其他用户会话。
 func ensureOwnedSession(userName string, sessionID string) (*model.Session, code.Code) {
@@ -209,24 +200,28 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 // getOrSyncHelperWithHistory 获取当前会话的 helper，并补齐历史上下文。
 // 优先复用进程内缓存；如果没有，再从 DB/Redis 恢复状态并与数据库做一次对齐。
 // 这样既保留热状态恢复速度，也保证最终状态与 DB 一致。
-func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *model.Session, modelType string) (*aihelper.AIHelper, code.Code) {
-	if !aihelper.IsSupportedModelType(modelType) {
+func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *model.Session, resolved *resolvedChatRequest) (*aihelper.AIHelper, code.Code) {
+	if resolved == nil || !aihelper.IsSupportedModelType(resolved.ModelType) {
 		return nil, code.CodeInvalidParams
 	}
 
 	sessionID := sess.ID
+	selectionSignature := resolved.RuntimeConfig.SelectionSignature(resolved.ModelType)
 	manager := aihelper.GetGlobalManager()
 	if helper, exists := manager.GetAIHelper(userName, sessionID); exists {
-		observability.RecordHelperRecover(observability.HelperRecoverSourceProcess)
-		helper.SetVersion(sess.Version)
-		helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
-		if code_ := syncHelperWithDatabase(sessionID, helper); code_ != code.CodeSuccess {
-			return nil, code_
+		if helper.MatchesSelection(selectionSignature) {
+			observability.RecordHelperRecover(observability.HelperRecoverSourceProcess)
+			helper.SetVersion(sess.Version)
+			helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
+			if code_ := syncHelperWithDatabase(sessionID, helper); code_ != code.CodeSuccess {
+				return nil, code_
+			}
+			return helper, code.CodeSuccess
 		}
-		return helper, code.CodeSuccess
+		manager.RemoveAIHelper(userName, sessionID)
 	}
 
-	helper, err := manager.GetOrCreateAIHelper(userName, sessionID, modelType, buildAIConfig(userName, sess.UserID))
+	helper, err := manager.GetOrCreateAIHelper(userName, sessionID, resolved.ModelType, resolved.RuntimeConfig)
 	if err != nil {
 		log.Println("getOrCreateHelperWithHistory GetOrCreateAIHelper error:", err)
 		return nil, code.AIModelFail
@@ -303,32 +298,39 @@ func GetUserSessionsByUserName(userName string) ([]model.SessionInfo, error) {
 }
 
 // CreateSessionAndSendMessage 创建新会话并同步返回首轮回复。
-func CreateSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, modelType string) (string, string, code.Code) {
+func CreateSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, req ChatRequest) (string, string, code.Code) {
+	resolved, code_ := resolveChatRequest(userName, userID, req, nil)
+	if code_ != code.CodeSuccess {
+		return "", "", code_
+	}
+
 	requestStart := time.Now()
 	if !allowChatRateLimit(ctx, userName) {
-		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("create_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", "", code.CodeTooManyRequests
 	}
 
 	newSession := &model.Session{
-		ID:       uuid.New().String(),
-		UserName: userName,
-		UserID:   userID,
+		ID:          uuid.New().String(),
+		UserName:    userName,
+		UserID:      userID,
+		LLMConfigID: resolved.RuntimeConfig.LLMConfigID,
+		ChatMode:    resolved.ChatMode,
 		// 默认使用用户首问作为会话标题，后续可由用户自行重命名。
 		Title: userQuestion,
 	}
 	createdSession, err := sessionDAO.CreateSession(newSession)
 	if err != nil {
 		log.Println("CreateSessionAndSendMessage CreateSession error:", err)
-		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("create_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", "", code.CodeServerBusy
 	}
 
-	ctx, trace := newSessionTrace(ctx, "create_sync", createdSession.ID, modelType)
+	ctx, trace := newSessionTrace(ctx, "create_sync", createdSession.ID, resolved.ModelType)
 	logSessionTrace(ctx, "start", "user=%s", userName)
 
 	result := withSessionExecutionGuard(ctx, createdSession.ID, func(execCtx context.Context) codeExecutorResult {
-		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, createdSession, modelType)
+		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, createdSession, resolved)
 		if code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
@@ -351,33 +353,40 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 	if result.err != nil {
 		log.Println("CreateSessionAndSendMessage execution guard error:", result.err)
 		logSessionTrace(ctx, "failed", "err=%v", result.err)
-		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("create_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", "", code.CodeServerBusy
 	}
 	if result.busy {
 		logSessionTrace(ctx, "busy", "detail=distributed_lock_busy")
-		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("create_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", "", code.CodeTooManyRequests
 	}
 	if result.code != code.CodeSuccess {
 		logSessionTrace(ctx, "failed", "code=%d", result.code)
-		observability.RecordRequest("create_sync", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("create_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", "", result.code
 	}
 	logSessionTrace(ctx, "success", "response_chars=%d request_id=%s", len(result.aiResponse), trace.RequestID)
-	observability.RecordRequest("create_sync", modelType, true, time.Since(requestStart))
+	observability.RecordRequest("create_sync", resolved.ModelType, true, time.Since(requestStart))
 
 	return createdSession.ID, result.aiResponse, code.CodeSuccess
 }
 
 // CreateStreamSessionOnly 仅创建流式会话，不立即触发模型回复。
 // 适用于需要先拿到 sessionID，再分步推送流式内容的场景。
-func CreateStreamSessionOnly(userName string, userID int64, userQuestion string) (string, code.Code) {
+func CreateStreamSessionOnly(userName string, userID int64, userQuestion string, req ChatRequest) (string, code.Code) {
+	resolved, code_ := resolveChatRequest(userName, userID, req, nil)
+	if code_ != code.CodeSuccess {
+		return "", code_
+	}
+
 	newSession := &model.Session{
-		ID:       uuid.New().String(),
-		UserName: userName,
-		UserID:   userID,
-		Title:    userQuestion,
+		ID:          uuid.New().String(),
+		UserName:    userName,
+		UserID:      userID,
+		LLMConfigID: resolved.RuntimeConfig.LLMConfigID,
+		ChatMode:    resolved.ChatMode,
+		Title:       userQuestion,
 	}
 	createdSession, err := sessionDAO.CreateSession(newSession)
 	if err != nil {
@@ -388,33 +397,40 @@ func CreateStreamSessionOnly(userName string, userID int64, userQuestion string)
 }
 
 // StreamMessageToExistingSession 向已有会话发送消息，并以 SSE 方式流式返回结果。
-func StreamMessageToExistingSession(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
+func StreamMessageToExistingSession(ctx context.Context, userName string, sessionID string, userQuestion string, req ChatRequest, writer http.ResponseWriter) code.Code {
+	sess, code_ := ensureOwnedSession(userName, sessionID)
+	if code_ != code.CodeSuccess {
+		return code_
+	}
+	resolved, code_ := resolveChatRequest(userName, sess.UserID, req, sess)
+	if code_ != code.CodeSuccess {
+		return code_
+	}
+
 	requestStart := time.Now()
-	ctx, _ = newSessionTrace(ctx, "chat_stream", sessionID, modelType)
+	ctx, _ = newSessionTrace(ctx, "chat_stream", sessionID, resolved.ModelType)
 	logSessionTrace(ctx, "start", "user=%s", userName)
 	observability.RecordStreamActiveDelta(1)
 	defer observability.RecordStreamActiveDelta(-1)
 	if !allowChatRateLimit(ctx, userName) {
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.CodeTooManyRequests
 	}
 
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
 		log.Println("StreamMessageToExistingSession: streaming unsupported")
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.CodeServerBusy
 	}
-
-	sess, code_ := ensureOwnedSession(userName, sessionID)
-	if code_ != code.CodeSuccess {
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+	if code_ = persistResolvedChatSelection(sess, resolved); code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code_
 	}
 
 	// 同一会话的流式生成也需要串行执行，避免并发写入造成上下文错乱。
 	result := withSessionExecutionGuard(ctx, sessionID, func(execCtx context.Context) codeExecutorResult {
-		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, modelType)
+		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, resolved)
 		if code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
@@ -446,17 +462,17 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 	if result.err != nil {
 		log.Println("StreamMessageToExistingSession execution guard error:", result.err)
 		logSessionTrace(ctx, "failed", "err=%v", result.err)
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.CodeServerBusy
 	}
 	if result.busy {
 		logSessionTrace(ctx, "busy", "detail=distributed_lock_busy")
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.CodeTooManyRequests
 	}
 	if result.code != code.CodeSuccess {
 		logSessionTrace(ctx, "failed", "code=%d", result.code)
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return result.code
 	}
 
@@ -465,23 +481,23 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		if ctx.Err() != nil {
 			observability.RecordStreamDisconnect()
 		}
-		observability.RecordRequest("chat_stream", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
 		return code.AIModelFail
 	}
 	flusher.Flush()
 	logSessionTrace(ctx, "success", "detail=stream_done")
-	observability.RecordRequest("chat_stream", modelType, true, time.Since(requestStart))
+	observability.RecordRequest("chat_stream", resolved.ModelType, true, time.Since(requestStart))
 	return code.CodeSuccess
 }
 
 // CreateStreamSessionAndSendMessage 创建会话并立即开始流式回复。
-func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, modelType string, writer http.ResponseWriter) (string, code.Code) {
-	sessionID, code_ := CreateStreamSessionOnly(userName, userID, userQuestion)
+func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, userID int64, userQuestion string, req ChatRequest, writer http.ResponseWriter) (string, code.Code) {
+	sessionID, code_ := CreateStreamSessionOnly(userName, userID, userQuestion, req)
 	if code_ != code.CodeSuccess {
 		return "", code_
 	}
 
-	code_ = StreamMessageToExistingSession(ctx, userName, sessionID, userQuestion, modelType, writer)
+	code_ = StreamMessageToExistingSession(ctx, userName, sessionID, userQuestion, req, writer)
 	if code_ != code.CodeSuccess {
 		return sessionID, code_
 	}
@@ -490,24 +506,31 @@ func CreateStreamSessionAndSendMessage(ctx context.Context, userName string, use
 }
 
 // ChatSend 向已有会话发送消息，并同步返回完整回复。
-func ChatSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string) (string, code.Code) {
-	requestStart := time.Now()
-	ctx, _ = newSessionTrace(ctx, "chat_sync", sessionID, modelType)
-	logSessionTrace(ctx, "start", "user=%s", userName)
-	if !allowChatRateLimit(ctx, userName) {
-		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
-		return "", code.CodeTooManyRequests
-	}
-
+func ChatSend(ctx context.Context, userName string, sessionID string, userQuestion string, req ChatRequest) (string, code.Code) {
 	sess, code_ := ensureOwnedSession(userName, sessionID)
 	if code_ != code.CodeSuccess {
-		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
+		return "", code_
+	}
+	resolved, code_ := resolveChatRequest(userName, sess.UserID, req, sess)
+	if code_ != code.CodeSuccess {
+		return "", code_
+	}
+
+	requestStart := time.Now()
+	ctx, _ = newSessionTrace(ctx, "chat_sync", sessionID, resolved.ModelType)
+	logSessionTrace(ctx, "start", "user=%s", userName)
+	if !allowChatRateLimit(ctx, userName) {
+		observability.RecordRequest("chat_sync", resolved.ModelType, false, time.Since(requestStart))
+		return "", code.CodeTooManyRequests
+	}
+	if code_ = persistResolvedChatSelection(sess, resolved); code_ != code.CodeSuccess {
+		observability.RecordRequest("chat_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", code_
 	}
 
 	// 同一会话的同步生成同样通过执行保护串行化，避免状态竞争。
 	result := withSessionExecutionGuard(ctx, sessionID, func(execCtx context.Context) codeExecutorResult {
-		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, modelType)
+		helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, resolved)
 		if code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
@@ -530,21 +553,21 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 	if result.err != nil {
 		log.Println("ChatSend execution guard error:", result.err)
 		logSessionTrace(ctx, "failed", "err=%v", result.err)
-		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", code.CodeServerBusy
 	}
 	if result.busy {
 		logSessionTrace(ctx, "busy", "detail=distributed_lock_busy")
-		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", code.CodeTooManyRequests
 	}
 	if result.code != code.CodeSuccess {
 		logSessionTrace(ctx, "failed", "code=%d", result.code)
-		observability.RecordRequest("chat_sync", modelType, false, time.Since(requestStart))
+		observability.RecordRequest("chat_sync", resolved.ModelType, false, time.Since(requestStart))
 		return "", result.code
 	}
 	logSessionTrace(ctx, "success", "response_chars=%d", len(result.aiResponse))
-	observability.RecordRequest("chat_sync", modelType, true, time.Since(requestStart))
+	observability.RecordRequest("chat_sync", resolved.ModelType, true, time.Since(requestStart))
 	return result.aiResponse, code.CodeSuccess
 }
 
@@ -575,8 +598,8 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 }
 
 // ChatStreamSend 是 StreamMessageToExistingSession 的简单封装。
-func ChatStreamSend(ctx context.Context, userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
-	return StreamMessageToExistingSession(ctx, userName, sessionID, userQuestion, modelType, writer)
+func ChatStreamSend(ctx context.Context, userName string, sessionID string, userQuestion string, req ChatRequest, writer http.ResponseWriter) code.Code {
+	return StreamMessageToExistingSession(ctx, userName, sessionID, userQuestion, req, writer)
 }
 
 // RenameSession renames a session owned by the current user.

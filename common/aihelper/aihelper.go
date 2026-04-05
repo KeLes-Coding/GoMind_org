@@ -34,12 +34,15 @@ type AIHelper struct {
 	// version 用于给“共享热状态快照”打版本号。
 	// 这样后续把状态同步到 Redis 时，可以知道这是哪一次会话推进之后产生的新快照。
 	version int64
+	// selectionSignature 用于标识当前 helper 绑定的模型/配置选择。
+	// 当会话切换 llmConfigId 或 chatMode 时，service 可以据此判断是否必须重建 helper。
+	selectionSignature string
 }
 
 const maxContextMessages = 20
 
 // NewAIHelper 创建新的 AIHelper。
-func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
+func NewAIHelper(model_ AIModel, SessionID string, selectionSignature string) *AIHelper {
 	return &AIHelper{
 		model:    model_,
 		messages: make([]*model.Message, 0),
@@ -86,8 +89,9 @@ func NewAIHelper(model_ AIModel, SessionID string) *AIHelper {
 			observability.RecordMQFallback()
 			return msg, nil
 		},
-		SessionID: SessionID,
-		version:   1,
+		SessionID:          SessionID,
+		version:            1,
+		selectionSignature: selectionSignature,
 	}
 }
 
@@ -102,8 +106,8 @@ func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save
 // 这类中断场景需要把“消息内容”和“消息最终状态”一起落到持久化层。
 func (a *AIHelper) AddMessageWithStatus(Content string, UserName string, IsUser bool, Save bool, status model.MessageStatus) *model.Message {
 	userMsg := model.Message{
-		MessageKey:     utils.GenerateUUID(),
-		SessionID:      a.SessionID,
+		MessageKey: utils.GenerateUUID(),
+		SessionID:  a.SessionID,
 		// 当前一轮对话里的消息都归属到“下一次正式会话推进版本”。
 		// 这样消息异步落库后，就可以按 session_version 推进 persisted_version。
 		SessionVersion: a.GetVersion() + 1,
@@ -629,4 +633,10 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 // GetModelType 返回当前 helper 绑定的模型类型。
 func (a *AIHelper) GetModelType() string {
 	return a.model.GetModelType()
+}
+
+func (a *AIHelper) MatchesSelection(selectionSignature string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.selectionSignature == selectionSignature
 }

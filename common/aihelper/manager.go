@@ -1,4 +1,4 @@
-﻿package aihelper
+package aihelper
 
 import (
 	"context"
@@ -22,7 +22,7 @@ func NewAIHelperManager() *AIHelperManager {
 }
 
 // GetOrCreateAIHelper 获取或创建某个用户某个会话对应的 helper。
-func (m *AIHelperManager) GetOrCreateAIHelper(userName string, sessionID string, modelType string, config map[string]interface{}) (*AIHelper, error) {
+func (m *AIHelperManager) GetOrCreateAIHelper(userName string, sessionID string, modelType string, config RuntimeConfig) (*AIHelper, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -33,7 +33,7 @@ func (m *AIHelperManager) GetOrCreateAIHelper(userName string, sessionID string,
 	}
 
 	helper, exists := userHelpers[sessionID]
-	if exists {
+	if exists && helper.MatchesSelection(config.SelectionSignature(modelType)) {
 		return helper, nil
 	}
 

@@ -21,12 +21,12 @@ var supportedModelTypes = map[string]struct{}{
 	ModelTypeOllama: {},
 }
 
-// ModelCreator 定义模型构造函数签名。
-type ModelCreator func(ctx context.Context, config map[string]interface{}) (AIModel, error)
+// ProviderCreator 定义底层 Provider 构造函数签名。
+type ProviderCreator func(ctx context.Context, config RuntimeConfig) (ChatProvider, error)
 
 // AIModelFactory 负责按照模型类型创建具体模型实例。
 type AIModelFactory struct {
-	creators map[string]ModelCreator
+	creators map[string]ProviderCreator
 }
 
 var (
@@ -38,7 +38,7 @@ var (
 func GetGlobalFactory() *AIModelFactory {
 	factoryOnce.Do(func() {
 		globalFactory = &AIModelFactory{
-			creators: make(map[string]ModelCreator),
+			creators: make(map[string]ProviderCreator),
 		}
 		globalFactory.registerCreators()
 	})
@@ -51,40 +51,22 @@ func IsSupportedModelType(modelType string) bool {
 	return ok
 }
 
-// registerCreators 注册系统内置的模型构造器。
+// registerCreators 注册系统内置的 Provider 构造器。
 func (f *AIModelFactory) registerCreators() {
-	f.creators[ModelTypeOpenAI] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
-		return NewOpenAIModel(ctx)
+	f.creators[ModelTypeOpenAI] = func(ctx context.Context, config RuntimeConfig) (ChatProvider, error) {
+		return NewOpenAIProvider(ctx, config)
 	}
 
-	f.creators[ModelTypeRAG] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
-		userID, ok := config["userID"].(int64)
-		if !ok {
-			return nil, fmt.Errorf("RAG model requires userID")
-		}
-		return NewAliRAGModel(ctx, userID)
-	}
-
-	f.creators[ModelTypeMCP] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
-		username, ok := config["username"].(string)
-		if !ok {
-			return nil, fmt.Errorf("MCP model requires username")
-		}
-		return NewMCPModel(ctx, username)
-	}
-
-	f.creators[ModelTypeOllama] = func(ctx context.Context, config map[string]interface{}) (AIModel, error) {
-		baseURL, _ := config["baseURL"].(string)
-		modelName, ok := config["modelName"].(string)
-		if !ok {
+	f.creators[ModelTypeOllama] = func(ctx context.Context, config RuntimeConfig) (ChatProvider, error) {
+		if config.ModelName == "" {
 			return nil, fmt.Errorf("Ollama model requires modelName")
 		}
-		return NewOllamaModel(ctx, baseURL, modelName)
+		return NewOllamaProvider(ctx, config)
 	}
 }
 
-// CreateAIModel 根据模型类型创建 AI 模型。
-func (f *AIModelFactory) CreateAIModel(ctx context.Context, modelType string, config map[string]interface{}) (AIModel, error) {
+// CreateProvider 根据底层 Provider 类型创建 Provider 实例。
+func (f *AIModelFactory) CreateProvider(ctx context.Context, modelType string, config RuntimeConfig) (ChatProvider, error) {
 	creator, ok := f.creators[modelType]
 	if !ok {
 		return nil, fmt.Errorf("unsupported model type: %s", modelType)
@@ -93,28 +75,54 @@ func (f *AIModelFactory) CreateAIModel(ctx context.Context, modelType string, co
 }
 
 // CreateAIHelper 一键创建带有指定模型的 AIHelper。
-func (f *AIModelFactory) CreateAIHelper(ctx context.Context, modelType string, SessionID string, config map[string]interface{}) (*AIHelper, error) {
-	model, err := f.CreateAIModel(ctx, modelType, config)
+func (f *AIModelFactory) CreateAIHelper(ctx context.Context, modelType string, sessionID string, config RuntimeConfig) (*AIHelper, error) {
+	provider, err := f.CreateProvider(ctx, modelType, config)
 	if err != nil {
 		return nil, err
 	}
 
-	helper := NewAIHelper(model, SessionID)
+	capability, err := f.CreateCapability(config)
+	if err != nil {
+		return nil, err
+	}
 
-	// 这轮先不动 RAG 相关链路，所以这里只给“非 OpenAI 且非 RAG”的模型挂一个轻量备用模型。
-	// 这样 MCP / Ollama 下游抖动时，至少还能退回普通聊天，保证主链路可用。
-	if modelType != ModelTypeOpenAI && modelType != ModelTypeRAG {
-		fallbackModel, fallbackErr := f.CreateAIModel(ctx, ModelTypeOpenAI, config)
+	model := NewCapabilityModel(provider, capability)
+	helper := NewAIHelper(model, sessionID, config.SelectionSignature(modelType))
+
+	// 备用模型依然只绑定到底层 Provider。
+	// 这样 Provider 故障时，可以在相同 capability 下回退到默认 OpenAI-compatible。
+	if modelType != ModelTypeOpenAI {
+		fallbackProvider, fallbackErr := f.CreateProvider(ctx, ModelTypeOpenAI, config)
 		if fallbackErr == nil {
-			helper.SetFallbackModel(fallbackModel)
+			helper.SetFallbackModel(NewCapabilityModel(fallbackProvider, capability))
 		}
 	}
 
 	return helper, nil
 }
 
-// RegisterModel 允许后续扩展注册新的模型类型。
-func (f *AIModelFactory) RegisterModel(modelType string, creator ModelCreator) {
+// CreateCapability 根据 chat_mode 创建能力编排器。
+func (f *AIModelFactory) CreateCapability(config RuntimeConfig) (ChatCapability, error) {
+	switch config.ChatMode {
+	case ChatModeChat:
+		return &PlainChatCapability{}, nil
+	case ChatModeRAG:
+		if config.UserID == 0 {
+			return nil, fmt.Errorf("RAG chat mode requires userID")
+		}
+		return NewRAGChatCapability(config.UserID), nil
+	case ChatModeMCP:
+		if config.Username == "" {
+			return nil, fmt.Errorf("MCP chat mode requires username")
+		}
+		return NewMCPChatCapability(config.Username), nil
+	default:
+		return nil, unsupportedChatModeError(config.ChatMode)
+	}
+}
+
+// RegisterModel 允许后续扩展注册新的底层 Provider。
+func (f *AIModelFactory) RegisterModel(modelType string, creator ProviderCreator) {
 	f.creators[modelType] = creator
 	supportedModelTypes[modelType] = struct{}{}
 }

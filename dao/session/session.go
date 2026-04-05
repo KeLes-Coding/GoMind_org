@@ -46,6 +46,15 @@ func UpdateSessionSummary(sessionID string, summary string, summaryMessageCount 
 		}).Error
 }
 
+func UpdateSessionChatSelection(sessionID string, llmConfigID *int64, chatMode string) error {
+	return mysql.DB.Model(&model.Session{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]interface{}{
+			"llm_config_id": llmConfigID,
+			"chat_mode":     chatMode,
+		}).Error
+}
+
 // UpdateSessionProgress 把摘要状态和正式 version 一起推进，避免两次更新之间出现中间态。
 func UpdateSessionProgress(sessionID string, version int64, summary string, summaryMessageCount int) error {
 	return mysql.DB.Model(&model.Session{}).
