@@ -151,12 +151,20 @@ func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func(co
 				currentOwner = currentLease.OwnerID
 			}
 
-			// 如果当前实例既不是 hash 首选 owner，也不是现存 lease owner，就直接返回 busy。
-			// 这样可以减少同一 session 在多实例之间漂移，而不用先上请求转发。
+			// preferred owner 只是“建议路由”，不是绝对执行资格。
+			// 只要当前还没有任何实例真正持有 owner lease，就允许本次请求继续尝试抢占 lease。
+			// 这样单机重启后即便 Redis 里短暂残留旧实例心跳，也不会因为 hash 命中“幽灵实例”而被误判 busy。
+			//
+			// 真正的并发所有权仍由下面的 owner lease CAS 决定：
+			// 1. 如果已有其他实例持有 lease，这里仍然会被拒绝；
+			// 2. 如果 lease 为空，则由当前实际接到请求的实例接管，避免无 owner 时被硬拒。
 			if preferredOwner != "" && preferredOwner != currentInstanceID && currentOwner != currentInstanceID {
-				observability.RecordSessionOwnerRouteMismatch()
-				logSessionTrace(execCtx, "owner_route_mismatch", "preferred=%s current=%s active=%d current_owner=%s", preferredOwner, currentInstanceID, len(activeInstances), currentOwner)
-				return codeExecutorResult{busy: true}
+				if currentOwner != "" {
+					observability.RecordSessionOwnerRouteMismatch()
+					logSessionTrace(execCtx, "owner_route_mismatch", "preferred=%s current=%s active=%d current_owner=%s", preferredOwner, currentInstanceID, len(activeInstances), currentOwner)
+					return codeExecutorResult{busy: true}
+				}
+				logSessionTrace(execCtx, "owner_route_advisory", "preferred=%s current=%s active=%d current_owner=%s", preferredOwner, currentInstanceID, len(activeInstances), currentOwner)
 			}
 
 			ownerLease, ownerState, err := myredis.AcquireOrRefreshSessionOwnerLease(execCtx, sessionID, currentInstanceID)
