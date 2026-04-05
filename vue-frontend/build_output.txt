@@ -1,0 +1,48 @@
+All browser targets in the browserslist configuration have supported ES module.
+Therefore we don't build two separate bundles for differential loading.
+
+
+-  Building for production...
+ ERROR  Failed to compile with 3 errors17:53:49
+
+ error  in ./src/views/AIChat.vue?vue&type=script&lang=js
+
+Module not found: Error: Can't resolve 'element-plus' in 'I:\Study\26_shixi\golang\GoMind_org\vue-frontend\src\views'
+
+ error  in ./src/views/components/ModelConfigDialog.vue?vue&type=script&lang=js
+
+Module not found: Error: Can't resolve 'element-plus' in 'I:\Study\26_shixi\golang\GoMind_org\vue-frontend\src\views\components'
+
+ error  in ./src/main.js
+
+Module not found: Error: Can't resolve 'element-plus' in 'I:\Study\26_shixi\golang\GoMind_org\vue-frontend\src'
+
+ ERROR  Error: Build failed with errors.
+Error: Build failed with errors.
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\@vue\cli-service\lib\commands\build\index.js:207:23
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\webpack.js:185:8
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\HookWebpackError.js:66:2
+    at Hook.eval [as callAsync] (eval at create (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\HookCodeFactory.js:31:10), <anonymous>:6:1)
+    at Hook.CALL_ASYNC_DELEGATE [as _callAsync] (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\Hook.js:21:14)
+    at Cache.shutdown (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Cache.js:157:23)
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compiler.js:1407:15
+    at Hook.eval [as callAsync] (eval at create (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\HookCodeFactory.js:31:10), <anonymous>:6:1)
+    at Hook.CALL_ASYNC_DELEGATE [as _callAsync] (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\Hook.js:21:14)
+    at Compiler.close (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compiler.js:1400:23)
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\webpack.js:184:16
+    at finalCallback (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compiler.js:519:32)
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compiler.js:543:13
+    at Hook.eval [as callAsync] (eval at create (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\HookCodeFactory.js:31:10), <anonymous>:24:1)
+    at Hook.CALL_ASYNC_DELEGATE [as _callAsync] (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\Hook.js:21:14)
+    at onCompiled (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compiler.js:541:21)
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compiler.js:1378:17
+    at Hook.eval [as callAsync] (eval at create (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\HookCodeFactory.js:31:10), <anonymous>:6:1)
+    at Hook.CALL_ASYNC_DELEGATE [as _callAsync] (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\Hook.js:21:14)
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compiler.js:1374:33
+    at finalCallback (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compilation.js:3133:11)
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compilation.js:3469:11
+    at Hook.eval [as callAsync] (eval at create (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\HookCodeFactory.js:31:10), <anonymous>:6:1)
+    at Hook.CALL_ASYNC_DELEGATE [as _callAsync] (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\Hook.js:21:14)
+    at I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\webpack\lib\Compilation.js:3462:38
+    at eval (eval at create (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\HookCodeFactory.js:31:10), <anonymous>:15:1)
+    at eval (eval at create (I:\Study\26_shixi\golang\GoMind_org\vue-frontend\node_modules\tapable\lib\HookCodeFactory.js:31:10), <anonymous>:14:1)
