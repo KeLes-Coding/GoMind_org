@@ -2,19 +2,17 @@ package aihelper
 
 import (
 	"GopherAI/common/applog"
+	"GopherAI/common/mcpgateway"
 	"GopherAI/common/observability"
 	"GopherAI/common/rag"
-	"GopherAI/config"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // PlainChatCapability 表示普通聊天模式。
@@ -99,8 +97,7 @@ func (c *RAGChatCapability) buildRAGMessages(ctx context.Context, messages []*sc
 // 它保留现有“两段式提示词 + 工具结果回注”流程，但不再自己持有 LLM。
 type MCPChatCapability struct {
 	username   string
-	mcpBaseURL string
-	mcpClient  *client.Client
+	mcpManager *mcpgateway.Manager
 }
 
 // RAGMCPChatCapability 表示“先检索增强，再做 MCP 工具编排”的组合模式。
@@ -113,13 +110,9 @@ type RAGMCPChatCapability struct {
 // NewMCPChatCapability 创建 MCP 工具编排能力。
 // 当前先沿用系统级 MCP server 地址，不把 server 配置放进用户数据库。
 func NewMCPChatCapability(username string) *MCPChatCapability {
-	baseURL := config.GetConfig().MCPConfig.BaseURL
-	if baseURL == "" {
-		baseURL = "http://localhost:29871/mcp"
-	}
 	return &MCPChatCapability{
 		username:   username,
-		mcpBaseURL: baseURL,
+		mcpManager: mcpgateway.GetGlobalManager(),
 	}
 }
 
@@ -137,9 +130,20 @@ func (c *MCPChatCapability) GenerateResponse(ctx context.Context, provider ChatP
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages provided")
 	}
+	if c.mcpManager == nil || !c.mcpManager.IsEnabled() {
+		return provider.Generate(ctx, messages)
+	}
 
 	query := messages[len(messages)-1].Content
-	firstMessages := c.buildPromptMessages(messages, c.buildFirstPrompt(query))
+	tools, err := c.mcpManager.ListTools(ctx)
+	if err != nil || len(tools) == 0 {
+		if err != nil {
+			applog.Categoryf(applog.CategoryMCP, "MCP tools unavailable user=%s err=%v", c.username, err)
+		}
+		return provider.Generate(ctx, messages)
+	}
+
+	firstMessages := c.buildPromptMessages(messages, c.buildFirstPrompt(query, tools))
 	firstResp, err := provider.Generate(ctx, firstMessages)
 	if err != nil {
 		return nil, fmt.Errorf("mcp first generate failed: %v", err)
@@ -153,13 +157,7 @@ func (c *MCPChatCapability) GenerateResponse(ctx context.Context, provider ChatP
 		return firstResp, nil
 	}
 
-	mcpClient, err := c.getMCPClient(ctx)
-	if err != nil {
-		applog.Categoryf(applog.CategoryMCP, "MCP client error user=%s base_url=%s err=%v", c.username, c.mcpBaseURL, err)
-		return firstResp, nil
-	}
-
-	toolResult, err := c.callMCPTool(ctx, mcpClient, toolCall.ToolName, toolCall.Args)
+	toolResult, err := c.callMCPTool(ctx, toolCall.ToolName, toolCall.Args)
 	if err != nil {
 		applog.Categoryf(applog.CategoryMCP, "MCP tool call failed user=%s tool=%s args=%v err=%v", c.username, toolCall.ToolName, toolCall.Args, err)
 		return firstResp, nil
@@ -178,9 +176,20 @@ func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatPro
 	if len(messages) == 0 {
 		return "", fmt.Errorf("no messages provided")
 	}
+	if c.mcpManager == nil || !c.mcpManager.IsEnabled() {
+		return provider.Stream(ctx, messages, cb)
+	}
 
 	query := messages[len(messages)-1].Content
-	firstMessages := c.buildPromptMessages(messages, c.buildFirstPrompt(query))
+	tools, err := c.mcpManager.ListTools(ctx)
+	if err != nil || len(tools) == 0 {
+		if err != nil {
+			applog.Categoryf(applog.CategoryMCP, "MCP tools unavailable user=%s err=%v", c.username, err)
+		}
+		return provider.Stream(ctx, messages, cb)
+	}
+
+	firstMessages := c.buildPromptMessages(messages, c.buildFirstPrompt(query, tools))
 	firstResp, err := provider.Generate(ctx, firstMessages)
 	if err != nil {
 		return "", fmt.Errorf("mcp first generate failed: %v", err)
@@ -195,14 +204,7 @@ func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatPro
 		return firstResp.Content, nil
 	}
 
-	mcpClient, err := c.getMCPClient(ctx)
-	if err != nil {
-		applog.Categoryf(applog.CategoryMCP, "MCP client error user=%s base_url=%s err=%v", c.username, c.mcpBaseURL, err)
-		c.emitStreamFallback(firstResp.Content, cb)
-		return firstResp.Content, nil
-	}
-
-	toolResult, err := c.callMCPTool(ctx, mcpClient, toolCall.ToolName, toolCall.Args)
+	toolResult, err := c.callMCPTool(ctx, toolCall.ToolName, toolCall.Args)
 	if err != nil {
 		applog.Categoryf(applog.CategoryMCP, "MCP tool call failed user=%s tool=%s args=%v err=%v", c.username, toolCall.ToolName, toolCall.Args, err)
 		c.emitStreamFallback(firstResp.Content, cb)
@@ -248,51 +250,28 @@ func (c *MCPChatCapability) buildPromptMessages(messages []*schema.Message, prom
 	return promptMessages
 }
 
-// getMCPClient 惰性初始化 MCP 客户端。
-// 这样普通聊天请求不会无谓地建立 MCP 连接。
-func (c *MCPChatCapability) getMCPClient(ctx context.Context) (*client.Client, error) {
-	if c.mcpClient == nil {
-		httpTransport, err := transport.NewStreamableHTTP(c.mcpBaseURL)
-		if err != nil {
-			return nil, fmt.Errorf("create mcp transport failed: %v", err)
-		}
-
-		c.mcpClient = client.NewClient(httpTransport)
-		initRequest := mcp.InitializeRequest{}
-		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-		initRequest.Params.ClientInfo = mcp.Implementation{
-			Name:    "MCP-Go AIHelper Client",
-			Version: "1.0.0",
-		}
-		initRequest.Params.Capabilities = mcp.ClientCapabilities{}
-
-		if _, err := c.mcpClient.Initialize(ctx, initRequest); err != nil {
-			return nil, fmt.Errorf("mcp client initialize failed base_url=%s: %v", c.mcpBaseURL, err)
-		}
-	}
-	return c.mcpClient, nil
-}
-
 // buildFirstPrompt 要求模型先输出“是否调用工具”的结构化结果。
-func (c *MCPChatCapability) buildFirstPrompt(query string) string {
+func (c *MCPChatCapability) buildFirstPrompt(query string, tools []mcpgateway.ToolDefinition) string {
 	return fmt.Sprintf(`你是一个智能助手，可以调用MCP工具来获取信息。
 
 可用工具:
-- get_weather: 获取指定城市的天气信息，参数: city（城市名称，支持中文和英文，如北京、Shanghai等）
+%s
 
 重要规则:
 1. 如果需要调用工具，必须严格返回以下JSON格式：
 {
   "isToolCall": true,
-  "toolName": "工具名称",
+  "toolName": "工具全名或唯一短名",
   "args": {"参数名": "参数值"}
 }
 2. 如果不需要调用工具，直接返回自然语言回答
-3. 请根据用户问题决定是否需要调用工具
+3. 仅当工具确实能帮助回答时才调用
+4. 如果工具存在同名冲突，优先使用 server.tool 这种全名
+5. 不要编造不存在的工具或参数
 
 用户问题: %s
 
-请根据需要调用适当的工具，然后给出综合的回答。`, query)
+请根据需要调用适当的工具，然后给出综合的回答。`, c.renderToolList(tools), query)
 }
 
 // buildSecondPrompt 在工具执行后，把结果重新交给模型组织最终自然语言回答。
@@ -323,42 +302,15 @@ func (c *MCPChatCapability) parseAIResponse(response string) (*AIToolCall, error
 		return &toolCall, nil
 	}
 
-	if strings.Contains(response, "get_weather") {
-		city := c.extractCityFromResponse(response)
-		if city != "" {
-			return &AIToolCall{
-				IsToolCall: true,
-				ToolName:   "get_weather",
-				Args:       map[string]interface{}{"city": city},
-			}, nil
-		}
-	}
-
 	return &AIToolCall{IsToolCall: false}, nil
 }
 
 // callMCPTool 统一封装一次工具调用，并把多段文本结果聚合成字符串。
-func (c *MCPChatCapability) callMCPTool(ctx context.Context, client *client.Client, toolName string, args map[string]interface{}) (string, error) {
-	callToolRequest := mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name:      toolName,
-			Arguments: args,
-		},
+func (c *MCPChatCapability) callMCPTool(ctx context.Context, toolName string, args map[string]interface{}) (string, error) {
+	if c.mcpManager == nil {
+		return "", fmt.Errorf("mcp manager is nil")
 	}
-
-	result, err := client.CallTool(ctx, callToolRequest)
-	if err != nil {
-		return "", fmt.Errorf("mcp tool call failed: %v", err)
-	}
-
-	var text string
-	for _, content := range result.Content {
-		if textContent, ok := content.(mcp.TextContent); ok {
-			text += textContent.Text + "\n"
-		}
-	}
-
-	return text, nil
+	return c.mcpManager.CallTool(ctx, toolName, args)
 }
 
 func (c *MCPChatCapability) emitStreamFallback(content string, cb StreamCallback) {
@@ -368,14 +320,29 @@ func (c *MCPChatCapability) emitStreamFallback(content string, cb StreamCallback
 	cb(content)
 }
 
-// extractCityFromResponse 是当前 demo 级 weather 工具的参数提取兜底逻辑。
-func (c *MCPChatCapability) extractCityFromResponse(response string) string {
-	var toolCall AIToolCall
-	if err := json.Unmarshal([]byte(response), &toolCall); err == nil {
-		if args, ok := toolCall.Args["city"].(string); ok {
-			return args
-		}
+func (c *MCPChatCapability) renderToolList(tools []mcpgateway.ToolDefinition) string {
+	if len(tools) == 0 {
+		return "- 当前没有可用工具"
 	}
 
-	return ""
+	lines := make([]string, 0, len(tools))
+	sort.Slice(tools, func(i, j int) bool {
+		if tools[i].ServerName == tools[j].ServerName {
+			return tools[i].QualifiedName < tools[j].QualifiedName
+		}
+		return tools[i].ServerName < tools[j].ServerName
+	})
+
+	for _, tool := range tools {
+		displayName := tool.QualifiedName
+		if tool.AliasName != "" {
+			displayName = fmt.Sprintf("%s（短名: %s）", tool.QualifiedName, tool.AliasName)
+		}
+		line := fmt.Sprintf("- %s: %s", displayName, strings.TrimSpace(tool.Description))
+		if schema := strings.TrimSpace(tool.InputSchema); schema != "" {
+			line += fmt.Sprintf("；参数Schema: %s", schema)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }

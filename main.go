@@ -71,7 +71,7 @@ func main() {
 	redis.StartChatInstanceHeartbeat(ctx)
 	switch *role {
 	case "server":
-		if conf.MCPConfig.Enabled && conf.MCPConfig.AutoStart {
+		if conf.MCPConfig.ShouldAutoStartLocal() {
 			go func() {
 				httpAddr := conf.MCPConfig.HTTPAddr
 				if httpAddr == "" {
@@ -101,7 +101,7 @@ func main() {
 		worker.StartAllWorkers(ctx)
 		select {}
 	case "all":
-		if conf.MCPConfig.Enabled && conf.MCPConfig.AutoStart {
+		if conf.MCPConfig.ShouldAutoStartLocal() {
 			go func() {
 				httpAddr := conf.MCPConfig.HTTPAddr
 				if httpAddr == "" {

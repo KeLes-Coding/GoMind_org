@@ -2,8 +2,10 @@ package aihelper
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"GopherAI/common/mcpgateway"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -45,10 +47,10 @@ func (f *fakeChatProvider) GetProviderName() string {
 	return "fake"
 }
 
-func TestMCPChatCapabilityStreamResponseEmitsFallbackWhenNoToolCall(t *testing.T) {
+func TestMCPChatCapabilityStreamResponseFallsBackToProviderStreamWhenManagerDisabled(t *testing.T) {
 	capability := &MCPChatCapability{}
 	provider := &fakeChatProvider{
-		generateResp: &schema.Message{Content: "普通回答"},
+		streamResp: "普通回答",
 	}
 
 	var chunks []string
@@ -66,36 +68,28 @@ func TestMCPChatCapabilityStreamResponseEmitsFallbackWhenNoToolCall(t *testing.T
 	if len(chunks) != 1 || chunks[0] != "普通回答" {
 		t.Fatalf("expected callback to receive fallback content, got %#v", chunks)
 	}
-	if provider.streamInvoked {
-		t.Fatalf("expected provider stream to be skipped when no tool call")
+	if !provider.streamInvoked {
+		t.Fatalf("expected provider stream to run when MCP manager is unavailable")
 	}
 }
 
-func TestMCPChatCapabilityStreamResponseEmitsFallbackWhenToolCallFails(t *testing.T) {
-	capability := &MCPChatCapability{
-		mcpBaseURL: "http://127.0.0.1:1/mcp",
-	}
-	provider := &fakeChatProvider{
-		generateResp: &schema.Message{Content: `{"isToolCall":true,"toolName":"get_weather","args":{"city":"佛山"}}`},
-	}
-
-	var chunks []string
-	got, err := capability.StreamResponse(context.Background(), provider, []*schema.Message{
-		{Role: schema.User, Content: "佛山天气怎么样"},
-	}, func(msg string) {
-		chunks = append(chunks, msg)
+func TestRenderToolListIncludesQualifiedNameAndAlias(t *testing.T) {
+	capability := &MCPChatCapability{}
+	text := capability.renderToolList([]mcpgateway.ToolDefinition{
+		{
+			ServerName:    "local",
+			ToolName:      "get_weather",
+			QualifiedName: "local.get_weather",
+			AliasName:     "get_weather",
+			Description:   "查询天气",
+			InputSchema:   `{"type":"object"}`,
+		},
 	})
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+	if text == "" {
+		t.Fatal("expected rendered tool list to be non-empty")
 	}
-	if got == "" {
-		t.Fatalf("expected fallback content, got empty string")
-	}
-	if len(chunks) != 1 || chunks[0] != got {
-		t.Fatalf("expected callback to receive fallback content, got %#v want %q", chunks, got)
-	}
-	if provider.streamInvoked {
-		t.Fatalf("expected provider stream not to run when MCP setup fails")
+	if want := "local.get_weather"; !containsAll(text, want, "短名", "查询天气") {
+		t.Fatalf("expected rendered tool list to contain qualified name and description, got %q", text)
 	}
 }
 
@@ -111,3 +105,12 @@ func TestEmitStreamFallbackIgnoresEmptyContent(t *testing.T) {
 }
 
 var _ ChatProvider = (*fakeChatProvider)(nil)
+
+func containsAll(text string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			return false
+		}
+	}
+	return true
+}

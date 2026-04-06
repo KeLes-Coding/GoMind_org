@@ -8,3 +8,4 @@ logs/
 logger/
 uploads/
 .VSCodeCounter/
+.gocache/

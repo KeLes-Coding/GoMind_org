@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -109,10 +110,30 @@ type LogConfig struct {
 }
 
 type MCPConfig struct {
-	Enabled   bool   `toml:"enabled"`
-	AutoStart bool   `toml:"autoStart"`
-	BaseURL   string `toml:"baseUrl"`
-	HTTPAddr  string `toml:"httpAddr"`
+	Enabled        bool              `toml:"enabled"`
+	AutoStart      bool              `toml:"autoStart"`
+	AutoStartLocal bool              `toml:"autoStartLocal"`
+	BaseURL        string            `toml:"baseUrl"`
+	HTTPAddr       string            `toml:"httpAddr"`
+	DefaultServer  string            `toml:"defaultServer"`
+	Servers        []MCPServerConfig `toml:"servers"`
+}
+
+// MCPServerConfig 描述一个可被聚合层接入的 MCP Server。
+// 第一阶段先支持 HTTP / Streamable HTTP 与 stdio 两类传输。
+type MCPServerConfig struct {
+	Name           string            `toml:"name"`
+	Enabled        bool              `toml:"enabled"`
+	Transport      string            `toml:"transport"`
+	BaseURL        string            `toml:"baseUrl"`
+	Command        string            `toml:"command"`
+	Args           []string          `toml:"args"`
+	Headers        map[string]string `toml:"headers"`
+	TimeoutSeconds int               `toml:"timeoutSeconds"`
+	MaxResultChars int               `toml:"maxResultChars"`
+	ToolAllowlist  []string          `toml:"toolAllowlist"`
+	ToolBlocklist  []string          `toml:"toolBlocklist"`
+	Origin         string            `toml:"origin"`
 }
 
 type Config struct {
@@ -170,4 +191,83 @@ func GetConfig() *Config {
 		_ = InitConfig()
 	}
 	return config
+}
+
+// EffectiveServers 返回启用且可用的 MCP Server 配置列表。
+// 为兼容旧配置，当未声明 servers 时，会根据旧字段兜底构造一个 local server。
+func (c *MCPConfig) EffectiveServers() []MCPServerConfig {
+	if c == nil || !c.Enabled {
+		return nil
+	}
+
+	servers := make([]MCPServerConfig, 0, len(c.Servers)+1)
+	for _, server := range c.Servers {
+		normalized := server.normalized()
+		if !normalized.Enabled {
+			continue
+		}
+		if normalized.Name == "" {
+			continue
+		}
+		if normalized.Transport == "stdio" && strings.TrimSpace(normalized.Command) == "" {
+			continue
+		}
+		if normalized.Transport != "stdio" && strings.TrimSpace(normalized.BaseURL) == "" {
+			continue
+		}
+		servers = append(servers, normalized)
+	}
+
+	if len(servers) > 0 {
+		return servers
+	}
+
+	legacyBaseURL := strings.TrimSpace(c.BaseURL)
+	if legacyBaseURL == "" {
+		legacyBaseURL = "http://localhost:29871/mcp"
+	}
+	return []MCPServerConfig{
+		{
+			Name:           "local",
+			Enabled:        true,
+			Transport:      "streamable_http",
+			BaseURL:        legacyBaseURL,
+			TimeoutSeconds: 15,
+			MaxResultChars: 8000,
+			Origin:         "local",
+		},
+	}
+}
+
+// ShouldAutoStartLocal 判断当前进程是否需要自动拉起本地 MCP Server。
+// 这里同时兼容旧字段 autoStart 与新字段 autoStartLocal。
+func (c *MCPConfig) ShouldAutoStartLocal() bool {
+	if c == nil || !c.Enabled {
+		return false
+	}
+	if c.AutoStartLocal {
+		return true
+	}
+	return c.AutoStart
+}
+
+func (c MCPServerConfig) normalized() MCPServerConfig {
+	c.Name = strings.TrimSpace(c.Name)
+	c.Transport = strings.ToLower(strings.TrimSpace(c.Transport))
+	c.BaseURL = strings.TrimSpace(c.BaseURL)
+	c.Command = strings.TrimSpace(c.Command)
+	c.Origin = strings.TrimSpace(c.Origin)
+	if c.Transport == "" {
+		c.Transport = "streamable_http"
+	}
+	if c.TimeoutSeconds <= 0 {
+		c.TimeoutSeconds = 15
+	}
+	if c.MaxResultChars <= 0 {
+		c.MaxResultChars = 8000
+	}
+	if c.Origin == "" {
+		c.Origin = "third_party"
+	}
+	return c
 }

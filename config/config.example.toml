@@ -90,5 +90,29 @@ maxSizeMB = 20
 [mcpConfig]
 enabled = true
 autoStart = true
+autoStartLocal = true
 baseUrl = "http://localhost:29871/mcp"
 httpAddr = ":29871"
+defaultServer = "local"
+
+[[mcpConfig.servers]]
+name = "local"
+enabled = true
+transport = "streamable_http"
+baseUrl = "http://localhost:29871/mcp"
+timeoutSeconds = 15
+maxResultChars = 8000
+origin = "local"
+toolAllowlist = ["get_weather"]
+toolBlocklist = []
+
+[[mcpConfig.servers]]
+name = "time"
+enabled = false
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-time"]
+timeoutSeconds = 15
+maxResultChars = 4000
+origin = "third_party"
+toolBlocklist = []
