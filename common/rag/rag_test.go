@@ -229,3 +229,24 @@ func TestFilterRetrievedDocumentsByActiveFiles(t *testing.T) {
 		t.Fatalf("expected only current version document to remain, got %q", got[0].ID)
 	}
 }
+
+func TestSplitStringsIntoBatches(t *testing.T) {
+	items := []string{
+		"1", "2", "3", "4", "5", "6",
+		"7", "8", "9", "10", "11", "12",
+	}
+
+	got := splitStringsIntoBatches(items, 10)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 batches, got %d", len(got))
+	}
+	if len(got[0]) != 10 {
+		t.Fatalf("expected first batch size 10, got %d", len(got[0]))
+	}
+	if len(got[1]) != 2 {
+		t.Fatalf("expected second batch size 2, got %d", len(got[1]))
+	}
+	if got[0][0] != "1" || got[1][1] != "12" {
+		t.Fatalf("unexpected batch content: %#v", got)
+	}
+}

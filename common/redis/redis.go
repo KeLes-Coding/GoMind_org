@@ -219,7 +219,7 @@ func DeleteRedisIndex(ctx context.Context, filename string) error {
 	if err := Rdb.Do(ctx, "FT.DROPINDEX", indexName).Err(); err != nil {
 		// 旧索引清理现在更多是“收尾治理动作”，并不适合把“索引本来就不存在”
 		// 当成 Redis 整体不可用来处理，否则会误伤后续真正需要走 Redis 的链路。
-		if strings.Contains(err.Error(), "Unknown index name") {
+		if isRedisIndexNotFoundError(err) {
 			return nil
 		}
 		setAvailability(false)

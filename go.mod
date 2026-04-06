@@ -6,16 +6,15 @@ require (
 	github.com/BurntSushi/toml v0.3.1
 	github.com/cloudwego/eino v0.5.14
 	github.com/cloudwego/eino-ext/components/embedding/ark v0.1.0
-	github.com/cloudwego/eino-ext/components/indexer/redis v0.0.0-20251111090228-91a10bbc864f
 	github.com/cloudwego/eino-ext/components/model/ollama v0.1.5
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.4
-	github.com/cloudwego/eino-ext/components/retriever/redis v0.0.0-20251111090228-91a10bbc864f
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/google/uuid v1.6.0
 	github.com/kaitai/gopherai-mcp v0.0.0
 	github.com/mark3labs/mcp-go v0.43.2
+	github.com/milvus-io/milvus/client/v2 v2.6.3
 	github.com/minio/minio-go/v7 v7.0.83
 	github.com/redis/go-redis/v9 v9.16.0
 	github.com/streadway/amqp v1.1.0
@@ -101,7 +100,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/meguminnnnnnnnn/go-openai v0.1.0 // indirect
 	github.com/milvus-io/milvus-proto/go-api/v2 v2.6.13 // indirect
-	github.com/milvus-io/milvus/client/v2 v2.6.3 // indirect
 	github.com/milvus-io/milvus/pkg/v2 v2.6.7-0.20251201120310-af64f2acba38 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect

@@ -212,7 +212,7 @@ func (r *RAGIndexer) IndexContent(ctx context.Context, source string, content []
 		})
 	}
 
-	vectors, err := r.embedding.EmbedStrings(ctx, texts)
+	vectors, err := r.embedTextsInBatches(ctx, texts)
 	if err != nil {
 		return fmt.Errorf("failed to embed chunk texts: %w", err)
 	}
@@ -228,6 +228,42 @@ func (r *RAGIndexer) IndexContent(ctx context.Context, source string, content []
 		return fmt.Errorf("failed to upsert documents to vector store: %w", err)
 	}
 	return nil
+}
+
+func (r *RAGIndexer) embedTextsInBatches(ctx context.Context, texts []string) ([][]float64, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	batches := splitStringsIntoBatches(texts, 10)
+	vectors := make([][]float64, 0, len(texts))
+	for _, batch := range batches {
+		embedded, err := r.embedding.EmbedStrings(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+		vectors = append(vectors, embedded...)
+	}
+	return vectors, nil
+}
+
+func splitStringsIntoBatches(items []string, batchSize int) [][]string {
+	if len(items) == 0 {
+		return nil
+	}
+	if batchSize <= 0 {
+		batchSize = len(items)
+	}
+
+	batches := make([][]string, 0, (len(items)+batchSize-1)/batchSize)
+	for start := 0; start < len(items); start += batchSize {
+		end := start + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batches = append(batches, items[start:end])
+	}
+	return batches
 }
 
 // DeleteIndex 删除指定文件对应的 Redis 向量索引。

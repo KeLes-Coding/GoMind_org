@@ -191,18 +191,21 @@ func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatPro
 		if err != nil {
 			log.Printf("Failed to parse AI response: %v", err)
 		}
+		c.emitStreamFallback(firstResp.Content, cb)
 		return firstResp.Content, nil
 	}
 
 	mcpClient, err := c.getMCPClient(ctx)
 	if err != nil {
 		applog.Categoryf(applog.CategoryMCP, "MCP client error user=%s base_url=%s err=%v", c.username, c.mcpBaseURL, err)
+		c.emitStreamFallback(firstResp.Content, cb)
 		return firstResp.Content, nil
 	}
 
 	toolResult, err := c.callMCPTool(ctx, mcpClient, toolCall.ToolName, toolCall.Args)
 	if err != nil {
 		applog.Categoryf(applog.CategoryMCP, "MCP tool call failed user=%s tool=%s args=%v err=%v", c.username, toolCall.ToolName, toolCall.Args, err)
+		c.emitStreamFallback(firstResp.Content, cb)
 		return firstResp.Content, nil
 	}
 
@@ -356,6 +359,13 @@ func (c *MCPChatCapability) callMCPTool(ctx context.Context, client *client.Clie
 	}
 
 	return text, nil
+}
+
+func (c *MCPChatCapability) emitStreamFallback(content string, cb StreamCallback) {
+	if cb == nil || content == "" {
+		return
+	}
+	cb(content)
 }
 
 // extractCityFromResponse 是当前 demo 级 weather 工具的参数提取兜底逻辑。
