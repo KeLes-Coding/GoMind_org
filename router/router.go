@@ -8,8 +8,8 @@ import (
 )
 
 func InitRouter() *gin.Engine {
-	gin.DefaultWriter = applog.UserWriter()
-	gin.DefaultErrorWriter = applog.FullWriter()
+	gin.DefaultWriter = applog.UserCategoryWriter(applog.CategoryHTTP)
+	gin.DefaultErrorWriter = applog.CategoryWriter(applog.CategoryHTTP)
 
 	r := gin.Default()
 	enterRouter := r.Group("/api/v1")

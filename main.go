@@ -16,6 +16,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
+
+	mcpserver "github.com/kaitai/gopherai-mcp/server"
 )
 
 func StartServer(addr string, port int) error {
@@ -69,6 +71,17 @@ func main() {
 	redis.StartChatInstanceHeartbeat(ctx)
 	switch *role {
 	case "server":
+		if conf.MCPConfig.Enabled && conf.MCPConfig.AutoStart {
+			go func() {
+				httpAddr := conf.MCPConfig.HTTPAddr
+				if httpAddr == "" {
+					httpAddr = ":29871"
+				}
+				if err := mcpserver.StartServer(httpAddr); err != nil {
+					applog.Categoryf(applog.CategoryMCP, "MCP server error addr=%s err=%v", httpAddr, err)
+				}
+			}()
+		}
 		// server 模式也需要跑聊天链路的 relay / persisted_version 补偿。
 		// 否则如果只启动 API，不启动独立 worker，消息 outbox 会无人处理。
 		go func() {
@@ -88,6 +101,17 @@ func main() {
 		worker.StartAllWorkers(ctx)
 		select {}
 	case "all":
+		if conf.MCPConfig.Enabled && conf.MCPConfig.AutoStart {
+			go func() {
+				httpAddr := conf.MCPConfig.HTTPAddr
+				if httpAddr == "" {
+					httpAddr = ":29871"
+				}
+				if err := mcpserver.StartServer(httpAddr); err != nil {
+					applog.Categoryf(applog.CategoryMCP, "MCP server error addr=%s err=%v", httpAddr, err)
+				}
+			}()
+		}
 		worker.StartAllWorkers(ctx)
 		if err := StartServer(host, port); err != nil {
 			panic(err)

@@ -108,6 +108,13 @@ type LogConfig struct {
 	MaxSizeMB int    `toml:"maxSizeMB"`
 }
 
+type MCPConfig struct {
+	Enabled   bool   `toml:"enabled"`
+	AutoStart bool   `toml:"autoStart"`
+	BaseURL   string `toml:"baseUrl"`
+	HTTPAddr  string `toml:"httpAddr"`
+}
+
 type Config struct {
 	EmailConfig        `toml:"emailConfig"`
 	RedisConfig        `toml:"redisConfig"`
@@ -121,6 +128,7 @@ type Config struct {
 	StorageConfig      `toml:"storageConfig"`
 	MilvusConfig       `toml:"milvusConfig"`
 	LogConfig          `toml:"logConfig"`
+	MCPConfig          `toml:"mcpConfig"`
 }
 
 type RedisKeyConfig struct {

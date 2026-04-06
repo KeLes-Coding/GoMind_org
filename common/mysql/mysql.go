@@ -29,7 +29,7 @@ func InitMysql() error {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=true&loc=Local", username, password, host, port, dbname, charset)
 
 	var gormLog gormlogger.Interface
-	gormWriter := stdlog.New(applog.FullWriter(), "\r\n", stdlog.LstdFlags)
+	gormWriter := stdlog.New(applog.CategoryWriter(applog.CategoryGorm), "\r\n", stdlog.LstdFlags)
 	if gin.Mode() == "debug" {
 		gormLog = gormlogger.New(gormWriter, gormlogger.Config{
 			SlowThreshold:             200 * time.Millisecond,

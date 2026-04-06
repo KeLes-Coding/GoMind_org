@@ -1,11 +1,11 @@
 package mcp
 
 import (
+	"GopherAI/common/applog"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 
@@ -175,6 +175,6 @@ func StartServer(httpAddr string) error {
 	mcpServer := NewMCPServer()
 
 	httpServer := server.NewStreamableHTTPServer(mcpServer)
-	log.Printf("HTTP MCP server listening on %s/mcp", httpAddr)
+	applog.Categoryf(applog.CategoryMCP, "HTTP MCP server listening on %s/mcp", httpAddr)
 	return httpServer.Start(httpAddr)
 }

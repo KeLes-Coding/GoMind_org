@@ -73,3 +73,9 @@ presignExpirySeconds = 300
 [logConfig]
 path = "logs/gomind.log"
 maxSizeMB = 20
+
+[mcpConfig]
+enabled = true
+autoStart = true
+baseUrl = "http://localhost:29871/mcp"
+httpAddr = ":29871"

@@ -1,6 +1,7 @@
 package applog
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -12,6 +13,11 @@ const (
 	defaultLogPath      = "logs/gomind.log"
 	defaultMaxSizeMB    = 20
 	defaultFileModePerm = 0o755
+
+	CategoryAIHelper = "aihelper"
+	CategoryMCP      = "mcp"
+	CategoryHTTP     = "http"
+	CategoryGorm     = "gorm"
 )
 
 type Config struct {
@@ -28,11 +34,14 @@ type rotatingFileWriter struct {
 }
 
 var (
-	setupOnce   sync.Once
-	fullWriter  io.Writer = os.Stderr
-	userWriter  io.Writer = os.Stdout
-	rotateError error
-	userLogger  = log.New(os.Stdout, "", log.LstdFlags)
+	setupOnce         sync.Once
+	fullWriter        io.Writer = os.Stderr
+	userWriter        io.Writer = os.Stdout
+	rotateError       error
+	userLogger        = log.New(os.Stdout, "", log.LstdFlags)
+	categoryWriters   = map[string]io.Writer{}
+	categoryLoggers   = map[string]*log.Logger{}
+	defaultCategories = []string{CategoryAIHelper, CategoryMCP, CategoryHTTP, CategoryGorm}
 )
 
 func Setup(cfg Config) error {
@@ -61,6 +70,24 @@ func Setup(cfg Config) error {
 		log.SetFlags(log.LstdFlags)
 		userLogger.SetOutput(userWriter)
 		userLogger.SetFlags(log.LstdFlags)
+
+		logDir := filepath.Dir(path)
+		for _, category := range defaultCategories {
+			categoryPath := filepath.Join(logDir, fmt.Sprintf("%s.log", category))
+			categoryWriter, err := newRotatingFileWriter(categoryPath, int64(maxSizeMB)*1024*1024)
+			if err != nil {
+				if rotateError == nil {
+					rotateError = err
+				}
+				categoryWriters[category] = fullWriter
+				categoryLoggers[category] = log.New(fullWriter, "", log.LstdFlags)
+				continue
+			}
+
+			writer := io.MultiWriter(fullWriter, categoryWriter)
+			categoryWriters[category] = writer
+			categoryLoggers[category] = log.New(writer, "", log.LstdFlags)
+		}
 	})
 
 	return rotateError
@@ -76,6 +103,28 @@ func UserWriter() io.Writer {
 
 func Userf(format string, args ...interface{}) {
 	userLogger.Printf(format, args...)
+}
+
+func CategoryWriter(category string) io.Writer {
+	if writer, ok := categoryWriters[category]; ok {
+		return writer
+	}
+	return fullWriter
+}
+
+func UserCategoryWriter(category string) io.Writer {
+	if writer, ok := categoryWriters[category]; ok {
+		return io.MultiWriter(os.Stdout, writer)
+	}
+	return userWriter
+}
+
+func Categoryf(category, format string, args ...interface{}) {
+	if logger, ok := categoryLoggers[category]; ok {
+		logger.Printf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 func newRotatingFileWriter(path string, maxBytes int64) (*rotatingFileWriter, error) {

@@ -33,15 +33,25 @@ func (w *VectorizeWorker) ProcessTask(ctx context.Context, taskData []byte) erro
 	log.Printf("Processing vectorize task: fileID=%s, version=%d", task.FileID, task.Version)
 
 	lockKey := fmt.Sprintf("lock:vectorize:%s:%d", task.FileID, task.Version)
-	locked, err := redis.AcquireLock(ctx, lockKey, 5*time.Minute)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
+	releaseLock := false
+	if redis.IsAvailable() {
+		locked, err := redis.AcquireLock(ctx, lockKey, 5*time.Minute)
+		if err != nil {
+			// Redis 锁是“放大保护”，不是唯一幂等来源。
+			// 只要数据库 claim 还能工作，就继续往下走，避免任务因为锁服务抖动卡死在 uploaded。
+			log.Printf("Redis lock unavailable, continue with DB claim only: fileID=%s version=%d err=%v", task.FileID, task.Version, err)
+		} else if !locked {
+			log.Printf("Task already processing: fileID=%s", task.FileID)
+			return nil
+		} else {
+			releaseLock = true
+		}
+	} else {
+		log.Printf("Redis unavailable, continue with DB claim only: fileID=%s version=%d", task.FileID, task.Version)
 	}
-	if !locked {
-		log.Printf("Task already processing: fileID=%s", task.FileID)
-		return nil
+	if releaseLock {
+		defer redis.ReleaseLock(ctx, lockKey)
 	}
-	defer redis.ReleaseLock(ctx, lockKey)
 
 	file, err := w.fileDAO.GetFileByID(ctx, task.FileID)
 	if err != nil {

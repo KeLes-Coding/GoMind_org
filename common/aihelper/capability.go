@@ -4,6 +4,7 @@ import (
 	"GopherAI/common/applog"
 	"GopherAI/common/observability"
 	"GopherAI/common/rag"
+	"GopherAI/config"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -112,9 +113,13 @@ type RAGMCPChatCapability struct {
 // NewMCPChatCapability 创建 MCP 工具编排能力。
 // 当前先沿用系统级 MCP server 地址，不把 server 配置放进用户数据库。
 func NewMCPChatCapability(username string) *MCPChatCapability {
+	baseURL := config.GetConfig().MCPConfig.BaseURL
+	if baseURL == "" {
+		baseURL = "http://localhost:29871/mcp"
+	}
 	return &MCPChatCapability{
 		username:   username,
-		mcpBaseURL: "http://localhost:8081/mcp",
+		mcpBaseURL: baseURL,
 	}
 }
 
@@ -150,13 +155,13 @@ func (c *MCPChatCapability) GenerateResponse(ctx context.Context, provider ChatP
 
 	mcpClient, err := c.getMCPClient(ctx)
 	if err != nil {
-		log.Printf("MCP client error: %v", err)
+		applog.Categoryf(applog.CategoryMCP, "MCP client error user=%s base_url=%s err=%v", c.username, c.mcpBaseURL, err)
 		return firstResp, nil
 	}
 
 	toolResult, err := c.callMCPTool(ctx, mcpClient, toolCall.ToolName, toolCall.Args)
 	if err != nil {
-		log.Printf("MCP tool call failed: %v", err)
+		applog.Categoryf(applog.CategoryMCP, "MCP tool call failed user=%s tool=%s args=%v err=%v", c.username, toolCall.ToolName, toolCall.Args, err)
 		return firstResp, nil
 	}
 
@@ -191,13 +196,13 @@ func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatPro
 
 	mcpClient, err := c.getMCPClient(ctx)
 	if err != nil {
-		log.Printf("MCP client error: %v", err)
+		applog.Categoryf(applog.CategoryMCP, "MCP client error user=%s base_url=%s err=%v", c.username, c.mcpBaseURL, err)
 		return firstResp.Content, nil
 	}
 
 	toolResult, err := c.callMCPTool(ctx, mcpClient, toolCall.ToolName, toolCall.Args)
 	if err != nil {
-		log.Printf("MCP tool call failed: %v", err)
+		applog.Categoryf(applog.CategoryMCP, "MCP tool call failed user=%s tool=%s args=%v err=%v", c.username, toolCall.ToolName, toolCall.Args, err)
 		return firstResp.Content, nil
 	}
 
@@ -259,7 +264,7 @@ func (c *MCPChatCapability) getMCPClient(ctx context.Context) (*client.Client, e
 		initRequest.Params.Capabilities = mcp.ClientCapabilities{}
 
 		if _, err := c.mcpClient.Initialize(ctx, initRequest); err != nil {
-			return nil, fmt.Errorf("mcp client initialize failed: %v", err)
+			return nil, fmt.Errorf("mcp client initialize failed base_url=%s: %v", c.mcpBaseURL, err)
 		}
 	}
 	return c.mcpClient, nil
