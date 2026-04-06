@@ -72,6 +72,10 @@ type AISnapshot struct {
 	RAGRetrievedFilesTotal       int64         `json:"rag_retrieved_files_total"`
 	RAGRetrievedChunksMax        int64         `json:"rag_retrieved_chunks_max"`
 	RAGRetrievedFilesMax         int64         `json:"rag_retrieved_files_max"`
+	RAGCacheHitTotal             int64         `json:"rag_cache_hit_total"`
+	RAGCacheMissTotal            int64         `json:"rag_cache_miss_total"`
+	RAGCacheInvalidationTotal    int64         `json:"rag_cache_invalidation_total"`
+	RAGStoreMode                 string        `json:"rag_store_mode"`
 }
 
 // RequestStat 是按“操作 + 模型类型”聚合后的请求统计。
@@ -178,12 +182,17 @@ type aiObserver struct {
 	ragRetrievedFilesTotal       int64
 	ragRetrievedChunksMax        int64
 	ragRetrievedFilesMax         int64
+	ragCacheHitTotal             int64
+	ragCacheMissTotal            int64
+	ragCacheInvalidationTotal    int64
+	ragStoreMode                 string
 }
 
 var globalAIObserver = &aiObserver{
-	requests:  make(map[string]*requestCounter),
-	models:    make(map[string]*modelCounter),
-	redisMode: "unknown",
+	requests:     make(map[string]*requestCounter),
+	models:       make(map[string]*modelCounter),
+	redisMode:    "unknown",
+	ragStoreMode: "unknown",
 }
 
 func requestKey(operation string, modelType string) string {
@@ -550,6 +559,42 @@ func RecordRAGFallback() {
 	globalAIObserver.ragFallbackTotal++
 }
 
+// RecordRAGCacheLookup 记录一次 RAG 查询缓存命中情况。
+func RecordRAGCacheLookup(hit bool) {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	if hit {
+		globalAIObserver.ragCacheHitTotal++
+		return
+	}
+	globalAIObserver.ragCacheMissTotal++
+}
+
+// RecordRAGCacheInvalidation 记录一次缓存失效动作删除了多少键。
+func RecordRAGCacheInvalidation(keys int) {
+	if keys <= 0 {
+		return
+	}
+
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.ragCacheInvalidationTotal += int64(keys)
+}
+
+// RecordRAGStoreMode 记录当前 RAG 主链路采用的存储模式。
+func RecordRAGStoreMode(mode string) {
+	if mode == "" {
+		return
+	}
+
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.ragStoreMode = mode
+}
+
 // SnapshotAI 返回当前 AI 可观测性的完整快照。
 func SnapshotAI() AISnapshot {
 	globalAIObserver.mu.Lock()
@@ -638,5 +683,9 @@ func SnapshotAI() AISnapshot {
 		RAGRetrievedFilesTotal:       globalAIObserver.ragRetrievedFilesTotal,
 		RAGRetrievedChunksMax:        globalAIObserver.ragRetrievedChunksMax,
 		RAGRetrievedFilesMax:         globalAIObserver.ragRetrievedFilesMax,
+		RAGCacheHitTotal:             globalAIObserver.ragCacheHitTotal,
+		RAGCacheMissTotal:            globalAIObserver.ragCacheMissTotal,
+		RAGCacheInvalidationTotal:    globalAIObserver.ragCacheInvalidationTotal,
+		RAGStoreMode:                 globalAIObserver.ragStoreMode,
 	}
 }

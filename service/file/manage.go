@@ -69,6 +69,7 @@ func ReindexFile(userID int64, fileID string) (*model.FileAsset, error) {
 	storageFileName := filepath.Base(fileAsset.StorageKey)
 	// 新增的统一共享索引不再按文件拆索引，因此 reindex 前必须补一次按 file_id 删 chunk。
 	// 否则同一份文件的旧版本 chunk 会继续留在共享索引里，和新版本结果一起被召回。
+	rag.InvalidateRetrievalScope(ctx, fileAsset.OwnerID, model.FileStatusReady, fileAsset.KBID)
 	if err := rag.DeleteIndexedFileDocuments(ctx, fileAsset.ID); err != nil {
 		return nil, fmt.Errorf("delete unified indexed documents before reindex failed: %w", err)
 	}

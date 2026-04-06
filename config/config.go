@@ -58,6 +58,7 @@ type Rabbitmq struct {
 }
 
 type RagModelConfig struct {
+	StoreMode           string `toml:"storeMode"`
 	RagEmbeddingModel   string `toml:"embeddingModel"`
 	RagEmbeddingAPIKey  string `toml:"embeddingApiKey"`
 	RagEmbeddingBaseURL string `toml:"embeddingBaseUrl"`
@@ -67,6 +68,8 @@ type RagModelConfig struct {
 	RagDocDir           string `toml:"docDir"`
 	RagBaseUrl          string `toml:"baseUrl"`
 	RagDimension        int    `toml:"dimension"`
+	QueryCacheTTL       int    `toml:"queryCacheTTLSeconds"`
+	IndexedCacheTTL     int    `toml:"indexedCacheTTLSeconds"`
 }
 
 type VoiceServiceConfig struct {
@@ -89,6 +92,17 @@ type StorageConfig struct {
 	PresignExpirySeconds       int    `toml:"presignExpirySeconds"`
 }
 
+type MilvusConfig struct {
+	Host       string `toml:"host"`
+	Port       int    `toml:"port"`
+	Database   string `toml:"database"`
+	Collection string `toml:"collection"`
+	Username   string `toml:"username"`
+	Password   string `toml:"password"`
+	EnableAuth bool   `toml:"enableAuth"`
+	Dimension  int    `toml:"dimension"`
+}
+
 type LogConfig struct {
 	Path      string `toml:"path"`
 	MaxSizeMB int    `toml:"maxSizeMB"`
@@ -105,6 +119,7 @@ type Config struct {
 	RagModelConfig     `toml:"ragModelConfig"`
 	VoiceServiceConfig `toml:"voiceServiceConfig"`
 	StorageConfig      `toml:"storageConfig"`
+	MilvusConfig       `toml:"milvusConfig"`
 	LogConfig          `toml:"logConfig"`
 }
 

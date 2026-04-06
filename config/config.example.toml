@@ -42,6 +42,7 @@ password = "guest"
 vhost = "/"
 
 [ragModelConfig]
+storeMode = "milvus_with_redis_cache"
 embeddingModel = "text-embedding-v4"
 embeddingApiKey = "your-embedding-api-key"
 embeddingBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -69,6 +70,18 @@ autoCreateBucket = true
 objectPrefix = ""
 uploadPresignExpirySeconds = 300
 presignExpirySeconds = 300
+
+[milvusConfig]
+host = "127.0.0.1"
+port = 19530
+database = ""
+collection = "rag_chunks"
+username = ""
+password = ""
+enableAuth = false
+dimension = 1024
+queryCacheTTLSeconds = 300
+indexedCacheTTLSeconds = 600
 
 [logConfig]
 path = "logs/gomind.log"

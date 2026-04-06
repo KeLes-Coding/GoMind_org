@@ -2,11 +2,15 @@ package rag
 
 import (
 	"GopherAI/common/applog"
+	commonMilvus "GopherAI/common/milvus"
 	"GopherAI/common/mysql"
 	"GopherAI/common/observability"
 	"GopherAI/common/redis"
-	redisPkg "GopherAI/common/redis"
 	"GopherAI/common/storage"
+	"GopherAI/common/vectorcache"
+	rediscache "GopherAI/common/vectorcache/redis"
+	"GopherAI/common/vectorruntime"
+	"GopherAI/common/vectorstore"
 	"GopherAI/config"
 	"GopherAI/dao"
 	"GopherAI/model"
@@ -19,14 +23,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	embeddingArk "github.com/cloudwego/eino-ext/components/embedding/ark"
-	redisIndexer "github.com/cloudwego/eino-ext/components/indexer/redis"
-	redisRetriever "github.com/cloudwego/eino-ext/components/retriever/redis"
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
-	redisCli "github.com/redis/go-redis/v9"
 )
 
 // IndexedFileMeta 描述一份文件资产在 RAG 侧需要下沉到 chunk 的核心身份信息。
@@ -44,13 +46,15 @@ type IndexedFileMeta struct {
 
 type RAGIndexer struct {
 	embedding embedding.Embedder
-	indexer   *redisIndexer.Indexer
+	store     vectorstore.Store
 	fileMeta  *IndexedFileMeta
 }
 
 type RAGQuery struct {
 	embedding embedding.Embedder
 	retriever retriever.Retriever
+	store     vectorstore.Store
+	cache     vectorcache.Cache
 	userID    int64
 }
 
@@ -150,58 +154,14 @@ func NewRAGIndexer(filename, embeddingModel string) (*RAGIndexer, error) {
 		return nil, fmt.Errorf("failed to create embedder: %w", err)
 	}
 
-	// 新写入链路改为落到共享索引中，后续聊天检索就能通过 owner/status/kb 过滤统一召回。
-	// 这里仍保留 filename 参与 key 构造，是为了兼容 file_id 缺失的极少数旧入口，避免 key 冲突。
-	if err := redisPkg.InitUnifiedRAGIndex(ctx, dimension); err != nil {
-		return nil, fmt.Errorf("failed to init unified redis index: %w", err)
-	}
-
-	rdb := redisPkg.Rdb
-	indexerConfig := &redisIndexer.IndexerConfig{
-		Client:    rdb,
-		KeyPrefix: redis.GenerateUnifiedRAGIndexPrefix(),
-		BatchSize: 10,
-		DocumentToHashes: func(ctx context.Context, doc *schema.Document) (*redisIndexer.Hashes, error) {
-			source := ""
-			if s, ok := doc.MetaData["source"].(string); ok {
-				source = s
-			}
-
-			return &redisIndexer.Hashes{
-				Key: buildSharedIndexDocumentKey(filename, doc),
-				Field2Value: map[string]redisIndexer.FieldValue{
-					// content 字段会被先做 embedding，再把向量写入 vector 字段。
-					"content": {Value: doc.Content, EmbedKey: "vector"},
-					// metadata 用来保留来源等非向量化信息，方便检索结果回传时做解释和展示。
-					"metadata": {Value: source},
-					// 下面这些字段是这轮新增的“文件资产元数据”。
-					// 设计目的不是单纯多存几个字段，而是让 chunk 在脱离数据库上下文时
-					// 依然能被解释、被引用、被追踪、被按版本治理。
-					"file_id":        {Value: normalizeTagValue(metadataString(doc.MetaData, "file_id"))},
-					"file_version":   {Value: metadataInt(doc.MetaData, "file_version")},
-					"file_name":      {Value: metadataString(doc.MetaData, "file_name")},
-					"storage_key":    {Value: metadataString(doc.MetaData, "storage_key")},
-					"content_sha256": {Value: normalizeTagValue(metadataString(doc.MetaData, "content_sha256"))},
-					"chunk_id":       {Value: normalizeTagValue(metadataString(doc.MetaData, "chunk_id"))},
-					"chunk_index":    {Value: metadataInt(doc.MetaData, "chunk_index")},
-					"total_chunks":   {Value: metadataInt(doc.MetaData, "total_chunks")},
-					"owner_id":       {Value: metadataInt64(doc.MetaData, "owner_id")},
-					"kb_id":          {Value: normalizeTagValue(metadataString(doc.MetaData, "kb_id"))},
-					"status":         {Value: normalizeTagValue(metadataString(doc.MetaData, "status"))},
-				},
-			}, nil
-		},
-	}
-	indexerConfig.Embedding = embedder
-
-	idx, err := redisIndexer.NewIndexer(ctx, indexerConfig)
+	store, err := vectorruntime.NewConfiguredStore(ctx, dimension)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create indexer: %w", err)
+		return nil, fmt.Errorf("failed to init milvus vector store: %w", err)
 	}
 
 	return &RAGIndexer{
 		embedding: embedder,
-		indexer:   idx,
+		store:     store,
 	}, nil
 }
 
@@ -228,7 +188,12 @@ func (r *RAGIndexer) IndexReader(ctx context.Context, source string, reader io.R
 // IndexContent 负责把原始文本切块后写入向量库。
 func (r *RAGIndexer) IndexContent(ctx context.Context, source string, content []byte) error {
 	chunks := SplitTextIntoChunks(string(content), DefaultChunkConfig())
-	docs := make([]*schema.Document, 0, len(chunks))
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	texts := make([]string, 0, len(chunks))
+	vectorDocs := make([]vectorstore.Document, 0, len(chunks))
 	for i, chunk := range chunks {
 		// 每个 chunk 都携带完整但克制的文件资产元数据。
 		// 这样后续无论是回答引用、问题排障还是版本治理，
@@ -239,18 +204,35 @@ func (r *RAGIndexer) IndexContent(ctx context.Context, source string, content []
 			Content:  chunk,
 			MetaData: chunkMeta,
 		}
-		docs = append(docs, doc)
+		texts = append(texts, chunk)
+		vectorDocs = append(vectorDocs, vectorstore.Document{
+			ID:       doc.ID,
+			Content:  doc.Content,
+			MetaData: doc.MetaData,
+		})
 	}
 
-	if _, err := r.indexer.Store(ctx, docs); err != nil {
-		return fmt.Errorf("failed to store documents: %w", err)
+	vectors, err := r.embedding.EmbedStrings(ctx, texts)
+	if err != nil {
+		return fmt.Errorf("failed to embed chunk texts: %w", err)
+	}
+	if len(vectors) != len(vectorDocs) {
+		return fmt.Errorf("embedded vector count mismatch: got %d want %d", len(vectors), len(vectorDocs))
+	}
+
+	for i := range vectorDocs {
+		vectorDocs[i].Vector = toFloat32Vector(vectors[i])
+	}
+
+	if err := r.store.UpsertDocuments(ctx, vectorDocs); err != nil {
+		return fmt.Errorf("failed to upsert documents to vector store: %w", err)
 	}
 	return nil
 }
 
 // DeleteIndex 删除指定文件对应的 Redis 向量索引。
 func DeleteIndex(ctx context.Context, filename string) error {
-	if err := redisPkg.DeleteRedisIndex(ctx, filename); err != nil {
+	if err := redis.DeleteRedisIndex(ctx, filename); err != nil {
 		return fmt.Errorf("failed to delete redis index: %w", err)
 	}
 	return nil
@@ -289,6 +271,8 @@ func NewRAGQuery(ctx context.Context, userID int64) (*RAGQuery, error) {
 	return &RAGQuery{
 		embedding: embedder,
 		retriever: nil,
+		store:     nil,
+		cache:     rediscache.NewCache(),
 		userID:    userID,
 	}, nil
 }
@@ -366,73 +350,91 @@ func (r *RAGQuery) RetrieveFromUserFiles(ctx context.Context, userID int64, quer
 // 1. 不再为每个 ready 文件单独创建 retriever；
 // 2. 过滤条件统一收口在索引层，而不是散落到聊天层和合并层。
 func (r *RAGQuery) RetrieveFromScope(ctx context.Context, query string, scope RetrievalScope) ([]*schema.Document, error) {
-	filterQuery := buildRetrieverFilterQuery(scope)
-	return r.retrieveFromIndex(ctx, query, redis.GenerateUnifiedRAGIndexName(), filterQuery)
+	queryTopK := 5
+	cacheKey := vectorcache.QueryKey{
+		OwnerID: scope.OwnerID,
+		Status:  scope.Status,
+		KBID:    scope.KBID,
+		Query:   query,
+		TopK:    queryTopK,
+	}
+	if vectorruntime.IsCacheEnabled() {
+		if docs, hit, err := r.getCachedDocuments(ctx, cacheKey); err == nil && hit {
+			return docs, nil
+		}
+	}
+
+	filter := vectorstore.SearchFilter{
+		OwnerID: scope.OwnerID,
+		Status:  scope.Status,
+		KBID:    scope.KBID,
+	}
+	docs, err := r.retrieveFromStore(ctx, query, filter)
+	if err != nil {
+		return nil, err
+	}
+	if vectorruntime.IsCacheEnabled() {
+		r.setCachedDocuments(ctx, cacheKey, docs)
+	}
+	return docs, nil
 }
 
 // RetrieveFromFile 从指定文件对应的索引里检索文档。
 func (r *RAGQuery) RetrieveFromFile(ctx context.Context, query, storageFileName string) ([]*schema.Document, error) {
-	return r.retrieveFromIndex(ctx, query, redis.GenerateIndexName(storageFileName), "@status:{ready}")
+	return r.retrieveFromStore(ctx, query, vectorstore.SearchFilter{
+		Status:     "ready",
+		StorageKey: storageFileName,
+	})
 }
 
-func (r *RAGQuery) retrieveFromIndex(ctx context.Context, query, indexName, filterQuery string) ([]*schema.Document, error) {
-	rdb := redisPkg.Rdb
-
-	retrieverConfig := &redisRetriever.RetrieverConfig{
-		Client:  rdb,
-		Index:   indexName,
-		Dialect: 2,
-		// 这轮把关键文件资产元数据一并带回聊天层。
-		// 这样 prompt 引用和后续质量治理就不再需要“先检索，再去数据库反查文件信息”。
-		ReturnFields: []string{
-			"content",
-			"metadata",
-			"file_id",
-			"file_version",
-			"file_name",
-			"storage_key",
-			"content_sha256",
-			"chunk_id",
-			"chunk_index",
-			"total_chunks",
-			"owner_id",
-			"kb_id",
-			"status",
-			"distance",
-		},
-		TopK:        5,
-		VectorField: "vector",
-		DocumentConverter: func(ctx context.Context, doc redisCli.Document) (*schema.Document, error) {
-			resp := &schema.Document{
-				ID:       doc.ID,
-				Content:  "",
-				MetaData: map[string]any{},
-			}
-			for field, val := range doc.Fields {
-				if field == "content" {
-					resp.Content = val
-				} else {
-					resp.MetaData[field] = val
-				}
-			}
-			return resp, nil
-		},
+func (r *RAGQuery) retrieveFromStore(ctx context.Context, query string, filter vectorstore.SearchFilter) ([]*schema.Document, error) {
+	if r.store == nil {
+		store, err := vectorruntime.NewConfiguredStore(ctx, config.GetConfig().RagModelConfig.RagDimension)
+		if err != nil {
+			return nil, fmt.Errorf("failed to init vector store: %w", err)
+		}
+		r.store = store
 	}
-	retrieverConfig.Embedding = r.embedding
 
-	rtr, err := redisRetriever.NewRetriever(ctx, retrieverConfig)
+	vectors, err := r.embedding.EmbedStrings(ctx, []string{query})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create retriever: %w", err)
+		return nil, fmt.Errorf("failed to embed query: %w", err)
+	}
+	if len(vectors) == 0 {
+		return nil, nil
 	}
 
-	retrieveOptions := make([]retriever.Option, 0, 1)
-	if filterQuery != "" {
-		retrieveOptions = append(retrieveOptions, redisRetriever.WithFilterQuery(filterQuery))
-	}
-
-	docs, err := rtr.Retrieve(ctx, query, retrieveOptions...)
+	results, err := r.store.Search(ctx, vectorstore.SearchRequest{
+		Vector: toFloat32Vector(vectors[0]),
+		TopK:   5,
+		Filter: filter,
+	})
 	if err != nil {
 		return nil, err
+	}
+
+	docs := make([]*schema.Document, 0, len(results))
+	for _, result := range results {
+		meta := map[string]any{
+			"metadata":       metadataString(result.MetaData, commonMilvus.FieldFileName),
+			"file_id":        result.MetaData[commonMilvus.FieldFileID],
+			"file_version":   result.MetaData[commonMilvus.FieldFileVersion],
+			"file_name":      result.MetaData[commonMilvus.FieldFileName],
+			"storage_key":    result.MetaData[commonMilvus.FieldStorageKey],
+			"content_sha256": result.MetaData[commonMilvus.FieldContentSHA256],
+			"chunk_id":       result.MetaData[commonMilvus.FieldChunkID],
+			"chunk_index":    result.MetaData[commonMilvus.FieldChunkIndex],
+			"total_chunks":   result.MetaData[commonMilvus.FieldTotalChunks],
+			"owner_id":       result.MetaData[commonMilvus.FieldOwnerID],
+			"kb_id":          result.MetaData[commonMilvus.FieldKBID],
+			"status":         result.MetaData[commonMilvus.FieldStatus],
+			"distance":       result.MetaData["distance"],
+		}
+		docs = append(docs, &schema.Document{
+			ID:       result.ID,
+			Content:  result.Content,
+			MetaData: meta,
+		})
 	}
 
 	// 统一索引下虽然已经在查询条件里带了 status，但这里仍保留一次兜底过滤。
@@ -896,15 +898,26 @@ func HasIndexedFileVersion(ctx context.Context, fileID string, version int) (boo
 		return false, fmt.Errorf("file id and version are required")
 	}
 
-	query := fmt.Sprintf("@file_id:{%s} @file_version:[%d %d]", escapeRedisTagValue(normalizeTagValue(fileID)), version, version)
-	keys, err := redisPkg.SearchDocumentKeysByQuery(ctx, redis.GenerateUnifiedRAGIndexName(), query, 1)
-	if err != nil {
-		if isRedisIndexNotFoundError(err) {
-			return false, nil
+	cache := rediscache.NewCache()
+	if vectorruntime.IsCacheEnabled() {
+		cached, err := cache.GetIndexedFileVersion(ctx, fileID, version)
+		if err == nil && cached {
+			return true, nil
 		}
-		return false, fmt.Errorf("search indexed file version failed: %w", err)
 	}
-	return len(keys) > 0, nil
+
+	store, err := vectorruntime.NewConfiguredStore(ctx, config.GetConfig().RagModelConfig.RagDimension)
+	if err != nil {
+		return false, fmt.Errorf("init vector store failed: %w", err)
+	}
+	exists, err := store.HasFileVersion(ctx, fileID, version)
+	if err != nil {
+		return false, err
+	}
+	if exists && vectorruntime.IsCacheEnabled() {
+		_ = cache.SetIndexedFileVersion(ctx, fileID, version, getIndexedCacheTTL())
+	}
+	return exists, nil
 }
 
 // SyncFileToUnifiedIndex 把当前 file_asset 的最新版本同步到共享索引。
@@ -915,6 +928,10 @@ func SyncFileToUnifiedIndex(ctx context.Context, file *model.FileAsset) error {
 	if file == nil {
 		return fmt.Errorf("file asset is required")
 	}
+
+	// 文件即将被重建当前版本内容时，先把与该 file_id 关联的查询缓存和存在性缓存清掉。
+	// 这样后续即使 Milvus 写入尚未完成，也不会继续复用旧版本缓存结果。
+	invalidateFileCache(ctx, file.ID)
 
 	// 共享索引模式下，写当前版本前先删除同 file_id 的历史 chunk，
 	// 这样无论是 reindex、失败重试，还是迁移自愈，都能保证最终只保留当前一版。
@@ -942,6 +959,11 @@ func SyncFileToUnifiedIndex(ctx context.Context, file *model.FileAsset) error {
 		return fmt.Errorf("index file into unified index failed: %w", err)
 	}
 
+	// 当前版本正式写入主存储后，再回填正向存在性缓存，供查询自愈快速判断。
+	if vectorruntime.IsCacheEnabled() {
+		_ = rediscache.NewCache().SetIndexedFileVersion(ctx, file.ID, file.Version, getIndexedCacheTTL())
+	}
+
 	// 旧的按文件索引到这里就不再是主链路了。
 	// 同步完共享索引后顺手清理旧索引，可以让 P0 的历史治理逐步自然收敛。
 	legacyIndexName := filepath.Base(file.StorageKey)
@@ -958,22 +980,14 @@ func DeleteIndexedFileDocuments(ctx context.Context, fileID string) error {
 		return fmt.Errorf("file id is required")
 	}
 
-	query := fmt.Sprintf("@file_id:{%s}", escapeRedisTagValue(normalizeTagValue(fileID)))
-	keys, err := redisPkg.SearchDocumentKeysByQuery(ctx, redis.GenerateUnifiedRAGIndexName(), query, 1000)
+	// 主数据删除前先清缓存，避免缓存继续返回即将被删除的旧结果。
+	invalidateFileCache(ctx, fileID)
+
+	store, err := vectorruntime.NewConfiguredStore(ctx, config.GetConfig().RagModelConfig.RagDimension)
 	if err != nil {
-		if isRedisIndexNotFoundError(err) {
-			// 共享索引还没建起来时，说明新链路数据尚不存在，此时删除动作直接视为成功。
-			return nil
-		}
-		return fmt.Errorf("search indexed file documents failed: %w", err)
+		return fmt.Errorf("init vector store failed: %w", err)
 	}
-	if len(keys) == 0 {
-		return nil
-	}
-	if err := redisPkg.DeleteKeys(ctx, keys); err != nil {
-		return fmt.Errorf("delete indexed file documents failed: %w", err)
-	}
-	return nil
+	return store.DeleteByFileID(ctx, fileID)
 }
 
 func atLeast(value, min int) int {
@@ -983,6 +997,101 @@ func atLeast(value, min int) int {
 	return value
 }
 
+// getCachedDocuments 尝试从 Redis 查询缓存恢复检索结果。
+// 缓存失败不会中断主链路，因为 Milvus 才是正式真相源。
+func (r *RAGQuery) getCachedDocuments(ctx context.Context, key vectorcache.QueryKey) ([]*schema.Document, bool, error) {
+	if r.cache == nil {
+		return nil, false, nil
+	}
+
+	cachedDocs, hit, err := r.cache.GetQueryDocuments(ctx, key)
+	if err != nil || !hit {
+		return nil, false, err
+	}
+
+	docs := make([]*schema.Document, 0, len(cachedDocs))
+	for _, doc := range cachedDocs {
+		docs = append(docs, &schema.Document{
+			ID:       doc.ID,
+			Content:  doc.Content,
+			MetaData: doc.MetaData,
+		})
+	}
+	return docs, true, nil
+}
+
+// setCachedDocuments 在主检索成功后回填 Redis 查询缓存。
+// 这里不返回错误给调用方，避免缓存抖动影响主检索成功结果。
+func (r *RAGQuery) setCachedDocuments(ctx context.Context, key vectorcache.QueryKey, docs []*schema.Document) {
+	if r.cache == nil || len(docs) == 0 {
+		return
+	}
+
+	cachedDocs := make([]vectorcache.CachedDocument, 0, len(docs))
+	for _, doc := range docs {
+		if doc == nil {
+			continue
+		}
+		cachedDocs = append(cachedDocs, vectorcache.CachedDocument{
+			ID:       doc.ID,
+			Content:  doc.Content,
+			MetaData: doc.MetaData,
+		})
+	}
+	if len(cachedDocs) == 0 {
+		return
+	}
+
+	_ = r.cache.SetQueryDocuments(ctx, key, cachedDocs, getQueryCacheTTL())
+}
+
+// invalidateFileCache 在文件删除、重建、版本切换时统一清理 Redis 侧缓存。
+// 这样缓存 miss 时会自然回落 Milvus，避免旧查询结果在缓存层继续存活。
+func invalidateFileCache(ctx context.Context, fileID string) {
+	if strings.TrimSpace(fileID) == "" {
+		return
+	}
+	if !vectorruntime.IsCacheEnabled() {
+		return
+	}
+	_ = rediscache.NewCache().InvalidateFile(ctx, fileID)
+}
+
+// invalidateScopeCache 在知识库范围或用户 ready 文件范围内做粗粒度缓存失效。
+// 当精确文件反向索引不完整时，这个范围级失效可以作为正确性兜底。
+func invalidateScopeCache(ctx context.Context, scope vectorcache.InvalidationScope) {
+	if !vectorruntime.IsCacheEnabled() {
+		return
+	}
+	_ = rediscache.NewCache().InvalidateScope(ctx, scope)
+}
+
+// InvalidateRetrievalScope 对指定 owner/status/kb 范围做查询缓存失效。
+// 文件删除、知识库重建等业务动作可调用它做范围级兜底清理。
+func InvalidateRetrievalScope(ctx context.Context, ownerID int64, status, kbID string) {
+	invalidateScopeCache(ctx, vectorcache.InvalidationScope{
+		OwnerID: ownerID,
+		Status:  status,
+		KBID:    kbID,
+	})
+}
+
+func getQueryCacheTTL() time.Duration {
+	seconds := config.GetConfig().RagModelConfig.QueryCacheTTL
+	if seconds <= 0 {
+		seconds = 300
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func getIndexedCacheTTL() time.Duration {
+	seconds := config.GetConfig().RagModelConfig.IndexedCacheTTL
+	if seconds <= 0 {
+		seconds = 600
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func isRedisIndexNotFoundError(err error) bool {
 	if err == nil {
 		return false
@@ -990,4 +1099,15 @@ func isRedisIndexNotFoundError(err error) bool {
 
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "unknown index name") || strings.Contains(msg, "no such index")
+}
+
+func toFloat32Vector(values []float64) []float32 {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]float32, 0, len(values))
+	for _, value := range values {
+		result = append(result, float32(value))
+	}
+	return result
 }

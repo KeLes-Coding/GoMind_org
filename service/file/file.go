@@ -150,6 +150,7 @@ func DeleteFile(userID int64, fileID string) error {
 	storageFileName := filepath.Base(fileAsset.StorageKey)
 	// 共享索引模式下，同一份文件的 chunk 不再通过“删整份文件索引”来清理，
 	// 而是需要先按 file_id 精确删除对应文档，避免后续统一检索把脏 chunk 继续召回。
+	rag.InvalidateRetrievalScope(ctx, fileAsset.OwnerID, model.FileStatusReady, fileAsset.KBID)
 	if err := rag.DeleteIndexedFileDocuments(ctx, fileAsset.ID); err != nil {
 		log.Printf("Failed to delete unified indexed documents for %s: %v", fileAsset.ID, err)
 	}

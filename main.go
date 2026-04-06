@@ -2,10 +2,13 @@ package main
 
 import (
 	"GopherAI/common/applog"
+	commonMilvus "GopherAI/common/milvus"
 	"GopherAI/common/mysql"
+	"GopherAI/common/observability"
 	"GopherAI/common/rabbitmq"
 	"GopherAI/common/redis"
 	rt "GopherAI/common/runtime"
+	"GopherAI/common/vectorruntime"
 	"GopherAI/config"
 	"GopherAI/router"
 	"GopherAI/worker"
@@ -30,6 +33,7 @@ func main() {
 	rt.InitInstanceInfo(*role)
 
 	conf := config.GetConfig()
+	observability.RecordRAGStoreMode(vectorruntime.CurrentStoreMode())
 	if err := applog.Setup(applog.Config{
 		Path:      conf.LogConfig.Path,
 		MaxSizeMB: conf.LogConfig.MaxSizeMB,
@@ -50,12 +54,18 @@ func main() {
 		log.Println("redis init success")
 	}
 
+	ctx := context.Background()
+	if err := commonMilvus.Init(ctx); err != nil {
+		log.Println("milvus init degraded, RAG vector store unavailable:", err)
+	} else {
+		log.Println("milvus init success")
+	}
+
 	rabbitmq.InitRabbitMQ()
 	log.Println("rabbitmq init success")
 
 	// 当前先统一使用一个根 context 管理进程级生命周期。
 	// 后续如果要做优雅停机，可以在这里对接 signal 和 cancel。
-	ctx := context.Background()
 	redis.StartChatInstanceHeartbeat(ctx)
 	switch *role {
 	case "server":

@@ -47,3 +47,30 @@ func TestRecordRAGFallback(t *testing.T) {
 		t.Fatalf("expected rag_fallback_total=2, got %d", snapshot.RAGFallbackTotal)
 	}
 }
+
+// TestRecordRAGCacheMetrics 验证 RAG 查询缓存命中、miss 和失效计数能被正确累计。
+func TestRecordRAGCacheMetrics(t *testing.T) {
+	globalAIObserver = &aiObserver{
+		requests: make(map[string]*requestCounter),
+		models:   make(map[string]*modelCounter),
+	}
+
+	RecordRAGCacheLookup(true)
+	RecordRAGCacheLookup(false)
+	RecordRAGCacheInvalidation(3)
+	RecordRAGStoreMode("milvus_with_redis_cache")
+
+	snapshot := SnapshotAI()
+	if snapshot.RAGCacheHitTotal != 1 {
+		t.Fatalf("expected rag_cache_hit_total=1, got %d", snapshot.RAGCacheHitTotal)
+	}
+	if snapshot.RAGCacheMissTotal != 1 {
+		t.Fatalf("expected rag_cache_miss_total=1, got %d", snapshot.RAGCacheMissTotal)
+	}
+	if snapshot.RAGCacheInvalidationTotal != 3 {
+		t.Fatalf("expected rag_cache_invalidation_total=3, got %d", snapshot.RAGCacheInvalidationTotal)
+	}
+	if snapshot.RAGStoreMode != "milvus_with_redis_cache" {
+		t.Fatalf("expected rag_store_mode to be milvus_with_redis_cache, got %q", snapshot.RAGStoreMode)
+	}
+}
