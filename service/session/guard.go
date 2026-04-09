@@ -16,6 +16,10 @@ const (
 	// 目标不是做最终形态的网关限流，而是先在应用层拦住明显异常流量。
 	defaultChatRateLimit       = 12
 	defaultChatRateLimitWindow = 30 * time.Second
+	// ownerMismatchRetryAfter 建议客户端在 owner mismatch 后做一次短退避。
+	ownerMismatchRetryAfter int64 = 800
+	// distributedLockRetryAfter 用于普通分布式锁竞争场景的建议退避时间。
+	distributedLockRetryAfter int64 = 300
 )
 
 type sessionOwnerGuardContextKey string
@@ -23,9 +27,9 @@ type sessionOwnerGuardContextKey string
 const ownerGuardContextKey sessionOwnerGuardContextKey = "session-owner-guard"
 
 type sessionOwnerGuard struct {
-	SessionID   string
-	OwnerID     string
-	FenceToken  int64
+	SessionID  string
+	OwnerID    string
+	FenceToken int64
 }
 
 func withSessionOwnerGuard(ctx context.Context, guard *sessionOwnerGuard) context.Context {
@@ -162,7 +166,11 @@ func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func(co
 				if currentOwner != "" {
 					observability.RecordSessionOwnerRouteMismatch()
 					logSessionTrace(execCtx, "owner_route_mismatch", "preferred=%s current=%s active=%d current_owner=%s", preferredOwner, currentInstanceID, len(activeInstances), currentOwner)
-					return codeExecutorResult{busy: true}
+					return codeExecutorResult{
+						busy:         true,
+						code:         code.CodeOwnerMismatch,
+						retryAfterMs: ownerMismatchRetryAfter,
+					}
 				}
 				logSessionTrace(execCtx, "owner_route_advisory", "preferred=%s current=%s active=%d current_owner=%s", preferredOwner, currentInstanceID, len(activeInstances), currentOwner)
 			}
@@ -175,7 +183,11 @@ func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func(co
 			} else if ownerLease == nil {
 				observability.RecordSessionOwnerRouteMismatch()
 				logSessionTrace(execCtx, "owner_lease_busy", "current=%s owner=%s state=%s", currentInstanceID, ownerState, myredis.CurrentMode())
-				return codeExecutorResult{busy: true}
+				return codeExecutorResult{
+					busy:         true,
+					code:         code.CodeOwnerMismatch,
+					retryAfterMs: ownerMismatchRetryAfter,
+				}
 			} else {
 				execCtx = withSessionOwnerGuard(execCtx, &sessionOwnerGuard{
 					SessionID:  sessionID,
@@ -203,7 +215,11 @@ func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func(co
 	if distributedLock == nil && myredis.IsAvailable() {
 		observability.RecordSessionLockBusy()
 		logSessionTrace(execCtx, "redis_lock_busy", "detail=distributed_lock_conflict")
-		return codeExecutorResult{busy: true}
+		return codeExecutorResult{
+			busy:         true,
+			code:         code.CodeTooManyRequests,
+			retryAfterMs: distributedLockRetryAfter,
+		}
 	}
 	if distributedLock == nil && !myredis.IsAvailable() {
 		observability.RecordSessionRedisLockDegrade()
@@ -225,8 +241,9 @@ func withSessionExecutionGuard(ctx context.Context, sessionID string, fn func(co
 }
 
 type codeExecutorResult struct {
-	code       code.Code
-	aiResponse string
-	err        error
-	busy       bool
+	code         code.Code
+	aiResponse   string
+	err          error
+	busy         bool
+	retryAfterMs int64
 }

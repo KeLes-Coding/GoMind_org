@@ -31,15 +31,30 @@ type AIHelper struct {
 	// summaryMessageCount 表示摘要已经覆盖了 messages 的前多少条。
 	contextSummary      string
 	summaryMessageCount int
+	// messageWindowStart 表示当前 messages 切片在“完整消息序列”中的起始下标。
+	// Full 模式下它恒为 0；Warm 模式下它用于表达“当前内存只保留了最近窗口”。
+	messageWindowStart int
 	// version 用于给“共享热状态快照”打版本号。
 	// 这样后续把状态同步到 Redis 时，可以知道这是哪一次会话推进之后产生的新快照。
 	version int64
 	// selectionSignature 用于标识当前 helper 绑定的模型/配置选择。
 	// 当会话切换 llmConfigId 或 chatMode 时，service 可以据此判断是否必须重建 helper。
 	selectionSignature string
+	// recoveryMode 显式区分当前 helper 是“热恢复服务态”还是“全量对账态”。
+	// 这样 service 可以在不读全量 DB 的情况下安全恢复最近窗口。
+	recoveryMode RecoveryMode
 }
 
 const maxContextMessages = 20
+
+// RecoveryMode 表示 helper 当前采用的恢复语义。
+// Warm 只要求“足够继续服务”，Full 则表示当前 messages 已视作完整对账基底。
+type RecoveryMode string
+
+const (
+	RecoveryModeWarm RecoveryMode = "warm"
+	RecoveryModeFull RecoveryMode = "full"
+)
 
 // NewAIHelper 创建新的 AIHelper。
 func NewAIHelper(model_ AIModel, SessionID string, selectionSignature string) *AIHelper {
@@ -92,6 +107,7 @@ func NewAIHelper(model_ AIModel, SessionID string, selectionSignature string) *A
 		SessionID:          SessionID,
 		version:            1,
 		selectionSignature: selectionSignature,
+		recoveryMode:       RecoveryModeFull,
 	}
 }
 
@@ -172,9 +188,11 @@ func (a *AIHelper) LoadHotState(state *model.SessionHotState) {
 
 	a.contextSummary = state.ContextSummary
 	a.summaryMessageCount = state.SummaryMessageCount
+	a.messageWindowStart = state.RecentMessagesStart
 	if state.Version > 0 {
 		a.version = state.Version
 	}
+	a.recoveryMode = RecoveryModeWarm
 }
 
 // ExportHotState 把 helper 当前“适合共享”的状态导出成快照。
@@ -205,10 +223,12 @@ func (a *AIHelper) ExportHotState() *model.SessionHotState {
 
 	return &model.SessionHotState{
 		SessionID:           a.SessionID,
+		SelectionSignature:  a.selectionSignature,
 		Version:             a.version,
 		UpdatedAt:           time.Now(),
 		ContextSummary:      a.contextSummary,
 		SummaryMessageCount: a.summaryMessageCount,
+		RecentMessagesStart: a.messageWindowStart + start,
 		RecentMessages:      recentMessages,
 	}
 }
@@ -225,6 +245,8 @@ func (a *AIHelper) LoadMessages(messages []model.Message) {
 		msg.SessionID = a.SessionID
 		a.messages = append(a.messages, &msg)
 	}
+	a.messageWindowStart = 0
+	a.recoveryMode = RecoveryModeFull
 }
 
 // SetSaveFunc 允许外部注入消息持久化策略，便于测试或切换持久化实现。
@@ -247,9 +269,6 @@ func (a *AIHelper) SetSummaryState(summary string, summaryMessageCount int) {
 	if summaryMessageCount < 0 {
 		summaryMessageCount = 0
 	}
-	if summaryMessageCount > len(a.messages) {
-		summaryMessageCount = len(a.messages)
-	}
 	a.summaryMessageCount = summaryMessageCount
 }
 
@@ -258,6 +277,13 @@ func (a *AIHelper) GetSummaryState() (string, int) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.contextSummary, a.summaryMessageCount
+}
+
+// GetRecoveryMode 返回 helper 当前的恢复模式，供 service 做观测和分支控制。
+func (a *AIHelper) GetRecoveryMode() RecoveryMode {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.recoveryMode
 }
 
 // GetVersion 返回当前 helper 绑定的会话正式版本号。
@@ -369,13 +395,17 @@ func (a *AIHelper) ReconcileMessages(dbMessages []model.Message) {
 	}
 
 	a.messages = mergedMessages
+	a.messageWindowStart = 0
+	a.recoveryMode = RecoveryModeFull
 }
 
 // ensureContextSummary 保证“超过窗口之外的更早消息”都被压缩进摘要。
 // 这样 buildModelMessages 就可以稳定地发送“摘要 + 最近 N 条”。
 func (a *AIHelper) ensureContextSummary(ctx context.Context) error {
 	a.mu.RLock()
-	targetSummaryCount := len(a.messages) - maxContextMessages
+	// targetSummaryCount 使用“完整消息序列的绝对下标”表达，
+	// 这样 warm 模式下即使当前只保留 recent window，也能继续推进摘要覆盖范围。
+	targetSummaryCount := a.messageWindowStart + len(a.messages) - maxContextMessages
 	if targetSummaryCount < 0 {
 		targetSummaryCount = 0
 	}
@@ -386,8 +416,24 @@ func (a *AIHelper) ensureContextSummary(ctx context.Context) error {
 		return nil
 	}
 
-	messagesToSummarize := make([]*model.Message, targetSummaryCount-currentSummaryCount)
-	copy(messagesToSummarize, a.messages[currentSummaryCount:targetSummaryCount])
+	localSummaryStart := currentSummaryCount - a.messageWindowStart
+	if localSummaryStart < 0 {
+		// 当前窗口前存在“未被摘要覆盖、但又未保留在内存”的历史空洞时，
+		// 说明 helper 只能继续服务，不能再安全增量生成新摘要。
+		a.mu.RUnlock()
+		return nil
+	}
+	localSummaryEnd := targetSummaryCount - a.messageWindowStart
+	if localSummaryEnd > len(a.messages) {
+		localSummaryEnd = len(a.messages)
+	}
+	if localSummaryStart >= localSummaryEnd {
+		a.mu.RUnlock()
+		return nil
+	}
+
+	messagesToSummarize := make([]*model.Message, localSummaryEnd-localSummaryStart)
+	copy(messagesToSummarize, a.messages[localSummaryStart:localSummaryEnd])
 	a.mu.RUnlock()
 
 	summaryStart := time.Now()
@@ -426,7 +472,15 @@ func (a *AIHelper) buildModelMessages() []*schema.Message {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	start := a.summaryMessageCount
+	// start 仍然使用当前切片内的局部下标，但 summaryMessageCount 本身表达的是绝对覆盖位置。
+	// 因此 Warm 模式下需要先减去 messageWindowStart，才能算出当前切片里该从哪里开始拼接。
+	start := a.summaryMessageCount - a.messageWindowStart
+	if start < 0 {
+		start = 0
+	}
+	if start > len(a.messages) {
+		start = len(a.messages)
+	}
 	if len(a.messages)-start > maxContextMessages {
 		start = len(a.messages) - maxContextMessages
 	}

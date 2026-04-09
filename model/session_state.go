@@ -20,13 +20,17 @@ type SessionHotMessage struct {
 // 它只承载“最近窗口消息 + 摘要状态 + 版本号”这类共享数据，
 // 不承载模型实例、锁、函数指针等运行时对象。
 type SessionHotState struct {
-	SessionID           string              `json:"session_id"`
-	OwnerID             string              `json:"owner_id"`
-	FenceToken          int64               `json:"fence_token"`
-	Version             int64               `json:"version"`
-	UpdatedAt           time.Time           `json:"updated_at"`
-	ContextSummary      string              `json:"context_summary"`
-	SummaryMessageCount int                 `json:"summary_message_count"`
+	SessionID           string    `json:"session_id"`
+	SelectionSignature  string    `json:"selection_signature,omitempty"`
+	OwnerID             string    `json:"owner_id"`
+	FenceToken          int64     `json:"fence_token"`
+	Version             int64     `json:"version"`
+	UpdatedAt           time.Time `json:"updated_at"`
+	ContextSummary      string    `json:"context_summary"`
+	SummaryMessageCount int       `json:"summary_message_count"`
+	// RecentMessagesStart 表示 recent_messages 在完整消息序列中的起始下标。
+	// 这样 warm resume 时就能知道“当前窗口前面省略了多少条消息”，
+	// 避免把 summary_message_count 误当成当前切片内的局部索引。
+	RecentMessagesStart int                 `json:"recent_messages_start"`
 	RecentMessages      []SessionHotMessage `json:"recent_messages"`
 }
-

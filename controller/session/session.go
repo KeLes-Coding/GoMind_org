@@ -101,9 +101,27 @@ func buildChatTimeoutContext(c *gin.Context, timeout time.Duration) (context.Con
 	return context.WithTimeout(c.Request.Context(), timeout)
 }
 
+func suggestedRetryAfterMs(code_ code.Code) int64 {
+	switch code_ {
+	case code.CodeOwnerMismatch:
+		return 800
+	case code.CodeTooManyRequests:
+		return 300
+	default:
+		return 0
+	}
+}
+
 // writeSSEError 用统一 JSON 结构把错误写回流式前端。
 // 这里不用普通 JSON 响应，是因为流式接口已经进入 SSE 协议，前端需要继续按 data: 行解析。
 func writeSSEError(c *gin.Context, code_ code.Code) {
+	retryAfterMs := suggestedRetryAfterMs(code_)
+	if retryAfterMs > 0 {
+		c.Writer.Header().Set("Retry-After-Ms", fmt.Sprintf("%d", retryAfterMs))
+		_, _ = c.Writer.WriteString(fmt.Sprintf("data: {\"type\":\"error\",\"status_code\":%d,\"message\":\"%s\",\"retry_after_ms\":%d}\n\n", code_, code_.Msg(), retryAfterMs))
+		c.Writer.Flush()
+		return
+	}
 	_, _ = c.Writer.WriteString(fmt.Sprintf("data: {\"type\":\"error\",\"status_code\":%d,\"message\":\"%s\"}\n\n", code_, code_.Msg()))
 	c.Writer.Flush()
 }
@@ -146,6 +164,7 @@ func GetSessionInfo(c *gin.Context) {
 
 	info, code_ := session.GetSessionInfo(userName, sessionID)
 	if code_ != code.CodeSuccess {
+		res.RetryAfterMs = suggestedRetryAfterMs(code_)
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
 	}
@@ -182,6 +201,7 @@ func CreateSessionAndSendMessage(c *gin.Context) {
 		ChatMode:    req.ChatMode,
 	})
 	if code_ != code.CodeSuccess {
+		res.RetryAfterMs = suggestedRetryAfterMs(code_)
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
 	}
@@ -253,6 +273,7 @@ func ChatSend(c *gin.Context) {
 		ChatMode:    req.ChatMode,
 	})
 	if code_ != code.CodeSuccess {
+		res.RetryAfterMs = suggestedRetryAfterMs(code_)
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
 	}
@@ -307,6 +328,7 @@ func StopStream(c *gin.Context) {
 
 	partialContent, code_ := session.StopStreamGeneration(userName, req.SessionID)
 	if code_ != code.CodeSuccess {
+		res.RetryAfterMs = suggestedRetryAfterMs(code_)
 		c.JSON(http.StatusOK, res.CodeOf(code_))
 		return
 	}

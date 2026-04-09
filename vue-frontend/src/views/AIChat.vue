@@ -731,6 +731,8 @@ export default {
     const activeAssistantIndex = ref(-1)
     // 区分用户手动停止与请求异常中断。
     const manualStopRequested = ref(false)
+    const OWNER_MISMATCH_CODE = 2014
+    const MAX_OWNER_MISMATCH_RETRIES = 2
 
     const renderMarkdown = (text) => {
       if (!text && text !== '') return ''
@@ -752,6 +754,58 @@ export default {
       status: normalizeMessageStatus(status),
       ...extra
     })
+
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
+    const resolveRetryAfterMs = (value, fallback = 800) => {
+      const numeric = Number(value)
+      if (!Number.isFinite(numeric) || numeric <= 0) {
+        return fallback
+      }
+      return Math.min(Math.max(Math.floor(numeric), 100), 3000)
+    }
+
+    const buildServerError = (statusCode, message, retryAfterMs = 0) => {
+      const error = new Error(message || '请求失败')
+      error.serverCode = Number(statusCode || 0)
+      error.retryAfterMs = resolveRetryAfterMs(retryAfterMs, 800)
+      return error
+    }
+
+    const isOwnerMismatchError = (error) => Number(error?.serverCode) === OWNER_MISMATCH_CODE
+
+    const postWithOwnerRetry = async (url, body, options = {}) => {
+      const maxRetries = typeof options.maxRetries === 'number' ? options.maxRetries : MAX_OWNER_MISMATCH_RETRIES
+      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        const response = await api.post(url, body, options.requestConfig || {})
+        if (response.data?.status_code === 1000) {
+          return response
+        }
+
+        if (response.data?.status_code === OWNER_MISMATCH_CODE && attempt < maxRetries) {
+          await delay(resolveRetryAfterMs(response.data?.retry_after_ms, 800))
+          continue
+        }
+
+        throw buildServerError(
+          response.data?.status_code,
+          response.data?.status_msg || 'Send failed',
+          response.data?.retry_after_ms || 0
+        )
+      }
+    }
+
+    const buildSessionRoutingHeaders = (sessionId) => {
+      const normalizedId = String(sessionId || '').trim()
+      if (!normalizedId || normalizedId === 'temp') {
+        return {}
+      }
+      // 网关层若要做 session 级粘性路由，应优先基于该 header 做哈希，
+      // 这样无需解析请求体，就能在入口层把已有会话稳定打到同一实例。
+      return {
+        'X-Chat-Session-ID': normalizedId
+      }
+    }
 
     const buildSessionTitle = (question) => {
       const title = String(question || '').trim()
@@ -1133,9 +1187,7 @@ export default {
       }
 
       if (parsed.type === 'error') {
-        const error = new Error(parsed.message || '流式响应失败')
-        error.serverCode = parsed.status_code
-        throw error
+        throw buildServerError(parsed.status_code, parsed.message || '流式响应失败', parsed.retry_after_ms || 0)
       }
     }
 
@@ -1603,7 +1655,9 @@ export default {
 
     const loadHistoryIntoSession = async (sessionId) => {
       const targetSession = ensureSessionEntry(sessionId)
-      const response = await api.post('/AI/chat/history', { sessionId })
+      const response = await api.post('/AI/chat/history', { sessionId }, {
+        headers: buildSessionRoutingHeaders(sessionId)
+      })
       if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.history)) {
         targetSession.messages = response.data.history.map(mapHistoryItemToMessage)
         return
@@ -1677,7 +1731,9 @@ export default {
 
       try {
         if (targetSessionId) {
-          const response = await api.post('/AI/chat/stop', { sessionId: targetSessionId })
+          const response = await api.post('/AI/chat/stop', { sessionId: targetSessionId }, {
+            headers: buildSessionRoutingHeaders(targetSessionId)
+          })
           if (response.data?.status_code !== 1000 && response.data?.status_code !== 2012) {
             throw new Error(response.data?.status_msg || '停止生成失败')
           }
@@ -1766,6 +1822,9 @@ export default {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`
       }
+      if (!tempSession.value && currentSessionId.value) {
+        Object.assign(headers, buildSessionRoutingHeaders(currentSessionId.value))
+      }
       const body = tempSession.value
         ? { question, llmConfigId: selectedConfigId.value, chatMode: selectedChatMode.value, modelType: '1' }
         : { question, llmConfigId: selectedConfigId.value, chatMode: selectedChatMode.value, modelType: '1', sessionId: currentSessionId.value }
@@ -1849,6 +1908,7 @@ export default {
       let streamError = null
       let mode = 'initial'
       let resumeAttempts = 0
+      let ownerMismatchRetries = 0
 
       try {
         while (!doneReceived) {
@@ -1867,6 +1927,11 @@ export default {
           } catch (error) {
             if (manualStopRequested.value || error.name === 'AbortError' || error.serverCode === 5004) {
               throw error
+            }
+            if (isOwnerMismatchError(error) && ownerMismatchRetries < MAX_OWNER_MISMATCH_RETRIES) {
+              ownerMismatchRetries += 1
+              await delay(resolveRetryAfterMs(error.retryAfterMs, 800))
+              continue
             }
             if (activeStreamId.value && activeStreamingSessionId.value && activeStreamingSessionId.value !== 'temp' && resumeAttempts < 2) {
               resumeAttempts += 1
@@ -1895,6 +1960,9 @@ export default {
         } else if (error.serverCode === 4002) {
           await setAssistantStatus('timeout')
           ElMessage.error(error.message || '请求超时')
+        } else if (isOwnerMismatchError(error)) {
+          await setAssistantStatus('failed')
+          ElMessage.error(error.message || '会话正在切换执行节点，请稍后重试')
         } else {
           await setAssistantStatus('failed')
           ElMessage.error(error.message || '流式响应异常')
@@ -1906,7 +1974,7 @@ export default {
 
     async function handleNormal(question) {
       if (tempSession.value) {
-        const response = await api.post('/AI/chat/send-new-session', {
+        const response = await postWithOwnerRetry('/AI/chat/send-new-session', {
           question,
           llmConfigId: selectedConfigId.value,
           chatMode: selectedChatMode.value,
@@ -1929,8 +1997,6 @@ export default {
           tempSession.value = false
           currentMessages.value = [...sessions.value[sessionId].messages]
           loadSessions()
-        } else {
-          throw new Error(response.data?.status_msg || 'Send failed')
         }
       } else {
         const targetSession = ensureSessionEntry(currentSessionId.value)
@@ -1940,12 +2006,16 @@ export default {
           targetSession.messages = sessionMsgs
         }
 
-        const response = await api.post('/AI/chat/send', {
+        const response = await postWithOwnerRetry('/AI/chat/send', {
           question,
           llmConfigId: selectedConfigId.value,
           chatMode: selectedChatMode.value,
           modelType: '1',
           sessionId: currentSessionId.value
+        }, {
+          requestConfig: {
+            headers: buildSessionRoutingHeaders(currentSessionId.value)
+          }
         })
         if (response.data && response.data.status_code === 1000) {
           sessionMsgs.push({
@@ -1954,9 +2024,6 @@ export default {
             meta: buildMessageMeta('completed')
           })
           currentMessages.value = [...sessionMsgs]
-        } else {
-          sessionMsgs.pop()
-          throw new Error(response.data?.status_msg || 'Send failed')
         }
       }
     }

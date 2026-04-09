@@ -20,6 +20,8 @@ const (
 	CodeIllegalPassword  Code = 2010
 	CodeTooManyRequests  Code = 2011
 	CodeInvalidUsername  Code = 2013
+	// CodeOwnerMismatch 表示当前会话的首选 owner 不在当前实例，客户端应按 retry-after 短暂重试。
+	CodeOwnerMismatch Code = 2014
 	// CodeChatNotRunning 表示用户请求 stop 时，当前会话并没有正在运行的流式任务。
 	CodeChatNotRunning Code = 2012
 
@@ -54,6 +56,7 @@ var msg = map[Code]string{
 	CodeTooManyRequests:  "请求过于频繁",
 	CodeInvalidUsername:  "用户名格式不合法",
 	CodeChatNotRunning:   "当前没有正在执行的对话任务",
+	CodeOwnerMismatch:    "会话当前正在切换执行节点，请稍后重试",
 
 	CodeForbidden: "权限不足",
 

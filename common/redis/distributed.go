@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,11 +19,11 @@ import (
 )
 
 const (
-	sessionLockTTL      = 2 * time.Minute
-	sessionHotStateTTL  = 30 * time.Minute
+	sessionLockTTL       = 2 * time.Minute
+	sessionHotStateTTL   = 30 * time.Minute
 	sessionOwnerLeaseTTL = 90 * time.Second
-	chatInstanceTTL     = 30 * time.Second
-	rateLimitDefaultTTL = 30 * time.Second
+	chatInstanceTTL      = 30 * time.Second
+	rateLimitDefaultTTL  = 30 * time.Second
 )
 
 var releaseLockScript = `
@@ -106,9 +107,17 @@ type SessionDistributedLock struct {
 type SessionHotStateSaveResult string
 
 type SessionOwnerLease struct {
-	SessionID string
-	OwnerID   string
+	SessionID  string
+	OwnerID    string
 	FenceToken int64
+}
+
+// ChatInstanceMeta 描述一个参与聊天 owner 选举的活跃实例元信息。
+// 当前至少包含实例角色和路由权重，后续可继续扩展负载、地域等维度。
+type ChatInstanceMeta struct {
+	InstanceID string `json:"instance_id"`
+	Role       string `json:"role"`
+	Weight     int    `json:"weight"`
 }
 
 const (
@@ -116,6 +125,39 @@ const (
 	SessionHotStateSaveIgnoredStale SessionHotStateSaveResult = "ignored_stale"
 	SessionHotStateSaveUnavailable  SessionHotStateSaveResult = "unavailable"
 )
+
+func normalizeChatInstanceWeight(weight int) int {
+	if weight <= 0 {
+		return 100
+	}
+	return weight
+}
+
+func decodeChatInstanceMeta(instanceID string, raw string) ChatInstanceMeta {
+	meta := ChatInstanceMeta{
+		InstanceID: instanceID,
+		Role:       raw,
+		Weight:     100,
+	}
+
+	// 兼容旧版本心跳值：旧值只有 role 纯字符串，没有 JSON 结构。
+	if !strings.HasPrefix(strings.TrimSpace(raw), "{") {
+		return meta
+	}
+
+	var parsed ChatInstanceMeta
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return meta
+	}
+	if strings.TrimSpace(parsed.InstanceID) == "" {
+		parsed.InstanceID = instanceID
+	}
+	if strings.TrimSpace(parsed.Role) == "" {
+		parsed.Role = meta.Role
+	}
+	parsed.Weight = normalizeChatInstanceWeight(parsed.Weight)
+	return parsed
+}
 
 // AcquireSessionDistributedLock 尝试获取 session 维度的 Redis 锁。
 // 如果 Redis 当前不可用，直接返回 nil，调用方会退回到本地锁方案；
@@ -326,7 +368,15 @@ func RegisterChatInstanceHeartbeat(ctx context.Context) error {
 		return nil
 	}
 	key := GenerateChatInstanceHeartbeatKey(rt.CurrentInstanceID())
-	if err := Rdb.Set(ctx, key, rt.CurrentRole(), chatInstanceTTL).Err(); err != nil {
+	payload, err := json.Marshal(ChatInstanceMeta{
+		InstanceID: rt.CurrentInstanceID(),
+		Role:       rt.CurrentRole(),
+		Weight:     rt.CurrentOwnerWeight(),
+	})
+	if err != nil {
+		return err
+	}
+	if err := Rdb.Set(ctx, key, string(payload), chatInstanceTTL).Err(); err != nil {
 		setAvailability(false)
 		return err
 	}
@@ -357,6 +407,22 @@ func StartChatInstanceHeartbeat(ctx context.Context) {
 
 // ListActiveChatInstances 列出当前参与聊天 owner 选举的活跃实例。
 func ListActiveChatInstances(ctx context.Context) ([]string, error) {
+	metas, err := ListActiveChatInstanceMetas(ctx)
+	if err != nil {
+		return nil, err
+	}
+	instances := make([]string, 0, len(metas))
+	for _, meta := range metas {
+		if strings.TrimSpace(meta.InstanceID) == "" {
+			continue
+		}
+		instances = append(instances, meta.InstanceID)
+	}
+	return instances, nil
+}
+
+// ListActiveChatInstanceMetas 列出当前活跃聊天实例及其用于路由的元信息。
+func ListActiveChatInstanceMetas(ctx context.Context) ([]ChatInstanceMeta, error) {
 	if !IsAvailable() {
 		return nil, nil
 	}
@@ -366,33 +432,80 @@ func ListActiveChatInstances(ctx context.Context) ([]string, error) {
 		setAvailability(false)
 		return nil, err
 	}
-	instances := make([]string, 0, len(keys))
+	metas := make([]ChatInstanceMeta, 0, len(keys))
 	prefix := "ai:instance:chat:"
 	for _, key := range keys {
 		instanceID := strings.TrimPrefix(key, prefix)
 		if strings.TrimSpace(instanceID) == "" {
 			continue
 		}
-		instances = append(instances, instanceID)
+		rawValue, readErr := Rdb.Get(ctx, key).Result()
+		if readErr != nil {
+			if readErr == redisCli.Nil {
+				continue
+			}
+			setAvailability(false)
+			return nil, readErr
+		}
+		metas = append(metas, decodeChatInstanceMeta(instanceID, rawValue))
 	}
-	sort.Strings(instances)
-	return instances, nil
+	sort.Slice(metas, func(i, j int) bool {
+		return metas[i].InstanceID < metas[j].InstanceID
+	})
+	return metas, nil
 }
 
-// ResolvePreferredSessionOwner 根据当前活跃实例集合，为某个 session 选出稳定的 hash owner。
+// scoreSessionOwnerHRW 为单个 (sessionID, instanceID) 组合计算加权 Rendezvous Hash 分数。
+// 当前采用加权 HRW 近似公式：score = weight / -ln(u)。
+// 这样权重越大，实例被选中的概率越高，同时仍保持 HRW 的局部重映射特性。
+func scoreSessionOwnerHRW(sessionID string, instanceID string, weight int) float64 {
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(sessionID))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(instanceID))
+
+	hashValue := hasher.Sum64()
+	// 将 64bit hash 映射到 (0,1] 区间，避免 ln(0)。
+	u := (float64(hashValue) + 1) / (float64(math.MaxUint64) + 1)
+	return float64(normalizeChatInstanceWeight(weight)) / -math.Log(u)
+}
+
+// selectPreferredSessionOwnerHRW 使用加权 HRW Rendezvous Hash 从活跃实例中选出首选 owner。
+// 相比简单取模，HRW 在实例上下线时只会让少量 session 重映射，更符合粘性路由场景。
+func selectPreferredSessionOwnerHRW(sessionID string, instances []ChatInstanceMeta) string {
+	if len(instances) == 0 {
+		return ""
+	}
+
+	bestInstance := ""
+	bestScore := -1.0
+	for _, instance := range instances {
+		score := scoreSessionOwnerHRW(sessionID, instance.InstanceID, instance.Weight)
+		// 分数更大时直接替换；
+		// 分数相同时按实例 ID 字典序稳定打破平局，避免不同进程出现不同选择。
+		if bestInstance == "" || score > bestScore || (score == bestScore && instance.InstanceID < bestInstance) {
+			bestInstance = instance.InstanceID
+			bestScore = score
+		}
+	}
+	return bestInstance
+}
+
+// ResolvePreferredSessionOwner 根据当前活跃实例集合，为某个 session 选出稳定的 HRW owner。
 func ResolvePreferredSessionOwner(ctx context.Context, sessionID string) (string, []string, error) {
-	instances, err := ListActiveChatInstances(ctx)
+	metas, err := ListActiveChatInstanceMetas(ctx)
 	if err != nil {
 		return "", nil, err
 	}
-	if len(instances) == 0 {
+	instances := make([]string, 0, len(metas))
+	for _, meta := range metas {
+		instances = append(instances, meta.InstanceID)
+	}
+	if len(metas) == 0 {
 		return rt.CurrentInstanceID(), instances, nil
 	}
 
-	hasher := fnv.New32a()
-	_, _ = hasher.Write([]byte(sessionID))
-	index := int(hasher.Sum32() % uint32(len(instances)))
-	return instances[index], instances, nil
+	return selectPreferredSessionOwnerHRW(sessionID, metas), instances, nil
 }
 
 // GetSessionOwnerLease 返回当前 session 的 owner lease 持有者。
@@ -515,7 +628,7 @@ func (l *SessionOwnerLease) StartSessionOwnerWatchdog(parent context.Context, on
 			}
 		}
 	}()
-	}
+}
 
 // ValidateSessionOwnerFence 检查当前请求持有的 owner/fence 是否仍然是最新写资格。
 // 第三阶段最终闭环里，这一步用于在真正落 DB / 写热状态前再次做资格确认，避免旧 owner 尾写。

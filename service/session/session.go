@@ -12,10 +12,18 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+)
+
+const (
+	// maxWarmResumeVersionLag 控制主链路允许直接采用热恢复的最大 version 滞后窗口。
+	// 如果 session.version 明显领先于 persisted_version，说明当前更多依赖“未完全落库”的运行态，
+	// 此时宁可退回全量对账，也不在主链路继续信任可能不完整的热快照。
+	maxWarmResumeVersionLag int64 = 8
 )
 
 // ensureOwnedSession 校验会话是否存在且归当前用户所有。
@@ -111,6 +119,85 @@ func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 	}
 }
 
+// applySessionMetadataToHelper 用 session 表中的正式元信息刷新 helper。
+// 这里不碰消息内容，只覆盖 version / summary 这类“会话级正式状态”。
+func applySessionMetadataToHelper(sess *model.Session, helper *aihelper.AIHelper) {
+	if sess == nil || helper == nil {
+		return
+	}
+	helper.SetVersion(sess.Version)
+	helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
+}
+
+// lightReconcileHelperWithSession 只做轻量元信息对齐，不读取全量消息。
+// 它用于进程内 helper 命中或 warm resume 命中后的主链路快速恢复。
+func lightReconcileHelperWithSession(sess *model.Session, helper *aihelper.AIHelper) code.Code {
+	if sess == nil || helper == nil {
+		return code.CodeInvalidParams
+	}
+	applySessionMetadataToHelper(sess, helper)
+	return code.CodeSuccess
+}
+
+// fullReconcileHelperWithDatabase 使用数据库完整消息序列重建 helper。
+// 这是异常兜底路径，只有热态不可信或缺失时才进入。
+func fullReconcileHelperWithDatabase(sess *model.Session, helper *aihelper.AIHelper) code.Code {
+	if sess == nil || helper == nil {
+		return code.CodeInvalidParams
+	}
+
+	start := time.Now()
+	msgs, err := messageDAO.GetMessagesBySessionID(sess.ID)
+	if err != nil {
+		log.Println("fullReconcileHelperWithDatabase GetMessagesBySessionID error:", err)
+		return code.CodeServerBusy
+	}
+
+	if len(msgs) > 0 {
+		helper.LoadMessages(msgs)
+	} else {
+		helper.LoadMessages(nil)
+	}
+	applySessionMetadataToHelper(sess, helper)
+	observability.RecordHelperFullReconcile(len(msgs), time.Since(start))
+	return code.CodeSuccess
+}
+
+// canWarmResumeFromHotState 判断当前 Redis 热状态是否足以直接支撑“继续服务”。
+// 这里刻意要求条件偏保守，宁可回退全量对账，也不让错误热态进入主路径。
+func canWarmResumeFromHotState(sess *model.Session, hotState *model.SessionHotState, currentLease *myredis.SessionOwnerLease, selectionSignature string) bool {
+	if sess == nil || hotState == nil {
+		return false
+	}
+	if hotState.SelectionSignature == "" || hotState.SelectionSignature != selectionSignature {
+		return false
+	}
+	if hotState.Version < sess.Version {
+		return false
+	}
+	if currentLease != nil && hotState.FenceToken < currentLease.FenceToken {
+		return false
+	}
+	if len(hotState.RecentMessages) == 0 && strings.TrimSpace(hotState.ContextSummary) == "" {
+		return false
+	}
+	// recent window 的起点不能落在 summary 覆盖范围之后，否则中间会出现“既不在摘要里，也不在 recent 里”的空洞。
+	if hotState.RecentMessagesStart > hotState.SummaryMessageCount {
+		return false
+	}
+	if sess.Version-sess.PersistedVersion > maxWarmResumeVersionLag {
+		return false
+	}
+	return true
+}
+
+func resolveBusyResultCode(result codeExecutorResult) code.Code {
+	if result.code != 0 {
+		return result.code
+	}
+	return code.CodeTooManyRequests
+}
+
 // syncHelperWithDatabase 将内存中的 helper 与数据库消息状态对齐。
 // 对齐策略：
 // 1. 如果 DB 最新消息已经存在于 helper 中，仅在消息数量落后时补齐缺口。
@@ -197,9 +284,8 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 	return code.CodeSuccess
 }
 
-// getOrSyncHelperWithHistory 获取当前会话的 helper，并补齐历史上下文。
-// 优先复用进程内缓存；如果没有，再从 DB/Redis 恢复状态并与数据库做一次对齐。
-// 这样既保留热状态恢复速度，也保证最终状态与 DB 一致。
+// getOrSyncHelperWithHistory 获取当前会话的 helper，并按“热恢复优先、全量对账兜底”的顺序恢复。
+// 主链路先尝试进程内 helper，再尝试 Redis warm resume，只有热态不可信时才回退 DB 全量对账。
 func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *model.Session, resolved *resolvedChatRequest) (*aihelper.AIHelper, code.Code) {
 	if resolved == nil || !aihelper.IsSupportedModelType(resolved.ModelType) {
 		return nil, code.CodeInvalidParams
@@ -211,9 +297,7 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 	if helper, exists := manager.GetAIHelper(userName, sessionID); exists {
 		if helper.MatchesSelection(selectionSignature) {
 			observability.RecordHelperRecover(observability.HelperRecoverSourceProcess)
-			helper.SetVersion(sess.Version)
-			helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
-			if code_ := syncHelperWithDatabase(sessionID, helper); code_ != code.CodeSuccess {
+			if code_ := lightReconcileHelperWithSession(sess, helper); code_ != code.CodeSuccess {
 				return nil, code_
 			}
 			return helper, code.CodeSuccess
@@ -226,51 +310,49 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 		log.Println("getOrCreateHelperWithHistory GetOrCreateAIHelper error:", err)
 		return nil, code.AIModelFail
 	}
+	applySessionMetadataToHelper(sess, helper)
 
-	// 新建 helper 后先加载 DB 历史消息，确保基础上下文完整。
-	msgs, err := messageDAO.GetMessagesBySessionID(sessionID)
-	if err != nil {
-		log.Println("getOrCreateHelperWithHistory GetMessagesBySessionID error:", err)
-		return nil, code.CodeServerBusy
-	}
-	if len(msgs) > 0 {
-		helper.LoadMessages(msgs)
-	}
-	helper.SetVersion(sess.Version)
-	helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
-
-	// 尝试用 Redis 热状态加速恢复；只有版本不落后于 DB 时才采纳，
-	// 否则继续以 DB 状态为准，避免把旧快照覆盖到新会话上。
 	hotState, err := myredis.GetSessionHotState(ctx, sessionID)
 	if err != nil {
 		observability.RecordRedisHotStateLookup(false)
 		logSessionTrace(ctx, "hot_state_read_fail", "err=%v", err)
 		log.Println("getOrCreateHelperWithHistory GetSessionHotState error:", err)
 	} else if hotState != nil {
+		observability.RecordHelperWarmResumeCandidate()
 		currentLease, leaseErr := myredis.GetSessionOwnerLeaseDetail(ctx, sessionID)
 		if leaseErr != nil {
+			observability.RecordHelperWarmResumeFallbackDB()
+			observability.RecordRedisHotStateLookup(false)
 			logSessionTrace(ctx, "owner_lease_read_fail", "err=%v", leaseErr)
-		}
-		// 第三阶段补充：如果热状态和当前 owner lease 的 fence token 冲突，
-		// 即使 version 没落后，也不能继续信任这份热快照，避免旧 owner 的同版本尾写被重新恢复。
-		if hotState.Version >= sess.Version && (currentLease == nil || hotState.FenceToken >= currentLease.FenceToken) {
+			log.Println("getOrCreateHelperWithHistory GetSessionOwnerLeaseDetail error:", leaseErr)
+		} else if canWarmResumeFromHotState(sess, hotState, currentLease, selectionSignature) {
+			warmResumeStart := time.Now()
 			observability.RecordRedisHotStateLookup(true)
 			observability.RecordHelperRecover(observability.HelperRecoverSourceRedis)
 			helper.LoadHotState(hotState)
+			if code_ := lightReconcileHelperWithSession(sess, helper); code_ != code.CodeSuccess {
+				return nil, code_
+			}
+			observability.RecordHelperWarmResumeApplied(time.Since(warmResumeStart))
+			manager.SetAIHelper(userName, sessionID, helper)
+			return helper, code.CodeSuccess
 		} else {
+			observability.RecordHelperWarmResumeFallbackDB()
 			observability.RecordRedisHotStateLookup(false)
-			logSessionTrace(ctx, "hot_state_stale", "redis_version=%d db_version=%d redis_fence=%d current_fence=%d", hotState.Version, sess.Version, hotState.FenceToken, func() int64 {
+			logSessionTrace(ctx, "hot_state_rejected", "redis_version=%d db_version=%d redis_fence=%d current_fence=%d redis_start=%d summary_count=%d", hotState.Version, sess.Version, hotState.FenceToken, func() int64 {
 				if currentLease == nil {
 					return 0
 				}
 				return currentLease.FenceToken
-			}())
+			}(), hotState.RecentMessagesStart, hotState.SummaryMessageCount)
 		}
 	} else {
 		observability.RecordRedisHotStateLookup(false)
 	}
+
+	// 热态未命中或不可信时，再回退到全量 DB 对账。
 	observability.RecordHelperRecover(observability.HelperRecoverSourceDB)
-	if code_ := syncHelperWithDatabase(sessionID, helper); code_ != code.CodeSuccess {
+	if code_ := fullReconcileHelperWithDatabase(sess, helper); code_ != code.CodeSuccess {
 		return nil, code_
 	}
 
@@ -370,9 +452,9 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 		return "", "", code.CodeServerBusy
 	}
 	if result.busy {
-		logSessionTrace(ctx, "busy", "detail=distributed_lock_busy")
+		logSessionTrace(ctx, "busy", "code=%d retry_after_ms=%d", resolveBusyResultCode(result), result.retryAfterMs)
 		observability.RecordRequest("create_sync", resolved.ModelType, false, time.Since(requestStart))
-		return "", "", code.CodeTooManyRequests
+		return "", "", resolveBusyResultCode(result)
 	}
 	if result.code != code.CodeSuccess {
 		logSessionTrace(ctx, "failed", "code=%d", result.code)
@@ -480,9 +562,9 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 		return code.CodeServerBusy
 	}
 	if result.busy {
-		logSessionTrace(ctx, "busy", "detail=distributed_lock_busy")
+		logSessionTrace(ctx, "busy", "code=%d retry_after_ms=%d", resolveBusyResultCode(result), result.retryAfterMs)
 		observability.RecordRequest("chat_stream", resolved.ModelType, false, time.Since(requestStart))
-		return code.CodeTooManyRequests
+		return resolveBusyResultCode(result)
 	}
 	if result.code != code.CodeSuccess {
 		logSessionTrace(ctx, "failed", "code=%d", result.code)
@@ -572,9 +654,9 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 		return "", code.CodeServerBusy
 	}
 	if result.busy {
-		logSessionTrace(ctx, "busy", "detail=distributed_lock_busy")
+		logSessionTrace(ctx, "busy", "code=%d retry_after_ms=%d", resolveBusyResultCode(result), result.retryAfterMs)
 		observability.RecordRequest("chat_sync", resolved.ModelType, false, time.Since(requestStart))
-		return "", code.CodeTooManyRequests
+		return "", resolveBusyResultCode(result)
 	}
 	if result.code != code.CodeSuccess {
 		logSessionTrace(ctx, "failed", "code=%d", result.code)

@@ -47,6 +47,15 @@ type AISnapshot struct {
 	HelperRecoverProcess         int64         `json:"helper_recover_process_total"`
 	HelperRecoverRedis           int64         `json:"helper_recover_redis_total"`
 	HelperRecoverDB              int64         `json:"helper_recover_db_total"`
+	HelperWarmResumeCandidate    int64         `json:"helper_warm_resume_candidate_total"`
+	HelperWarmResumeApplied      int64         `json:"helper_warm_resume_applied_total"`
+	HelperWarmResumeFallbackDB   int64         `json:"helper_warm_resume_fallback_db_total"`
+	HelperFullReconcileTotal     int64         `json:"helper_full_reconcile_total"`
+	HelperFullReconcileMsgTotal  int64         `json:"helper_full_reconcile_message_total"`
+	HelperWarmResumeLatencyMsMax int64         `json:"helper_warm_resume_latency_ms_max"`
+	HelperWarmResumeLatencyMsSum int64         `json:"helper_warm_resume_latency_ms_total"`
+	HelperFullReconcileMsMax     int64         `json:"helper_full_reconcile_latency_ms_max"`
+	HelperFullReconcileMsSum     int64         `json:"helper_full_reconcile_latency_ms_total"`
 	RedisHotStateHit             int64         `json:"redis_hot_state_hit"`
 	RedisHotStateMiss            int64         `json:"redis_hot_state_miss"`
 	RedisHotStateSaveFail        int64         `json:"redis_hot_state_save_fail"`
@@ -157,6 +166,15 @@ type aiObserver struct {
 	helperRecoverProcess         int64
 	helperRecoverRedis           int64
 	helperRecoverDB              int64
+	helperWarmResumeCandidate    int64
+	helperWarmResumeApplied      int64
+	helperWarmResumeFallbackDB   int64
+	helperFullReconcileTotal     int64
+	helperFullReconcileMsgTotal  int64
+	helperWarmResumeLatencyMsMax int64
+	helperWarmResumeLatencyMsSum int64
+	helperFullReconcileMsMax     int64
+	helperFullReconcileMsSum     int64
 	redisHotStateHit             int64
 	redisHotStateMiss            int64
 	redisHotStateSaveFail        int64
@@ -410,6 +428,45 @@ func RecordHelperRecover(source string) {
 	}
 }
 
+// RecordHelperWarmResumeCandidate 记录一次“当前请求具备热恢复候选条件”的机会。
+func RecordHelperWarmResumeCandidate() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.helperWarmResumeCandidate++
+}
+
+// RecordHelperWarmResumeApplied 记录一次真正采用 warm resume 的恢复，并累积耗时。
+func RecordHelperWarmResumeApplied(duration time.Duration) {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	latencyMs := duration.Milliseconds()
+	globalAIObserver.helperWarmResumeApplied++
+	globalAIObserver.helperWarmResumeLatencyMsSum += latencyMs
+	globalAIObserver.helperWarmResumeLatencyMsMax = maxInt64(globalAIObserver.helperWarmResumeLatencyMsMax, latencyMs)
+}
+
+// RecordHelperWarmResumeFallbackDB 记录一次热恢复候选最终回退到 DB 全量对账。
+func RecordHelperWarmResumeFallbackDB() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.helperWarmResumeFallbackDB++
+}
+
+// RecordHelperFullReconcile 记录一次全量对账及其消息规模、耗时。
+func RecordHelperFullReconcile(messageCount int, duration time.Duration) {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	latencyMs := duration.Milliseconds()
+	globalAIObserver.helperFullReconcileTotal++
+	globalAIObserver.helperFullReconcileMsgTotal += int64(messageCount)
+	globalAIObserver.helperFullReconcileMsSum += latencyMs
+	globalAIObserver.helperFullReconcileMsMax = maxInt64(globalAIObserver.helperFullReconcileMsMax, latencyMs)
+}
+
 // RecordRedisHotStateLookup 记录 Redis 热状态命中率。
 func RecordRedisHotStateLookup(hit bool) {
 	globalAIObserver.mu.Lock()
@@ -658,6 +715,15 @@ func SnapshotAI() AISnapshot {
 		HelperRecoverProcess:         globalAIObserver.helperRecoverProcess,
 		HelperRecoverRedis:           globalAIObserver.helperRecoverRedis,
 		HelperRecoverDB:              globalAIObserver.helperRecoverDB,
+		HelperWarmResumeCandidate:    globalAIObserver.helperWarmResumeCandidate,
+		HelperWarmResumeApplied:      globalAIObserver.helperWarmResumeApplied,
+		HelperWarmResumeFallbackDB:   globalAIObserver.helperWarmResumeFallbackDB,
+		HelperFullReconcileTotal:     globalAIObserver.helperFullReconcileTotal,
+		HelperFullReconcileMsgTotal:  globalAIObserver.helperFullReconcileMsgTotal,
+		HelperWarmResumeLatencyMsMax: globalAIObserver.helperWarmResumeLatencyMsMax,
+		HelperWarmResumeLatencyMsSum: globalAIObserver.helperWarmResumeLatencyMsSum,
+		HelperFullReconcileMsMax:     globalAIObserver.helperFullReconcileMsMax,
+		HelperFullReconcileMsSum:     globalAIObserver.helperFullReconcileMsSum,
 		RedisHotStateHit:             globalAIObserver.redisHotStateHit,
 		RedisHotStateMiss:            globalAIObserver.redisHotStateMiss,
 		RedisHotStateSaveFail:        globalAIObserver.redisHotStateSaveFail,
