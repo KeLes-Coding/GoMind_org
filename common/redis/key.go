@@ -59,3 +59,28 @@ func GenerateSessionOwnerFenceKey(sessionID string) string {
 func GenerateChatInstanceHeartbeatKey(instanceID string) string {
 	return fmt.Sprintf("ai:instance:chat:%s", instanceID)
 }
+
+// GenerateSessionActiveStreamKey 记录某个 session 当前正在运行的 active stream。
+func GenerateSessionActiveStreamKey(sessionID string) string {
+	return fmt.Sprintf("ai:session:active-stream:%s", sessionID)
+}
+
+// GenerateStreamMetaKey 保存某个 active stream 的恢复元数据。
+func GenerateStreamMetaKey(streamID string) string {
+	return fmt.Sprintf("ai:stream:meta:%s", streamID)
+}
+
+// GenerateStreamChunksKey 保存某个 active stream 最近一段 chunk 环形缓冲区。
+func GenerateStreamChunksKey(streamID string) string {
+	return fmt.Sprintf("ai:stream:chunks:%s", streamID)
+}
+
+// GenerateStreamSnapshotKey 保存某个 active stream 的整段文本快照。
+func GenerateStreamSnapshotKey(streamID string) string {
+	return fmt.Sprintf("ai:stream:snapshot:%s", streamID)
+}
+
+// GenerateStreamStopSignalKey 保存某个 active stream 的显式 stop 信号。
+func GenerateStreamStopSignalKey(streamID string) string {
+	return fmt.Sprintf("ai:stream:stop:%s", streamID)
+}

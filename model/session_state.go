@@ -12,6 +12,7 @@ type SessionHotMessage struct {
 	UserName   string    `json:"user_name"`
 	Content    string    `json:"content"`
 	IsUser     bool      `json:"is_user"`
+	Status     string    `json:"status,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 

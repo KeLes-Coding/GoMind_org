@@ -30,6 +30,7 @@ func AIRouter(r *gin.RouterGroup) {
 		r.POST("/chat/history", session.ChatHistory)
 		// stop is paired with streaming chat so the client can explicitly stop generation.
 		r.POST("/chat/stop", session.StopStream)
+		r.POST("/chat/resume-stream", session.ResumeStream)
 		r.POST("/chat/folder/create", session.CreateFolder)
 		r.POST("/chat/folder/rename", session.RenameFolder)
 		r.POST("/chat/folder/delete", session.DeleteFolder)

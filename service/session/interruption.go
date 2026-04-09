@@ -3,6 +3,7 @@ package session
 import (
 	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
+	myredis "GopherAI/common/redis"
 	"GopherAI/model"
 	"context"
 )
@@ -41,5 +42,36 @@ func StopStreamGeneration(userName string, sessionID string) (string, code.Code)
 	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
 		return "", code_
 	}
-	return globalActiveStreamRegistry.stop(userName, sessionID)
+
+	if partialContent, code_ := globalActiveStreamRegistry.stop(userName, sessionID); code_ == code.CodeSuccess {
+		if task := globalActiveStreamRegistry.getBySessionID(sessionID); task != nil {
+			_ = myredis.SaveActiveStreamStopSignal(context.Background(), task.streamID)
+		}
+		return partialContent, code.CodeSuccess
+	}
+
+	streamID, err := myredis.GetSessionActiveStream(context.Background(), sessionID)
+	if err != nil {
+		return "", code.CodeServerBusy
+	}
+	if streamID == "" {
+		return "", code.CodeChatNotRunning
+	}
+
+	meta, err := myredis.GetActiveStreamMeta(context.Background(), streamID)
+	if err != nil {
+		return "", code.CodeServerBusy
+	}
+	if meta == nil || meta.UserName != "" && meta.UserName != userName {
+		return "", code.CodeChatNotRunning
+	}
+
+	if err := myredis.SaveActiveStreamStopSignal(context.Background(), streamID); err != nil {
+		return "", code.CodeServerBusy
+	}
+	snapshot, snapshotErr := myredis.GetActiveStreamSnapshot(context.Background(), streamID)
+	if snapshotErr != nil || snapshot == nil {
+		return "", code.CodeSuccess
+	}
+	return snapshot.Content, code.CodeSuccess
 }

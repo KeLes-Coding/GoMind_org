@@ -75,6 +75,11 @@ type (
 		PartialContent string `json:"partialContent,omitempty"`
 		controller.Response
 	}
+	ResumeStreamRequest struct {
+		SessionID string `json:"sessionId" binding:"required"`
+		StreamID  string `json:"streamId" binding:"required"`
+		LastSeq   int64  `json:"lastSeq"`
+	}
 	AIObservabilityResponse struct {
 		controller.Response
 		Data observability.AISnapshot `json:"data"`
@@ -211,28 +216,7 @@ func CreateStreamSessionAndSendMessage(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Header("Cache-Control", "no-cache, no-transform")
 
-	ctx, cancel := buildChatTimeoutContext(c, streamChatTimeout)
-	defer cancel()
-
-	sessionID, code_ := session.CreateStreamSessionOnly(userName, userID, req.UserQuestion, session.ChatRequest{
-		ModelType:   req.ModelType,
-		LLMConfigID: req.LLMConfigID,
-		ChatMode:    req.ChatMode,
-	})
-	if code_ != code.CodeSuccess {
-		writeSSEError(c, code_)
-		return
-	}
-
-	writeSSEJSON(c, map[string]interface{}{
-		"type":      "session",
-		"sessionId": sessionID,
-	})
-	writeSSEJSON(c, map[string]interface{}{
-		"type": "ready",
-	})
-
-	code_ = session.ChatStreamSendWithControl(ctx, userName, sessionID, req.UserQuestion, session.ChatRequest{
+	_, code_ := session.CreateStreamSessionAndSendMessageWithControl(c.Request.Context(), userName, userID, req.UserQuestion, session.ChatRequest{
 		ModelType:   req.ModelType,
 		LLMConfigID: req.LLMConfigID,
 		ChatMode:    req.ChatMode,
@@ -301,14 +285,7 @@ func ChatStreamSend(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Header("Cache-Control", "no-cache, no-transform")
 
-	ctx, cancel := buildChatTimeoutContext(c, streamChatTimeout)
-	defer cancel()
-
-	writeSSEJSON(c, map[string]interface{}{
-		"type": "ready",
-	})
-
-	code_ := session.ChatStreamSendWithControl(ctx, userName, req.SessionID, req.UserQuestion, session.ChatRequest{
+	code_ := session.ChatStreamSendWithControl(c.Request.Context(), userName, req.SessionID, req.UserQuestion, session.ChatRequest{
 		ModelType:   req.ModelType,
 		LLMConfigID: req.LLMConfigID,
 		ChatMode:    req.ChatMode,
@@ -337,6 +314,29 @@ func StopStream(c *gin.Context) {
 	res.Success()
 	res.PartialContent = partialContent
 	c.JSON(http.StatusOK, res)
+}
+
+// ResumeStream 用于在流式连接被动断开后，按 streamId + lastSeq 继续挂回当前 active stream。
+func ResumeStream(c *gin.Context) {
+	req := new(ResumeStreamRequest)
+	userName := c.GetString("userName")
+	if err := c.ShouldBindJSON(req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"error": "Invalid parameters"})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("X-Accel-Buffering", "no")
+	c.Header("Cache-Control", "no-cache, no-transform")
+
+	code_ := session.ResumeStreamWithControl(c.Request.Context(), userName, req.SessionID, req.StreamID, req.LastSeq, http.ResponseWriter(c.Writer))
+	if code_ != code.CodeSuccess {
+		writeSSEError(c, code_)
+		return
+	}
 }
 
 func ChatHistory(c *gin.Context) {

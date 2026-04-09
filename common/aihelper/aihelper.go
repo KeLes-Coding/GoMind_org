@@ -101,6 +101,24 @@ func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save
 	a.AddMessageWithStatus(Content, UserName, IsUser, Save, model.MessageStatusCompleted)
 }
 
+func (a *AIHelper) appendMessage(message *model.Message, save bool) *model.Message {
+	if message == nil {
+		return nil
+	}
+
+	// 写切片时必须加锁；否则同一个 session 并发写入会有数据竞争风险。
+	a.mu.Lock()
+	a.messages = append(a.messages, message)
+	a.mu.Unlock()
+
+	if save && a.saveFunc != nil {
+		if _, err := a.saveFunc(message); err != nil {
+			log.Println("AIHelper appendMessage persist message error:", err)
+		}
+	}
+	return message
+}
+
 // AddMessageWithStatus 把一条消息写入当前 helper，并带上明确状态。
 // 之所以新增这个方法，而不是继续只保留 AddMessage，是因为 stop / timeout / partial
 // 这类中断场景需要把“消息内容”和“消息最终状态”一起落到持久化层。
@@ -117,20 +135,13 @@ func (a *AIHelper) AddMessageWithStatus(Content string, UserName string, IsUser 
 		Status:         status,
 	}
 
-	// 写切片时必须加锁；否则同一个 session 并发写入会有数据竞争风险。
-	a.mu.Lock()
-	a.messages = append(a.messages, &userMsg)
-	a.mu.Unlock()
+	return a.appendMessage(&userMsg, Save)
+}
 
-	if Save {
-		if _, err := a.saveFunc(&userMsg); err != nil {
-			// 持久化失败不应该把整个会话内存态直接回滚，否则会引入更复杂的上下文不一致。
-			// 这里先明确记日志，后续可以继续把失败消息做补偿扫描。
-			log.Println("AIHelper AddMessage persist message error:", err)
-		}
-	}
-
-	return &userMsg
+// AppendExistingMessage 把一个已经存在固定 message_key 的消息补回 helper。
+// 它主要给流式占位消息使用：同一条 assistant 消息会先落占位，再在终态时补内容。
+func (a *AIHelper) AppendExistingMessage(message *model.Message) *model.Message {
+	return a.appendMessage(message, false)
 }
 
 // LoadHotState 用共享热状态快照恢复 helper。
@@ -153,6 +164,7 @@ func (a *AIHelper) LoadHotState(state *model.SessionHotState) {
 			UserName:   msg.UserName,
 			Content:    msg.Content,
 			IsUser:     msg.IsUser,
+			Status:     model.MessageStatus(msg.Status),
 			CreatedAt:  msg.CreatedAt,
 		}
 		a.messages = append(a.messages, modelMsg)
@@ -186,6 +198,7 @@ func (a *AIHelper) ExportHotState() *model.SessionHotState {
 			UserName:   msg.UserName,
 			Content:    msg.Content,
 			IsUser:     msg.IsUser,
+			Status:     string(msg.Status),
 			CreatedAt:  msg.CreatedAt,
 		})
 	}
@@ -628,6 +641,61 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 	a.AddMessage(modelMsg.Content, userName, false, true)
 
 	return modelMsg, nil
+}
+
+// StreamResponseWithExistingAssistant 和 StreamResponse 类似，但最终 assistant 消息使用外部已确定的 message_key。
+// 这主要用于流式占位消息：先创建 streaming 占位，再在流结束时把完整内容补回同一条消息。
+func (a *AIHelper) StreamResponseWithExistingAssistant(userName string, ctx context.Context, cb StreamCallback, userQuestion string, assistantMessage *model.Message) (*model.Message, error) {
+	// 流式场景也要先把用户问题放入上下文，否则模型拿不到当前轮问题。
+	a.AddMessage(userQuestion, userName, true, true)
+
+	if err := a.ensureContextSummary(ctx); err != nil {
+		log.Printf("AIHelper StreamResponseWithExistingAssistant ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		return nil, err
+	}
+
+	messages := a.buildModelMessages()
+	usedSummary := false
+	if summary, _ := a.GetSummaryState(); summary != "" {
+		usedSummary = true
+	}
+
+	log.Printf("AIHelper StreamResponseWithExistingAssistant acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
+	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
+	if err != nil {
+		log.Printf("AIHelper StreamResponseWithExistingAssistant acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		return nil, fmt.Errorf("model concurrency limited: %w", err)
+	}
+	defer releasePermit()
+
+	emitted := false
+	log.Printf("AIHelper StreamResponseWithExistingAssistant invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
+	content, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
+		return !emitted
+	}, func(model AIModel) (string, error) {
+		return model.StreamResponse(ctx, messages, func(msg string) {
+			emitted = true
+			cb(msg)
+		})
+	})
+	if err != nil {
+		log.Printf("AIHelper StreamResponseWithExistingAssistant model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		return nil, err
+	}
+	log.Printf("AIHelper StreamResponseWithExistingAssistant model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(content))
+
+	finalAssistant := &model.Message{
+		MessageKey:     assistantMessage.MessageKey,
+		SessionID:      a.SessionID,
+		SessionVersion: assistantMessage.SessionVersion,
+		UserName:       userName,
+		Content:        content,
+		IsUser:         false,
+		Status:         model.MessageStatusCompleted,
+	}
+
+	a.AppendExistingMessage(finalAssistant)
+	return finalAssistant, nil
 }
 
 // GetModelType 返回当前 helper 绑定的模型类型。

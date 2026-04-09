@@ -723,6 +723,10 @@ export default {
     const activeAbortController = ref(null)
     // 记录当前流式响应对应的会话 ID，新会话开始时会先使用 temp。
     const activeStreamingSessionId = ref(null)
+    // activeStreamId / messageId / lastSeq 共同组成恢复当前流式响应的最小水位信息。
+    const activeStreamId = ref(null)
+    const activeMessageId = ref(null)
+    const activeStreamLastSeq = ref(0)
     // 指向当前 assistant 消息，便于更新停止、超时和失败状态。
     const activeAssistantIndex = ref(-1)
     // 区分用户手动停止与请求异常中断。
@@ -744,7 +748,10 @@ export default {
       return TERMINAL_STATUSES.has(normalized) || normalized === 'streaming' ? normalized : 'completed'
     }
 
-    const buildMessageMeta = (status) => ({ status: normalizeMessageStatus(status) })
+    const buildMessageMeta = (status, extra = {}) => ({
+      status: normalizeMessageStatus(status),
+      ...extra
+    })
 
     const buildSessionTitle = (question) => {
       const title = String(question || '').trim()
@@ -965,16 +972,68 @@ export default {
       if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
         return
       }
-      currentMessages.value[activeAssistantIndex.value].meta = buildMessageMeta(status)
+      const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
+      currentMessages.value[activeAssistantIndex.value].meta = buildMessageMeta(status, {
+        streamId: prevMeta.streamId || activeStreamId.value,
+        messageId: prevMeta.messageId || activeMessageId.value,
+        lastSeq: typeof prevMeta.lastSeq === 'number' ? prevMeta.lastSeq : activeStreamLastSeq.value
+      })
       currentMessages.value = [...currentMessages.value]
       await syncSessionMessagesFromCurrent()
     }
 
-    const appendAssistantChunk = async (chunk) => {
+    const patchActiveAssistantMeta = async (patch = {}) => {
       if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
         return
       }
+      const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
+      const nextStatus = patch.status ? normalizeMessageStatus(patch.status) : normalizeMessageStatus(prevMeta.status || 'streaming')
+      currentMessages.value[activeAssistantIndex.value].meta = {
+        ...prevMeta,
+        ...patch,
+        status: nextStatus
+      }
+      currentMessages.value = [...currentMessages.value]
+      await syncSessionMessagesFromCurrent()
+    }
+
+    const appendAssistantChunk = async (chunk, seq = null) => {
+      if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
+        return
+      }
+      if (seq !== null && Number(seq) <= activeStreamLastSeq.value) {
+        return
+      }
       currentMessages.value[activeAssistantIndex.value].content += chunk
+      if (seq !== null) {
+        activeStreamLastSeq.value = Number(seq)
+      }
+      const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
+      currentMessages.value[activeAssistantIndex.value].meta = {
+        ...prevMeta,
+        streamId: prevMeta.streamId || activeStreamId.value,
+        messageId: prevMeta.messageId || activeMessageId.value,
+        lastSeq: activeStreamLastSeq.value,
+        status: normalizeMessageStatus(prevMeta.status || 'streaming')
+      }
+      currentMessages.value = [...currentMessages.value]
+      await syncSessionMessagesFromCurrent()
+    }
+
+    const applyAssistantSnapshot = async (content, lastSeq) => {
+      if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
+        return
+      }
+      currentMessages.value[activeAssistantIndex.value].content = content || ''
+      activeStreamLastSeq.value = Number(lastSeq || 0)
+      const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
+      currentMessages.value[activeAssistantIndex.value].meta = {
+        ...prevMeta,
+        streamId: prevMeta.streamId || activeStreamId.value,
+        messageId: prevMeta.messageId || activeMessageId.value,
+        lastSeq: activeStreamLastSeq.value,
+        status: normalizeMessageStatus(prevMeta.status || 'streaming')
+      }
       currentMessages.value = [...currentMessages.value]
       await syncSessionMessagesFromCurrent()
     }
@@ -1004,11 +1063,51 @@ export default {
       }
 
       if (parsed.type === 'ready') {
+        if (parsed.streamId) {
+          activeStreamId.value = String(parsed.streamId)
+          await patchActiveAssistantMeta({ streamId: activeStreamId.value })
+        }
         return
       }
 
       if (parsed.type === 'chunk') {
-        await appendAssistantChunk(parsed.delta || '')
+        await appendAssistantChunk(parsed.delta || '', parsed.seq)
+        return
+      }
+
+      if (parsed.type === 'snapshot') {
+        if (parsed.streamId) {
+          activeStreamId.value = String(parsed.streamId)
+        }
+        if (parsed.messageId) {
+          activeMessageId.value = String(parsed.messageId)
+        }
+        await applyAssistantSnapshot(parsed.content || '', parsed.lastSeq || 0)
+        return
+      }
+
+      if (parsed.type === 'done') {
+        if (typeof parsed.lastSeq === 'number') {
+          activeStreamLastSeq.value = parsed.lastSeq
+        }
+        loading.value = false
+        await setAssistantStatus(parsed.status || 'completed')
+        return 'done'
+      }
+
+      if (parsed.type === 'session') {
+        if (parsed.streamId) {
+          activeStreamId.value = String(parsed.streamId)
+        }
+        if (parsed.messageId) {
+          activeMessageId.value = String(parsed.messageId)
+        }
+        activeStreamLastSeq.value = 0
+        await patchActiveAssistantMeta({
+          streamId: activeStreamId.value,
+          messageId: activeMessageId.value,
+          lastSeq: 0
+        })
         return
       }
 
@@ -1025,6 +1124,11 @@ export default {
           tempSession.value = false
           loadSessions()
         }
+        await patchActiveAssistantMeta({
+          streamId: activeStreamId.value,
+          messageId: activeMessageId.value,
+          lastSeq: activeStreamLastSeq.value
+        })
         return
       }
 
@@ -1038,6 +1142,9 @@ export default {
     const clearActiveStreamState = () => {
       activeAbortController.value = null
       activeStreamingSessionId.value = null
+      activeStreamId.value = null
+      activeMessageId.value = null
+      activeStreamLastSeq.value = 0
       activeAssistantIndex.value = -1
       manualStopRequested.value = false
     }
@@ -1642,7 +1749,11 @@ export default {
       const aiMessage = {
         role: 'assistant',
         content: '',
-        meta: buildMessageMeta('streaming')
+        meta: buildMessageMeta('streaming', {
+          streamId: null,
+          messageId: null,
+          lastSeq: 0
+        })
       }
 
       activeAssistantIndex.value = currentMessages.value.length
@@ -1662,18 +1773,12 @@ export default {
       const controller = new AbortController()
       activeAbortController.value = controller
       activeStreamingSessionId.value = tempSession.value ? 'temp' : currentSessionId.value
+      activeStreamId.value = null
+      activeMessageId.value = null
+      activeStreamLastSeq.value = 0
       manualStopRequested.value = false
 
-      let doneReceived = false
-
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-          signal: controller.signal
-        })
-
+      const consumeSSEStream = async (response) => {
         if (!response.ok || !response.body) {
           throw new Error('流式请求失败')
         }
@@ -1681,8 +1786,9 @@ export default {
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
-
+        let doneReceived = false
         let streamClosed = false
+
         while (!streamClosed) {
           const { done, value } = await reader.read()
           if (done) {
@@ -1711,6 +1817,69 @@ export default {
               doneReceived = true
             }
           }
+        }
+
+        return doneReceived
+      }
+
+      const openInitialStream = async () => fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal
+      })
+
+      const openResumeStream = async () => {
+        if (!activeStreamId.value || !activeStreamingSessionId.value || activeStreamingSessionId.value === 'temp') {
+          throw new Error('当前流缺少恢复信息')
+        }
+        return fetch('/api/AI/chat/resume-stream', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            sessionId: activeStreamingSessionId.value,
+            streamId: activeStreamId.value,
+            lastSeq: activeStreamLastSeq.value
+          }),
+          signal: controller.signal
+        })
+      }
+
+      let doneReceived = false
+      let streamError = null
+      let mode = 'initial'
+      let resumeAttempts = 0
+
+      try {
+        while (!doneReceived) {
+          try {
+            const response = mode === 'initial'
+              ? await openInitialStream()
+              : await openResumeStream()
+            doneReceived = await consumeSSEStream(response)
+            if (!doneReceived) {
+              if (manualStopRequested.value || !activeStreamId.value || resumeAttempts >= 2) {
+                break
+              }
+              resumeAttempts += 1
+              mode = 'resume'
+            }
+          } catch (error) {
+            if (manualStopRequested.value || error.name === 'AbortError' || error.serverCode === 5004) {
+              throw error
+            }
+            if (activeStreamId.value && activeStreamingSessionId.value && activeStreamingSessionId.value !== 'temp' && resumeAttempts < 2) {
+              resumeAttempts += 1
+              mode = 'resume'
+              continue
+            }
+            streamError = error
+            break
+          }
+        }
+
+        if (streamError) {
+          throw streamError
         }
 
         loading.value = false
