@@ -298,11 +298,46 @@ type AIToolCall struct {
 // parseAIResponse 先按 JSON 解析；如果模型没完全遵守格式，再做一次轻量关键词兜底。
 func (c *MCPChatCapability) parseAIResponse(response string) (*AIToolCall, error) {
 	var toolCall AIToolCall
-	if err := json.Unmarshal([]byte(response), &toolCall); err == nil {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(response)), &toolCall); err == nil {
 		return &toolCall, nil
 	}
 
+	if jsonText := extractFirstJSONObject(response); jsonText != "" {
+		if err := json.Unmarshal([]byte(jsonText), &toolCall); err == nil {
+			return &toolCall, nil
+		}
+	}
+
 	return &AIToolCall{IsToolCall: false}, nil
+}
+
+func extractFirstJSONObject(response string) string {
+	trimmed := strings.TrimSpace(response)
+	if trimmed == "" {
+		return ""
+	}
+
+	if strings.Contains(trimmed, "```") {
+		parts := strings.Split(trimmed, "```")
+		for _, part := range parts {
+			block := strings.TrimSpace(part)
+			if block == "" {
+				continue
+			}
+			block = strings.TrimPrefix(block, "json")
+			block = strings.TrimSpace(block)
+			if strings.HasPrefix(block, "{") && strings.HasSuffix(block, "}") {
+				return block
+			}
+		}
+	}
+
+	start := strings.Index(trimmed, "{")
+	end := strings.LastIndex(trimmed, "}")
+	if start >= 0 && end > start {
+		return strings.TrimSpace(trimmed[start : end+1])
+	}
+	return ""
 }
 
 // callMCPTool 统一封装一次工具调用，并把多段文本结果聚合成字符串。
