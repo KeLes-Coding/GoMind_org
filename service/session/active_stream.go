@@ -2,6 +2,7 @@ package session
 
 import (
 	"GopherAI/common/code"
+	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
 	"GopherAI/model"
 	"context"
@@ -41,11 +42,11 @@ type activeStreamEvent struct {
 // 2. 当前实例上在线订阅者；
 // 3. 被动断开后的 detached 窗口与取消逻辑。
 type activeStreamTask struct {
-	userName   string
-	sessionID  string
-	streamID   string
-	messageID  string
-	cancel     context.CancelFunc
+	userName  string
+	sessionID string
+	streamID  string
+	messageID string
+	cancel    context.CancelFunc
 
 	mu             sync.RWMutex
 	status         model.StreamRuntimeStatus
@@ -64,14 +65,14 @@ type activeStreamTask struct {
 
 func newActiveStreamTask(userName string, sessionID string, streamID string, messageID string, cancel context.CancelFunc) *activeStreamTask {
 	return &activeStreamTask{
-		userName:    userName,
-		sessionID:   sessionID,
-		streamID:    streamID,
-		messageID:   messageID,
-		cancel:      cancel,
-		status:      model.StreamStatusStreaming,
+		userName:      userName,
+		sessionID:     sessionID,
+		streamID:      streamID,
+		messageID:     messageID,
+		cancel:        cancel,
+		status:        model.StreamStatusStreaming,
 		messageStatus: model.MessageStatusStreaming,
-		subscribers: make(map[string]chan activeStreamEvent),
+		subscribers:   make(map[string]chan activeStreamEvent),
 	}
 }
 
@@ -120,6 +121,34 @@ func (t *activeStreamTask) setOwnerGuard(ownerID string, fenceToken int64) {
 	defer t.mu.Unlock()
 	t.ownerID = ownerID
 	t.fenceToken = fenceToken
+}
+
+// canPersistRecoveryState 判断当前任务是否仍拥有恢复层写资格。
+// 第三阶段收尾后，旧 owner 一旦失去 owner lease，就不再允许继续向 Redis 写 chunk/meta/snapshot，
+// 这样可以避免接管后的新 owner 被旧实例尾写覆盖。
+func (t *activeStreamTask) canPersistRecoveryState() bool {
+	t.mu.RLock()
+	sessionID := t.sessionID
+	ownerID := t.ownerID
+	fenceToken := t.fenceToken
+	t.mu.RUnlock()
+
+	if ownerID == "" || fenceToken <= 0 {
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	valid, err := myredis.ValidateSessionOwnerFence(ctx, sessionID, ownerID, fenceToken)
+	if err != nil {
+		return false
+	}
+	if !valid {
+		observability.RecordStreamRecoveryFenceReject()
+		return false
+	}
+	return true
 }
 
 func (t *activeStreamTask) setSessionVersion(version int64) {
@@ -211,11 +240,13 @@ func (t *activeStreamTask) appendChunk(chunk string) model.StreamChunkSnapshot {
 	t.mu.Unlock()
 
 	// Redis 写入失败不应打断主链路，因此这里按 best effort 处理。
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = myredis.AppendActiveStreamChunk(ctx, t.streamID, &item, activeStreamBufferMaxChunks)
-	_ = myredis.SaveActiveStreamSnapshot(ctx, t.exportSnapshot())
-	_ = myredis.SaveActiveStreamMeta(ctx, t.exportMeta())
-	cancel()
+	if t.canPersistRecoveryState() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = myredis.AppendActiveStreamChunk(ctx, t.streamID, &item, activeStreamBufferMaxChunks)
+		_ = myredis.SaveActiveStreamSnapshot(ctx, t.exportSnapshot())
+		_ = myredis.SaveActiveStreamMeta(ctx, t.exportMeta())
+		cancel()
+	}
 
 	event := activeStreamEvent{
 		Type:  activeStreamEventChunk,
@@ -296,9 +327,14 @@ func (t *activeStreamTask) removeSubscriber(subscriberID string) {
 	t.mu.Unlock()
 
 	if shouldDetach {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = myredis.SaveActiveStreamMeta(ctx, t.exportMeta())
-		cancel()
+		// detached 表示当前没有在线订阅连接，但后台生成仍可能继续。
+		// 第三阶段开始单独统计 detached 次数，便于后续判断恢复窗口和接管策略是否合理。
+		observability.RecordStreamDetached()
+		if t.canPersistRecoveryState() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = myredis.SaveActiveStreamMeta(ctx, t.exportMeta())
+			cancel()
+		}
 	}
 }
 
@@ -314,12 +350,14 @@ func (t *activeStreamTask) finish(status model.StreamRuntimeStatus) {
 	t.subscribers = make(map[string]chan activeStreamEvent)
 	t.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = myredis.SaveActiveStreamMeta(ctx, t.exportMeta())
-	_ = myredis.SaveActiveStreamSnapshot(ctx, t.exportSnapshot())
-	_ = myredis.DeleteSessionActiveStream(ctx, t.sessionID)
-	_ = myredis.DeleteActiveStreamStopSignal(ctx, t.streamID)
-	cancel()
+	if t.canPersistRecoveryState() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = myredis.SaveActiveStreamMeta(ctx, t.exportMeta())
+		_ = myredis.SaveActiveStreamSnapshot(ctx, t.exportSnapshot())
+		_ = myredis.DeleteSessionActiveStream(ctx, t.sessionID)
+		_ = myredis.DeleteActiveStreamStopSignal(ctx, t.streamID)
+		cancel()
+	}
 
 	event := activeStreamEvent{
 		Type:   activeStreamEventDone,
@@ -371,9 +409,9 @@ func cloneTimePtr(v *time.Time) *time.Time {
 // activeStreamRegistry 维护当前进程内所有活跃或短期可恢复的流式任务。
 // 它一方面为 stop 和同实例 resume 提供极速路径，另一方面把跨实例恢复留给 Redis 兜底。
 type activeStreamRegistry struct {
-	mu           sync.RWMutex
-	bySessionID  map[string]*activeStreamTask
-	byStreamID   map[string]*activeStreamTask
+	mu          sync.RWMutex
+	bySessionID map[string]*activeStreamTask
+	byStreamID  map[string]*activeStreamTask
 }
 
 func newActiveStreamRegistry() *activeStreamRegistry {

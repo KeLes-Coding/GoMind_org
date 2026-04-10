@@ -17,9 +17,32 @@ const (
 	// activeStreamChunksTTL 比 meta 略短一些，只承担短续传窗口的 chunk 回放。
 	activeStreamChunksTTL = 5 * time.Minute
 	// activeStreamSnapshotTTL 保留略长一点，便于缓冲区覆盖后仍能用 snapshot 兜底恢复。
-	activeStreamSnapshotTTL = 10 * time.Minute
+	activeStreamSnapshotTTL   = 10 * time.Minute
 	activeStreamStopSignalTTL = 5 * time.Minute
 )
+
+var saveActiveStreamMetaCASScript = `
+local current = redis.call("GET", KEYS[1])
+if not current then
+	redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+	return "applied"
+end
+
+local _, _, storedFence = string.find(current, '"fence_token"%s*:%s*(-?%d+)')
+if not storedFence then
+	storedFence = "0"
+end
+
+local incomingFence = tonumber(ARGV[3]) or 0
+local existingFence = tonumber(storedFence) or 0
+
+if incomingFence < existingFence then
+	return "ignored_stale"
+end
+
+redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+return "applied"
+`
 
 // SaveSessionActiveStream 把 session -> stream 的映射写入 Redis。
 // 这让重连请求即使落到别的实例，也能先找到当前正在运行的流。
@@ -71,9 +94,20 @@ func SaveActiveStreamMeta(ctx context.Context, meta *model.StreamResumeMeta) err
 	if err != nil {
 		return err
 	}
-	if err := Rdb.Set(ctx, GenerateStreamMetaKey(meta.StreamID), string(payload), activeStreamMetaTTL).Err(); err != nil {
+	result, err := Rdb.Eval(
+		ctx,
+		saveActiveStreamMetaCASScript,
+		[]string{GenerateStreamMetaKey(meta.StreamID)},
+		string(payload),
+		activeStreamMetaTTL.Milliseconds(),
+		meta.FenceToken,
+	).Result()
+	if err != nil {
 		setAvailability(false)
 		return err
+	}
+	if text, ok := result.(string); ok && text == "ignored_stale" {
+		return nil
 	}
 	return nil
 }

@@ -4,12 +4,14 @@ import (
 	"GopherAI/common/code"
 	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
+	rt "GopherAI/common/runtime"
 	messageDAO "GopherAI/dao/message"
 	"GopherAI/model"
 	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -81,7 +83,31 @@ func ResumeStreamWithControl(ctx context.Context, userName string, sessionID str
 			lastSeq:             lastSeq,
 		})
 	}
-	return attachToRedisBackedStream(ctx, writer, userName, sessionID, streamID, lastSeq)
+
+	meta, err := myredis.GetActiveStreamMeta(context.Background(), streamID)
+	if err != nil {
+		return code.CodeServerBusy
+	}
+	if meta == nil {
+		return code.CodeChatNotRunning
+	}
+	if meta.UserName != "" && meta.UserName != userName {
+		return code.CodeForbidden
+	}
+	if meta.SessionID != sessionID {
+		return code.CodeForbidden
+	}
+
+	if code_ := ensureResumeRoutingOwnership(context.Background(), meta); code_ != code.CodeSuccess {
+		return code_
+	}
+	if claimedMeta, code_ := tryTakeoverDetachedStreamResume(context.Background(), meta); code_ != code.CodeSuccess {
+		return code_
+	} else if claimedMeta != nil {
+		meta = claimedMeta
+	}
+
+	return attachToRedisBackedStream(ctx, writer, userName, sessionID, meta, lastSeq)
 }
 
 // StreamMessageToExistingSessionWithControl 是新的流式主链路。
@@ -149,6 +175,7 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 	task := newActiveStreamTask(userName, sess.ID, uuid.NewString(), uuid.NewString(), cancel)
 	task.setSessionVersion(sess.Version + 1)
 	globalActiveStreamRegistry.register(task)
+	observability.RecordStreamCreated()
 
 	ctx, cancelPersist := context.WithTimeout(context.Background(), 2*time.Second)
 	_ = myredis.SaveSessionActiveStream(ctx, sess.ID, task.streamID)
@@ -303,8 +330,12 @@ func attachToActiveStream(ctx context.Context, writer http.ResponseWriter, task 
 
 	subscriberID, snapshot, backlog, status, ch := task.attachSubscriber(options.lastSeq)
 	defer task.removeSubscriber(subscriberID)
+	if !options.includeSessionEvent {
+		observability.RecordStreamResumeLocal()
+	}
 
 	if snapshot != nil {
+		observability.RecordStreamResumeSnapshotFallback()
 		if err := writeStreamJSON(writer, flusher, map[string]interface{}{
 			"type":      "snapshot",
 			"streamId":  snapshot.StreamID,
@@ -360,11 +391,16 @@ func attachToActiveStream(ctx context.Context, writer http.ResponseWriter, task 
 	}
 }
 
-func attachToRedisBackedStream(ctx context.Context, writer http.ResponseWriter, userName string, sessionID string, streamID string, lastSeq int64) code.Code {
+func attachToRedisBackedStream(ctx context.Context, writer http.ResponseWriter, userName string, sessionID string, meta *model.StreamResumeMeta, lastSeq int64) code.Code {
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
 		return code.CodeServerBusy
 	}
+	if meta == nil {
+		return code.CodeChatNotRunning
+	}
+	streamID := meta.StreamID
+	observability.RecordStreamResumeRedis()
 
 	if err := writeStreamJSON(writer, flusher, map[string]interface{}{
 		"type":     "ready",
@@ -418,6 +454,7 @@ func attachToRedisBackedStream(ctx context.Context, writer http.ResponseWriter, 
 				needSnapshot = true
 			}
 			if needSnapshot {
+				observability.RecordStreamResumeSnapshotFallback()
 				snapshot, snapshotErr := myredis.GetActiveStreamSnapshot(context.Background(), streamID)
 				if snapshotErr != nil {
 					return code.CodeServerBusy
@@ -456,6 +493,68 @@ func attachToRedisBackedStream(ctx context.Context, writer http.ResponseWriter, 
 
 		time.Sleep(400 * time.Millisecond)
 	}
+}
+
+// ensureResumeRoutingOwnership 在恢复请求进入时优先检查 owner 是否就在别的活跃实例上。
+// 如果原 owner 仍在线，当前实例直接返回 owner mismatch，让前端按短退避重试到更稳定的节点。
+func ensureResumeRoutingOwnership(ctx context.Context, meta *model.StreamResumeMeta) code.Code {
+	if meta == nil {
+		return code.CodeChatNotRunning
+	}
+
+	ownerID := strings.TrimSpace(meta.OwnerID)
+	if ownerID == "" || ownerID == rt.CurrentInstanceID() {
+		return code.CodeSuccess
+	}
+
+	active, err := myredis.IsChatInstanceActive(ctx, ownerID)
+	if err != nil {
+		return code.CodeSuccess
+	}
+	if active {
+		observability.RecordStreamResumeOwnerRedirect()
+		return code.CodeOwnerMismatch
+	}
+	return code.CodeSuccess
+}
+
+// tryTakeoverDetachedStreamResume 在 detached 流的旧 owner 已离线时，尝试让当前实例接管恢复层 owner。
+// 这里接管的是“恢复协议的 owner 信息”，不是直接迁移底层模型生成任务。
+// 这样至少能减少后续 resume 继续漂移到已经离线的实例。
+func tryTakeoverDetachedStreamResume(ctx context.Context, meta *model.StreamResumeMeta) (*model.StreamResumeMeta, code.Code) {
+	if meta == nil || meta.Status != model.StreamStatusDetached || !rt.IsOwnerEligible() {
+		return nil, code.CodeSuccess
+	}
+
+	ownerID := strings.TrimSpace(meta.OwnerID)
+	if ownerID != "" {
+		active, err := myredis.IsChatInstanceActive(ctx, ownerID)
+		if err != nil {
+			return nil, code.CodeSuccess
+		}
+		if active {
+			return nil, code.CodeSuccess
+		}
+	}
+
+	observability.RecordStreamResumeTakeoverAttempt()
+	lease, _, err := myredis.AcquireOrRefreshSessionOwnerLease(ctx, meta.SessionID, rt.CurrentInstanceID())
+	if err != nil {
+		return nil, code.CodeServerBusy
+	}
+	if lease == nil {
+		return nil, code.CodeOwnerMismatch
+	}
+
+	claimed := *meta
+	claimed.OwnerID = lease.OwnerID
+	claimed.FenceToken = lease.FenceToken
+	claimed.UpdatedAt = time.Now()
+	if err := myredis.SaveActiveStreamMeta(ctx, &claimed); err != nil {
+		return nil, code.CodeServerBusy
+	}
+	observability.RecordStreamResumeTakeoverSuccess()
+	return &claimed, code.CodeSuccess
 }
 
 func writeStreamJSON(writer http.ResponseWriter, flusher http.Flusher, payload map[string]interface{}) error {

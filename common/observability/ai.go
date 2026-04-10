@@ -61,6 +61,15 @@ type AISnapshot struct {
 	RedisHotStateSaveFail        int64         `json:"redis_hot_state_save_fail"`
 	StreamActive                 int64         `json:"stream_active"`
 	StreamDisconnect             int64         `json:"stream_disconnect"`
+	StreamCreated                int64         `json:"stream_created_total"`
+	StreamDetached               int64         `json:"stream_detached_total"`
+	StreamResumeLocal            int64         `json:"stream_resume_local_total"`
+	StreamResumeRedis            int64         `json:"stream_resume_redis_total"`
+	StreamResumeOwnerRedirect    int64         `json:"stream_resume_owner_redirect_total"`
+	StreamResumeTakeoverAttempt  int64         `json:"stream_resume_takeover_attempt_total"`
+	StreamResumeTakeoverSuccess  int64         `json:"stream_resume_takeover_success_total"`
+	StreamResumeSnapshotFallback int64         `json:"stream_resume_snapshot_fallback_total"`
+	StreamRecoveryFenceReject    int64         `json:"stream_recovery_fence_reject_total"`
 	MQPublishSuccess             int64         `json:"mq_publish_success"`
 	MQPublishFail                int64         `json:"mq_publish_fail"`
 	MQConsumeSuccess             int64         `json:"mq_consume_success"`
@@ -180,6 +189,15 @@ type aiObserver struct {
 	redisHotStateSaveFail        int64
 	streamActive                 int64
 	streamDisconnect             int64
+	streamCreated                int64
+	streamDetached               int64
+	streamResumeLocal            int64
+	streamResumeRedis            int64
+	streamResumeOwnerRedirect    int64
+	streamResumeTakeoverAttempt  int64
+	streamResumeTakeoverSuccess  int64
+	streamResumeSnapshotFallback int64
+	streamRecoveryFenceReject    int64
 	mqPublishSuccess             int64
 	mqPublishFail                int64
 	mqConsumeSuccess             int64
@@ -506,6 +524,78 @@ func RecordStreamDisconnect() {
 	globalAIObserver.streamDisconnect++
 }
 
+// RecordStreamCreated 记录一条新的 active stream 创建。
+func RecordStreamCreated() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamCreated++
+}
+
+// RecordStreamDetached 记录流式连接全部断开、active stream 进入 detached 的次数。
+func RecordStreamDetached() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamDetached++
+}
+
+// RecordStreamResumeLocal 记录一次命中本地 active stream 的恢复。
+func RecordStreamResumeLocal() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamResumeLocal++
+}
+
+// RecordStreamResumeRedis 记录一次回退到 Redis 恢复层的恢复。
+func RecordStreamResumeRedis() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamResumeRedis++
+}
+
+// RecordStreamResumeOwnerRedirect 记录一次因为命中非 owner 实例而触发的恢复重定向。
+func RecordStreamResumeOwnerRedirect() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamResumeOwnerRedirect++
+}
+
+// RecordStreamResumeTakeoverAttempt 记录一次 detached 流恢复层 owner 接管尝试。
+func RecordStreamResumeTakeoverAttempt() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamResumeTakeoverAttempt++
+}
+
+// RecordStreamResumeTakeoverSuccess 记录一次 detached 流恢复层 owner 接管成功。
+func RecordStreamResumeTakeoverSuccess() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamResumeTakeoverSuccess++
+}
+
+// RecordStreamResumeSnapshotFallback 记录一次恢复因 chunk 窗口不足而回退到 snapshot。
+func RecordStreamResumeSnapshotFallback() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamResumeSnapshotFallback++
+}
+
+// RecordStreamRecoveryFenceReject 记录一次旧 owner 因 fence 校验失败而被拒绝写恢复层。
+func RecordStreamRecoveryFenceReject() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamRecoveryFenceReject++
+}
+
 // RecordMQPublish 记录 MQ 发布结果。
 func RecordMQPublish(success bool) {
 	globalAIObserver.mu.Lock()
@@ -729,6 +819,15 @@ func SnapshotAI() AISnapshot {
 		RedisHotStateSaveFail:        globalAIObserver.redisHotStateSaveFail,
 		StreamActive:                 globalAIObserver.streamActive,
 		StreamDisconnect:             globalAIObserver.streamDisconnect,
+		StreamCreated:                globalAIObserver.streamCreated,
+		StreamDetached:               globalAIObserver.streamDetached,
+		StreamResumeLocal:            globalAIObserver.streamResumeLocal,
+		StreamResumeRedis:            globalAIObserver.streamResumeRedis,
+		StreamResumeOwnerRedirect:    globalAIObserver.streamResumeOwnerRedirect,
+		StreamResumeTakeoverAttempt:  globalAIObserver.streamResumeTakeoverAttempt,
+		StreamResumeTakeoverSuccess:  globalAIObserver.streamResumeTakeoverSuccess,
+		StreamResumeSnapshotFallback: globalAIObserver.streamResumeSnapshotFallback,
+		StreamRecoveryFenceReject:    globalAIObserver.streamRecoveryFenceReject,
 		MQPublishSuccess:             globalAIObserver.mqPublishSuccess,
 		MQPublishFail:                globalAIObserver.mqPublishFail,
 		MQConsumeSuccess:             globalAIObserver.mqConsumeSuccess,

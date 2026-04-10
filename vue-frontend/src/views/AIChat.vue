@@ -1818,12 +1818,12 @@ export default {
 
       const url = tempSession.value ? '/api/AI/chat/send-stream-new-session' : '/api/AI/chat/send-stream'
       const accessToken = await ensureAccessToken(refreshClient)
-      const headers = {
+      const baseHeaders = {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`
       }
       if (!tempSession.value && currentSessionId.value) {
-        Object.assign(headers, buildSessionRoutingHeaders(currentSessionId.value))
+        Object.assign(baseHeaders, buildSessionRoutingHeaders(currentSessionId.value))
       }
       const body = tempSession.value
         ? { question, llmConfigId: selectedConfigId.value, chatMode: selectedChatMode.value, modelType: '1' }
@@ -1883,7 +1883,7 @@ export default {
 
       const openInitialStream = async () => fetch(url, {
         method: 'POST',
-        headers,
+        headers: baseHeaders,
         body: JSON.stringify(body),
         signal: controller.signal
       })
@@ -1892,9 +1892,16 @@ export default {
         if (!activeStreamId.value || !activeStreamingSessionId.value || activeStreamingSessionId.value === 'temp') {
           throw new Error('当前流缺少恢复信息')
         }
+        // resume 请求需要重新按最新 sessionId 拼路由头。
+        // 新建会话场景下，初始请求发出时还没有正式 sessionId，如果这里继续复用旧 header，
+        // 恢复流就更容易漂到非 owner 实例。
+        const resumeHeaders = {
+          ...baseHeaders,
+          ...buildSessionRoutingHeaders(activeStreamingSessionId.value)
+        }
         return fetch('/api/AI/chat/resume-stream', {
           method: 'POST',
-          headers,
+          headers: resumeHeaders,
           body: JSON.stringify({
             sessionId: activeStreamingSessionId.value,
             streamId: activeStreamId.value,

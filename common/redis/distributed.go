@@ -421,6 +421,36 @@ func ListActiveChatInstances(ctx context.Context) ([]string, error) {
 	return instances, nil
 }
 
+// GetActiveChatInstanceMeta 读取指定实例当前的聊天心跳元数据。
+// 第三阶段会在 resume 路由里用它判断“原 owner 是否仍在线”，从而决定是否应短退避重试。
+func GetActiveChatInstanceMeta(ctx context.Context, instanceID string) (*ChatInstanceMeta, error) {
+	if !IsAvailable() || strings.TrimSpace(instanceID) == "" {
+		return nil, nil
+	}
+
+	rawValue, err := Rdb.Get(ctx, GenerateChatInstanceHeartbeatKey(instanceID)).Result()
+	if err != nil {
+		if err == redisCli.Nil {
+			return nil, nil
+		}
+		setAvailability(false)
+		return nil, err
+	}
+
+	meta := decodeChatInstanceMeta(instanceID, rawValue)
+	return &meta, nil
+}
+
+// IsChatInstanceActive 判断指定实例是否仍在活跃心跳集合里。
+// 这里不做更复杂的健康检查，只要 Redis 心跳键还在，就认为它仍可作为路由目标。
+func IsChatInstanceActive(ctx context.Context, instanceID string) (bool, error) {
+	meta, err := GetActiveChatInstanceMeta(ctx, instanceID)
+	if err != nil {
+		return false, err
+	}
+	return meta != nil, nil
+}
+
 // ListActiveChatInstanceMetas 列出当前活跃聊天实例及其用于路由的元信息。
 func ListActiveChatInstanceMetas(ctx context.Context) ([]ChatInstanceMeta, error) {
 	if !IsAvailable() {
