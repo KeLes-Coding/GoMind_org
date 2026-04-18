@@ -29,13 +29,13 @@ func SaveMessageOutbox(event *model.MessageOutbox) error {
 	return mysql.DB.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "message_key"}},
 		DoUpdates: clause.Assignments(map[string]interface{}{
-			"session_id":       event.SessionID,
-			"session_version":  event.SessionVersion,
-			"payload":          event.Payload,
-			"status":           event.Status,
-			"last_error":       event.LastError,
-			"next_attempt_at":  event.NextAttemptAt,
-			"updated_at":       time.Now(),
+			"session_id":      event.SessionID,
+			"session_version": event.SessionVersion,
+			"payload":         event.Payload,
+			"status":          event.Status,
+			"last_error":      event.LastError,
+			"next_attempt_at": event.NextAttemptAt,
+			"updated_at":      time.Now(),
 		}),
 	}).Create(event).Error
 }
@@ -92,5 +92,17 @@ func ListMessageOutboxesReadyForRelay(limit int) ([]model.MessageOutbox, error) 
 		query = query.Limit(limit)
 	}
 	err := query.Find(&events).Error
+	return events, err
+}
+
+// ListUndeliveredMessageOutboxesBySessionID 返回指定会话里尚未完成消费落库的消息事件。
+// 历史接口会用它补齐“主链路已写 outbox，但 MQ 消费还没追上”的短暂窗口。
+func ListUndeliveredMessageOutboxesBySessionID(sessionID string) ([]model.MessageOutbox, error) {
+	var events []model.MessageOutbox
+	err := mysql.DB.
+		Where("session_id = ? AND status <> ?", sessionID, model.MessageOutboxStatusDelivered).
+		Order("session_version asc").
+		Order("id asc").
+		Find(&events).Error
 	return events, err
 }

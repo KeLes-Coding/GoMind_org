@@ -11,6 +11,23 @@ import (
 // buildSessionInfo 把数据库 Session 转成前端展示结构，并尽量补齐绑定的模型配置信息。
 // 如果配置已经被删除或暂时不可读，这里只保留 session 侧的基础字段，不把整个接口打失败。
 func buildSessionInfo(sess model.Session) model.SessionInfo {
+	info := buildSessionInfoWithConfig(sess, nil)
+	if sess.LLMConfigID == nil {
+		return info
+	}
+
+	config, err := llmConfigDAO.GetUserLLMConfigByID(sess.UserID, *sess.LLMConfigID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return info
+		}
+		return info
+	}
+
+	return buildSessionInfoWithConfig(sess, config)
+}
+
+func buildSessionInfoWithConfig(sess model.Session, config *model.UserLLMConfig) model.SessionInfo {
 	info := model.SessionInfo{
 		SessionID:   sess.ID,
 		Title:       sess.Title,
@@ -21,15 +38,7 @@ func buildSessionInfo(sess model.Session) model.SessionInfo {
 		info.FolderID = *sess.FolderID
 	}
 
-	if sess.LLMConfigID == nil {
-		return info
-	}
-
-	config, err := llmConfigDAO.GetUserLLMConfigByID(sess.UserID, *sess.LLMConfigID)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return info
-		}
+	if config == nil {
 		return info
 	}
 

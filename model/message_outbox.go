@@ -18,10 +18,10 @@ const (
 // 1. 在主链路上持久化“待投递事件”；
 // 2. 给 relay worker 提供可扫描、可重试、可确认的补偿基线。
 type MessageOutbox struct {
-	ID             uint               `gorm:"primaryKey;autoIncrement" json:"id"`
-	MessageKey     string             `gorm:"type:varchar(64);uniqueIndex;not null" json:"message_key"`
-	SessionID      string             `gorm:"index;type:varchar(36);not null" json:"session_id"`
-	SessionVersion int64              `gorm:"index;not null;default:0" json:"session_version"`
+	ID             uint                `gorm:"primaryKey;autoIncrement" json:"id"`
+	MessageKey     string              `gorm:"type:varchar(64);uniqueIndex;not null" json:"message_key"`
+	SessionID      string              `gorm:"index;index:idx_message_outboxes_session_order,priority:1;type:varchar(36);not null" json:"session_id"`
+	SessionVersion int64               `gorm:"index;index:idx_message_outboxes_session_order,priority:2;not null;default:0" json:"session_version"`
 	Status         MessageOutboxStatus `gorm:"type:varchar(20);not null;default:'pending';index" json:"status"`
 	// Payload 直接保存将要投递到 MQ 的 JSON 负载，避免补偿时再依赖运行时对象重新拼装。
 	Payload         string     `gorm:"type:longtext;not null" json:"payload"`

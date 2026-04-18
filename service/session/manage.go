@@ -5,6 +5,7 @@ import (
 	"GopherAI/common/code"
 	"GopherAI/common/mysql"
 	myredis "GopherAI/common/redis"
+	llmConfigDAO "GopherAI/dao/llm_config"
 	sessionDAO "GopherAI/dao/session"
 	sessionfolderDAO "GopherAI/dao/session_folder"
 	"GopherAI/model"
@@ -39,10 +40,39 @@ func GetSessionTree(userID int64, userName string) (*model.SessionTree, code.Cod
 		return nil, code.CodeServerBusy
 	}
 
+	configsByID := make(map[int64]*model.UserLLMConfig)
+	configIDSet := make(map[int64]struct{})
+	configIDs := make([]int64, 0)
+	for _, sess := range sessions {
+		if sess.LLMConfigID == nil {
+			continue
+		}
+		if _, exists := configIDSet[*sess.LLMConfigID]; exists {
+			continue
+		}
+		configIDSet[*sess.LLMConfigID] = struct{}{}
+		configIDs = append(configIDs, *sess.LLMConfigID)
+	}
+	if len(configIDs) > 0 {
+		configs, err := llmConfigDAO.ListUserLLMConfigsByIDs(userID, configIDs)
+		if err != nil {
+			log.Println("GetSessionTree ListUserLLMConfigsByIDs error:", err)
+			return nil, code.CodeServerBusy
+		}
+		for i := range configs {
+			config := configs[i]
+			configsByID[config.ID] = &config
+		}
+	}
+
 	sessionMap := make(map[string][]model.SessionInfo, len(folders))
 	ungrouped := make([]model.SessionInfo, 0)
 	for _, sess := range sessions {
-		info := buildSessionInfo(sess)
+		var config *model.UserLLMConfig
+		if sess.LLMConfigID != nil {
+			config = configsByID[*sess.LLMConfigID]
+		}
+		info := buildSessionInfoWithConfig(sess, config)
 		if sess.FolderID == nil || strings.TrimSpace(*sess.FolderID) == "" {
 			ungrouped = append(ungrouped, info)
 			continue

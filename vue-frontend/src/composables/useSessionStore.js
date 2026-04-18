@@ -136,6 +136,31 @@ export function useSessionStore() {
     if (!inFolder && !inUngrouped) {
       ungroupedSessionIds.value = [normalizedId, ...ungroupedSessionIds.value]
     }
+
+    const entry = sessions.value[normalizedId]
+    if (!entry) return
+    const listItem = {
+      sessionId: normalizedId,
+      name: entry.name || `会话 ${normalizedId}`,
+      folderId: entry.folderId || null
+    }
+
+    foldersList.value = foldersList.value.map(folder => {
+      const sessionsInFolder = Array.isArray(folder.sessions) ? folder.sessions : []
+      const index = sessionsInFolder.findIndex(item => String(item.sessionId) === normalizedId)
+      if (index < 0) {
+        return folder
+      }
+      const nextSessions = [...sessionsInFolder]
+      nextSessions[index] = { ...nextSessions[index], ...listItem, folderId: folder.id }
+      return { ...folder, sessions: nextSessions }
+    })
+
+    if (!inFolder) {
+      const withoutExisting = ungroupedSessionsList.value
+        .filter(item => String(item.sessionId) !== normalizedId)
+      ungroupedSessionsList.value = [listItem, ...withoutExisting]
+    }
   }
 
   const applySessionTree = (tree) => {

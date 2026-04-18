@@ -6,12 +6,15 @@ import (
 	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
 	messageDAO "GopherAI/dao/message"
+	outboxDAO "GopherAI/dao/outbox"
 	sessionDAO "GopherAI/dao/session"
 	"GopherAI/model"
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -680,6 +683,10 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 		log.Println("GetChatHistory GetMessagesBySessionID error:", err)
 		return nil, code.CodeServerBusy
 	}
+	messages, code_ := mergeUndeliveredOutboxMessages(sessionID, messages)
+	if code_ != code.CodeSuccess {
+		return nil, code_
+	}
 
 	history := make([]model.History, 0, len(messages))
 	for _, msg := range messages {
@@ -692,6 +699,75 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 	}
 
 	return history, code.CodeSuccess
+}
+
+func mergeUndeliveredOutboxMessages(sessionID string, messages []model.Message) ([]model.Message, code.Code) {
+	events, err := outboxDAO.ListUndeliveredMessageOutboxesBySessionID(sessionID)
+	if err != nil {
+		log.Println("mergeUndeliveredOutboxMessages ListUndeliveredMessageOutboxesBySessionID error:", err)
+		return nil, code.CodeServerBusy
+	}
+	if len(events) == 0 {
+		return messages, code.CodeSuccess
+	}
+
+	messageKeys := make(map[string]struct{}, len(messages))
+	for _, msg := range messages {
+		messageKeys[msg.MessageKey] = struct{}{}
+	}
+
+	for _, event := range events {
+		if _, exists := messageKeys[event.MessageKey]; exists {
+			continue
+		}
+		var payload struct {
+			MessageKey     string `json:"message_key"`
+			SessionID      string `json:"session_id"`
+			SessionVersion int64  `json:"session_version"`
+			Content        string `json:"content"`
+			UserName       string `json:"user_name"`
+			IsUser         bool   `json:"is_user"`
+			Status         string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {
+			log.Println("mergeUndeliveredOutboxMessages payload unmarshal error:", err)
+			continue
+		}
+		if payload.SessionID != sessionID {
+			continue
+		}
+		status := model.MessageStatus(payload.Status)
+		if status == "" {
+			status = model.MessageStatusCompleted
+		}
+		messages = append(messages, model.Message{
+			MessageKey:     payload.MessageKey,
+			SessionID:      payload.SessionID,
+			SessionVersion: payload.SessionVersion,
+			UserName:       payload.UserName,
+			Content:        payload.Content,
+			IsUser:         payload.IsUser,
+			Status:         status,
+			CreatedAt:      event.CreatedAt,
+			UpdatedAt:      event.UpdatedAt,
+		})
+		messageKeys[payload.MessageKey] = struct{}{}
+	}
+
+	sort.SliceStable(messages, func(i, j int) bool {
+		if messages[i].SessionVersion != messages[j].SessionVersion {
+			return messages[i].SessionVersion < messages[j].SessionVersion
+		}
+		if messages[i].IsUser != messages[j].IsUser {
+			return messages[i].IsUser
+		}
+		if !messages[i].CreatedAt.Equal(messages[j].CreatedAt) {
+			return messages[i].CreatedAt.Before(messages[j].CreatedAt)
+		}
+		return messages[i].MessageKey < messages[j].MessageKey
+	})
+
+	return messages, code.CodeSuccess
 }
 
 // ChatStreamSend 是 StreamMessageToExistingSession 的简单封装。

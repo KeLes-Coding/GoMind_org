@@ -21,6 +21,15 @@ func GetUserLLMConfigByID(userID int64, id int64) (*model.UserLLMConfig, error) 
 	return &config, err
 }
 
+func ListUserLLMConfigsByIDs(userID int64, ids []int64) ([]model.UserLLMConfig, error) {
+	var configs []model.UserLLMConfig
+	if len(ids) == 0 {
+		return configs, nil
+	}
+	err := mysql.DB.Where("user_id = ? AND id IN ?", userID, ids).Find(&configs).Error
+	return configs, err
+}
+
 // GetDefaultUserLLMConfig 获取用户默认配置。
 func GetDefaultUserLLMConfig(userID int64) (*model.UserLLMConfig, error) {
 	var config model.UserLLMConfig
