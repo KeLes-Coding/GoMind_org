@@ -1,6 +1,8 @@
 doc/
 config/config.local.toml
 vue-frontend/node_modules/
+vue-frontend/.env*.local
+vue-frontend/vue.config.local.js
 .codex
 bin/
 vue-frontend/dist/
@@ -9,3 +11,5 @@ logger/
 uploads/
 .VSCodeCounter/
 .gocache/
+
+.claude/

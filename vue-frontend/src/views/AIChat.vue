@@ -1,2369 +1,311 @@
 <template>
   <div class="flex flex-row h-screen w-screen overflow-hidden bg-bg-light dark:bg-bg-dark text-text-primary-light dark:text-text-primary-dark">
+    <ChatSidebar
+      :is-sidebar-collapsed="isSidebarCollapsed"
+      :user-menu-visible="userMenuVisible"
+      :folders-list="foldersList"
+      :collapsed-folders="collapsedFolders"
+      :ungrouped-sessions-list="ungroupedSessionsList"
+      :current-session-id="currentSessionId"
+      :user-profile="userProfile"
+      :loading="loading"
+      :temp-session="tempSession"
+      @toggle-sidebar="toggleSidebar"
+      @toggle-user-menu="toggleUserMenu"
+      @create-new-session="createNewSessionAndFocus"
+      @toggle-folder="toggleFolder"
+      @handle-folder-command="({ command, folder }) => handleFolderCommand(command, folder)"
+      @switch-session="switchSessionWithGuard"
+      @handle-session-command="({ command, session }) => handleSessionCommand(command, session)"
+      @show-create-folder-dialog="showCreateFolderDialog"
+      @handle-settings="handleSettings"
+      @open-model-config-dialog="openModelConfigDialog"
+      @open-file-manager-dialog="openFileManagerDialog"
+      @handle-sync-history="handleSyncHistoryFromMenu"
+      @handle-logout="handleLogout"
+      @go-login="goLogin"
+    />
 
-    <!-- Sidebar Overlay (mobile) -->
-    <div
-      v-if="!isSidebarCollapsed"
-      class="fixed inset-0 bg-black/20 z-30 md:hidden"
-      @click="toggleSidebar"
-    ></div>
-
-    <!-- Gemini-Style Sidebar -->
-    <aside
-      :class="[
-        'flex flex-col flex-shrink-0 transition-[width] duration-300 ease-in-out z-40 border-r',
-        'bg-[#F5F5F5] dark:bg-[#171717] border-black/5 dark:border-white/5',
-        isSidebarCollapsed ? 'w-[68px] overflow-hidden' : 'w-[260px] overflow-hidden'
-      ]"
-    >
-      <div class="flex flex-col h-full w-[260px]">
-        <!-- Top: Sidebar Toggle + New Chat -->
-        <div class="flex items-center gap-2 px-3 pt-3 pb-1">
-          <button
-            class="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent"
-            @click="toggleSidebar"
-            title="Close sidebar"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-text-secondary-light dark:text-text-secondary-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
-          </button>
-        </div>
-
-        <!-- New Chat Button -->
-        <div :class="isSidebarCollapsed ? 'px-0 py-2 flex justify-center' : 'px-3 py-2'">
-          <button
-            :class="[
-              'flex items-center rounded-full bg-surface-light dark:bg-[#282828] hover:bg-black/5 dark:hover:bg-white/5 shadow-sm hover:shadow-md transition-all cursor-pointer text-sm font-medium text-text-primary-light dark:text-text-primary-dark border-none',
-              isSidebarCollapsed ? 'p-2.5 justify-center' : 'gap-3 px-5 py-3 w-auto'
-            ]"
-            @click="createNewSession"
-            title="New chat"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-            <span class="whitespace-nowrap transition-all duration-300 overflow-hidden inline-block" :class="isSidebarCollapsed ? 'opacity-0 w-0' : 'opacity-100 w-auto'">New chat</span>
-          </button>
-        </div>
-
-        <!-- Conversation History -->
-        <div class="flex-1 overflow-y-auto pt-2 relative">
-          <div :class="isSidebarCollapsed ? 'hidden' : 'opacity-100 px-2 transition-opacity duration-300'">
-            <div class="px-3 pb-2 flex items-center justify-between">
-            <span class="text-xs font-medium text-text-secondary-light dark:text-text-secondary-dark tracking-wider">近期</span>
-            <button
-              class="p-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-text-secondary-light dark:text-text-secondary-dark bg-transparent border-none"
-              title="新建文件夹"
-              @click="showCreateFolderDialog"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-            </button>
-          </div>
-          <ul class="list-none m-0 p-0 space-y-0.5">
-            <!-- Folders (expanded sidebar only) -->
-            <template v-if="true">
-            <li v-for="folder in foldersList" :key="folder.id" class="mb-1">
-              <div
-                class="px-3 py-2 rounded-xl cursor-pointer text-sm transition-all group flex items-center text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5"
-                @click="toggleFolder(folder.id)"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 shrink-0 transition-transform" :class="collapsedFolders[folder.id] ? '-rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
-                <span class="truncate flex-1 font-medium">{{ folder.name }}</span>
-                <el-dropdown trigger="click" @command="(cmd) => handleFolderCommand(cmd, folder)" @click.stop class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <span class="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
-                  </span>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                      <el-dropdown-item command="delete" class="text-red-500">删除文件夹</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
-              </div>
-              <!-- Folder Sessions -->
-              <ul v-show="!collapsedFolders[folder.id]" class="list-none m-0 p-0 pl-6 mt-0.5 space-y-0.5">
-                <li
-                  v-for="session in folder.sessions"
-                  :key="session.sessionId"
-                  :class="[
-                    'px-3 py-2 rounded-xl cursor-pointer text-sm transition-all group flex items-center',
-                    currentSessionId === session.sessionId
-                      ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
-                      : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
-                  ]"
-                  @click="switchSession(session.sessionId)"
-                >
-                  <span v-if="currentSessionId === session.sessionId" class="w-1.5 h-1.5 rounded-full bg-accent-light dark:bg-accent-dark mr-2 shrink-0"></span>
-                  <span class="truncate flex-1">{{ session.name || `会话 ${session.sessionId}` }}</span>
-                  <el-dropdown trigger="click" @command="(cmd) => handleSessionCommand(cmd, session)" @click.stop class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span class="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark">
-                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
-                    </span>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                        <el-dropdown-item command="move">移动到...</el-dropdown-item>
-                        <el-dropdown-item command="removeFromFolder">移出文件夹</el-dropdown-item>
-                        <el-dropdown-item command="delete" class="text-red-500">删除</el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
-                </li>
-              </ul>
-            </li>
-            </template>
-
-            <!-- Ungrouped Sessions -->
-            <li
-              v-for="session in ungroupedSessionsList"
-              :key="session.sessionId"
-              :class="[
-                'rounded-xl cursor-pointer text-sm transition-all group flex items-center',
-                isSidebarCollapsed ? 'p-2 justify-center' : 'px-3 py-2',
-                currentSessionId === session.sessionId
-                  ? 'bg-black/5 dark:bg-white/8 font-medium text-text-primary-light dark:text-text-primary-dark'
-                  : 'text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5'
-              ]"
-              @click="switchSession(session.sessionId)"
-              :title="isSidebarCollapsed ? (session.name || `会话 ${session.sessionId}`) : ''"
-            >
-              <!-- Expanded: full text -->
-              <template v-if="true">
-                <span v-if="currentSessionId === session.sessionId" class="w-1.5 h-1.5 rounded-full bg-accent-light dark:bg-accent-dark mr-2 shrink-0"></span>
-                <span class="truncate flex-1">{{ session.name || `会话 ${session.sessionId}` }}</span>
-                <el-dropdown trigger="click" @command="(cmd) => handleSessionCommand(cmd, session)" @click.stop class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <span class="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
-                  </span>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                      <el-dropdown-item command="move">移动到...</el-dropdown-item>
-                      <el-dropdown-item command="delete" class="text-red-500">删除</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
-              </template>
-            </li>
-          </ul>
-          </div>
-        </div>
-
-        <!-- Bottom Actions -->
-        <div class="px-2 pb-3 pt-2 space-y-0.5">
-          <div class="relative">
-            <button
-              :class="[
-                'flex items-center rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer bg-transparent border-none',
-                isSidebarCollapsed ? 'p-2 justify-center w-[52px]' : 'w-full gap-3 px-3 py-2.5 text-left'
-              ]"
-              @click.stop="toggleUserMenu"
-            >
-              <img
-                v-if="userProfile.avatar_url"
-                :src="userProfile.avatar_url"
-                alt="User avatar"
-                class="w-8 h-8 rounded-full object-cover shrink-0 border border-border-light dark:border-border-dark"
-              />
-              <div
-                v-else
-                class="w-8 h-8 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-xs font-bold shrink-0 select-none"
-              >
-                {{ getUserInitial() }}
-              </div>
-              <div class="min-w-0 flex-1 text-left transition-opacity duration-300" :class="isSidebarCollapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'">
-                <div class="text-sm truncate text-text-primary-light dark:text-text-primary-dark">{{ getUserDisplayName() }}</div>
-                <div class="text-xs truncate text-text-secondary-light dark:text-text-secondary-dark">@{{ userProfile.username || 'user' }}</div>
-              </div>
-              <svg :class="isSidebarCollapsed ? 'opacity-0 w-0' : 'opacity-100'" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0 text-text-secondary-light dark:text-text-secondary-dark transition-opacity duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
-            </button>
-
-            <div
-              v-if="userMenuVisible"
-              class="absolute bottom-full mb-2 rounded-2xl border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark shadow-xl overflow-hidden"
-              :class="isSidebarCollapsed ? 'left-0 w-48' : 'left-2 right-2'"
-            >
-              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleSettings">Settings</button>
-              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="openModelConfigDialog">Model Configs</button>
-              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="openFileManagerDialog">File Management</button>
-              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" :disabled="!currentSessionId || tempSession || loading" @click="handleSyncHistoryFromMenu">Sync history</button>
-              <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 bg-transparent border-none cursor-pointer" @click="handleLogout">Log out</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Main Content -->
     <section class="flex-1 flex flex-col relative min-w-0 bg-bg-light dark:bg-bg-dark">
-      <!-- Header -->
-      <div class="sticky top-0 z-10 px-4 py-3 flex items-center gap-3">
-        <!-- GoMind Brand (shows in header when messages exist) -->
-        <div v-if="currentMessages.length > 0" class="flex items-center gap-2">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-accent-light dark:text-accent-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-          <span class="text-lg font-bold tracking-tight select-none">GoMind</span>
-        </div>
+      <ChatHeader
+        :has-messages="currentMessages.length > 0"
+        :is-dark="isDark"
+        :loading="loading"
+        @toggle-theme="toggleTheme"
+      />
 
-        <div class="flex items-center gap-3 ml-auto flex-wrap justify-end">
-          <label class="flex items-center gap-1.5 text-sm cursor-pointer select-none">
-            <input id="streamingMode" v-model="isStreaming" type="checkbox" class="accent-accent-light dark:accent-accent-dark" :disabled="loading" />
-            <span class="hidden sm:inline">流式</span>
-          </label>
+      <ChatEmptyState v-if="currentMessages.length === 0" />
 
-          <button @click="toggleTheme" class="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer border-none bg-transparent text-text-primary-light dark:text-text-primary-dark flex items-center justify-center shrink-0">
-            <svg v-if="isDark" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
-            <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-          </button>
-        </div>
-      </div>
+      <ChatMessageList
+        v-else
+        ref="chatMessageListRef"
+        :current-messages="currentMessages"
+        :user-profile="userProfile"
+        @play-tts="playTTS"
+      />
 
-      <!-- Empty State: GoMind Brand + Social Links -->
-      <div v-if="currentMessages.length === 0" class="flex-1 flex flex-col items-center justify-center px-8">
-        <div class="flex flex-col items-center gap-6 -mt-16">
-          <!-- GoMind Logo -->
-          <div class="flex items-center gap-3">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-accent-light dark:text-accent-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-            <h1 class="text-4xl font-bold tracking-tight select-none">GoMind</h1>
-          </div>
-          <p class="text-text-secondary-light dark:text-text-secondary-dark text-sm">Powered by multi-provider AI · Ask anything</p>
+      <ChatInputArea
+        ref="chatInputAreaRef"
+        :input-message="inputMessage"
+        @update:input-message="val => inputMessage = val"
+        :loading="loading"
+        :uploading="uploading"
+        :selected-config-id="selectedConfigId"
+        @update:selected-config-id="val => selectedConfigId = val"
+        @config-change="onConfigChange"
+        :selected-chat-mode="selectedChatMode"
+        @update:selected-chat-mode="val => selectedChatMode = val"
+        :available-configs="availableConfigs"
+        :available-chat-modes="availableChatModes"
+        :chat-mode-label="chatModeLabel"
+        @send-message="sendMessage"
+        @stop-stream="stopCurrentStream"
+        @file-upload="handleFileUpload"
+        @image-recognition="handleImageRecognition"
+        @open-model-config-dialog="openModelConfigDialog"
+      />
 
-          <!-- Social Links Placeholder -->
-          <div class="flex items-center gap-4 mt-4">
-            <a href="#" title="GitHub" class="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-secondary-light dark:text-text-secondary-dark hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors">
-              <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-            </a>
-            <a href="#" title="Telegram" class="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-secondary-light dark:text-text-secondary-dark hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors">
-              <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
-            </a>
-            <a href="#" title="WeChat" class="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-secondary-light dark:text-text-secondary-dark hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors">
-              <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><path d="M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.812-.05-.168-.628-.254-1.282-.254-1.947 0-3.76 3.508-6.864 7.84-6.864.354 0 .703.032 1.048.07-.626-3.456-4.148-6.09-8.446-6.09zm-1.64 3.39a1.12 1.12 0 1 1 0 2.24 1.12 1.12 0 0 1 0-2.24zm4.32 0a1.12 1.12 0 1 1 0 2.24 1.12 1.12 0 0 1 0-2.24zm3.707 4.666c-3.768 0-6.923 2.72-6.923 6.068 0 3.347 3.155 6.068 6.923 6.068.784 0 1.556-.124 2.295-.348a.724.724 0 0 1 .601.078l1.588.934a.27.27 0 0 0 .14.046.242.242 0 0 0 .242-.244c0-.06-.023-.119-.038-.178l-.327-1.233a.496.496 0 0 1 .177-.556c1.534-1.13 2.524-2.797 2.524-4.667 0-3.348-3.156-6.068-6.923-6.068v.1zm-2.084 3.09a.935.935 0 1 1 0 1.87.935.935 0 0 1 0-1.87zm4.352 0a.935.935 0 1 1 0 1.87.935.935 0 0 1 0-1.87z"/></svg>
-            </a>
-          </div>
-        </div>
-      </div>
-
-      <!-- Messages Stream -->
-      <div v-else class="flex-1 overflow-y-auto px-8 md:px-24 pt-8 pb-44" ref="messagesRef">
-        <div class="max-w-4xl mx-auto flex flex-col gap-12">
-          <div
-            v-for="(message, index) in currentMessages"
-            :key="index"
-            class="flex flex-col gap-2 group"
-          >
-            <!-- Sender Header -->
-            <div class="flex items-center gap-3">
-              <img
-                v-if="message.role === 'user' && userProfile.avatar_url"
-                :src="userProfile.avatar_url"
-                alt="用户头像"
-                class="w-8 h-8 rounded-full object-cover border border-border-light dark:border-border-dark"
-              />
-              <div v-else :class="['w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm select-none', message.role === 'user' ? 'bg-black text-white dark:bg-white dark:text-black' : 'bg-surface-light border border-border-light dark:bg-surface-dark dark:border-border-dark']">
-                {{ message.role === 'user' ? getUserInitial() : 'AI' }}
-              </div>
-              <span class="font-semibold text-sm">{{ message.role === 'user' ? 'You' : 'AI' }}</span>
-              <!-- Actions & Meta -->
-              <div class="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  v-if="message.role === 'assistant' && message.content"
-                  class="px-2 py-0.5 text-xs rounded bg-surface-light dark:bg-surface-dark border border-border-light dark:border-border-dark hover:text-accent-light dark:hover:text-accent-dark cursor-pointer transition-colors"
-                  @click="playTTS(message.content)"
-                >
-                  Read aloud
-                </button>
-              </div>
-              <span v-if="getMessageMetaStatus(message)" class="text-xs text-text-secondary-light dark:text-text-secondary-dark ml-auto">
-                {{ getMessageStatusLabel(getMessageMetaStatus(message)) }}
-              </span>
-            </div>
-
-            <!-- Message Content block -->
-            <div class="pl-11 text-base leading-relaxed space-y-4 break-words">
-              <!-- Image Preview (for image recognition messages) -->
-              <img v-if="message.imageUrl" :src="message.imageUrl" alt="Uploaded image" class="max-w-xs rounded-xl shadow-md mt-1 mb-2" />
-              <div v-html="renderMarkdown(message.content)" class="prose dark:prose-invert prose-p:my-2 prose-pre:bg-surface-light dark:prose-pre:bg-surface-dark prose-pre:border prose-pre:border-border-light dark:prose-pre:border-border-dark prose-pre:shadow-[0_2px_10px_rgba(0,0,0,0.02)] max-w-none"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Floating Pill Input -->
-      <div class="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-3xl px-4 z-20">
-        <div class="bg-surface-light dark:bg-surface-dark rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.06)] dark:shadow-2xl ring-1 ring-black/5 dark:ring-white/10 flex flex-col p-2 transition-shadow focus-within:ring-2 focus-within:ring-accent-light/30 dark:focus-within:ring-accent-dark/30">
-          <!-- Toolbar -->
-          <div class="flex items-center gap-0.5 px-2 pt-1">
-            <button @click="triggerFileUpload" :disabled="uploading || loading" class="p-1.5 rounded-lg text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-transparent border-none" title="上传文档 (.md/.txt)">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
-            </button>
-            <button @click="triggerImageUpload" :disabled="loading" class="p-1.5 rounded-lg text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-transparent border-none" title="图像识别">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-            </button>
-            <input
-              ref="fileInput"
-              type="file"
-              accept=".md,.txt,text/markdown,text/plain"
-              class="hidden"
-              @change="handleFileUpload"
-            />
-            <input
-              ref="imageInput"
-              type="file"
-              accept="image/*"
-              class="hidden"
-              @change="handleImageRecognition"
-            />
-          </div>
-
-          <div class="flex items-end pb-1 pr-1">
-            <textarea
-              v-model="inputMessage"
-              placeholder="问点什么..."
-              @keydown.enter.exact.prevent="sendMessage"
-              :disabled="loading"
-              ref="messageInput"
-              rows="1"
-              class="flex-1 max-h-40 min-h-[44px] bg-transparent border-none outline-none resize-none px-4 py-2 text-base text-text-primary-light dark:text-text-primary-dark placeholder-text-secondary-light dark:placeholder-text-secondary-dark"
-            ></textarea>
-
-            <!-- Config and Mode Selection in Input Area -->
-            <div class="flex flex-col sm:flex-row items-center gap-1 mb-0 mx-1 opacity-60 hover:opacity-100 focus-within:opacity-100 transition-opacity">
-              <div class="toolbar-select-wrap max-w-[130px] !bg-black/5 dark:!bg-white/5 !border-none !rounded-xl">
-                <select
-                  v-model="selectedConfigId"
-                  class="toolbar-select !py-1.5 !px-2.5 !pr-7 !text-xs !min-h-[36px] bg-transparent font-medium"
-                  @change="onConfigChange"
-                >
-                  <option value="" disabled v-if="!availableConfigs.length">No Config</option>
-                  <option v-for="config in availableConfigs" :key="config.id" :value="config.id" class="bg-surface-light dark:bg-surface-dark">
-                    {{ config.name }}{{ config.isDefault ? ' ★' : '' }}
-                  </option>
-                </select>
-                <span class="toolbar-select-icon right-1.5" aria-hidden="true">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
-                </span>
-              </div>
-              
-              <div class="toolbar-select-wrap max-w-[110px] !bg-black/5 dark:!bg-white/5 !border-none !rounded-xl">
-                <select
-                  v-model="selectedChatMode"
-                  class="toolbar-select !py-1.5 !px-2.5 !pr-7 !text-xs !min-h-[36px] bg-transparent font-medium"
-                  :disabled="loading || !availableChatModes.length"
-                >
-                  <option v-for="mode in availableChatModes" :key="mode" :value="mode" class="bg-surface-light dark:bg-surface-dark">
-                    {{ chatModeLabel(mode) }}
-                  </option>
-                </select>
-                <span class="toolbar-select-icon right-1.5" aria-hidden="true">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
-                </span>
-              </div>
-
-              <!-- Config Button -->
-              <button type="button" @click="openModelConfigDialog" class="p-2 w-9 h-9 mr-1 rounded-xl hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors bg-transparent border-none cursor-pointer flex items-center justify-center shrink-0" title="Model Configs">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-              </button>
-            </div>
-
-            <!-- Stop Button when streaming and loading -->
-            <button
-               v-if="isStreaming && loading"
-               type="button"
-               @click="stopCurrentStream"
-               class="p-2 w-10 h-10 mb-1 mr-1 rounded-xl flex items-center justify-center transition-all bg-red-500/10 text-red-500 hover:bg-red-500/20 cursor-pointer shadow-sm border-none"
-               title="停止生成"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-            </button>
-
-            <!-- Default Send / Loading Button -->
-            <button
-              v-else
-              type="button"
-              :disabled="!inputMessage.trim() || loading"
-              @click="sendMessage"
-              :class="[
-                'p-2 w-10 h-10 mb-1 mr-1 rounded-xl flex items-center justify-center transition-all disabled:cursor-not-allowed border-none',
-                (!inputMessage.trim() || loading)
-                  ? 'bg-transparent text-text-secondary-light dark:text-text-secondary-dark opacity-50'
-                  : 'bg-black text-white dark:bg-white dark:text-black shadow-sm'
-              ]"
-            >
-              <svg v-if="!loading" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
-                <path d="M3.478 2.404a.75.75 0 00-.926.941l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.404z" />
-              </svg>
-              <svg v-else class="animate-spin w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-      <el-dialog v-model="settingsVisible" title="个人设置" width="520px">
-        <div class="space-y-4">
-          <div class="flex items-center gap-4">
-            <img
-              v-if="userProfile.avatar_url"
-              :src="userProfile.avatar_url"
-              alt="用户头像"
-              class="w-16 h-16 rounded-full object-cover border border-border-light dark:border-border-dark"
-            />
-            <div
-              v-else
-              class="w-16 h-16 rounded-full bg-gradient-to-br from-accent-light to-orange-400 flex items-center justify-center text-white text-lg font-bold select-none"
-            >
-              {{ getUserInitial() }}
-            </div>
-            <div class="flex flex-col gap-2">
-              <button
-                type="button"
-                class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer"
-                @click="triggerAvatarUpload"
-                :disabled="uploadingAvatar"
-              >
-                {{ uploadingAvatar ? '上传中...' : '上传头像' }}
-              </button>
-              <span class="text-xs text-text-secondary-light dark:text-text-secondary-dark">支持 JPG、PNG、WEBP，大小不超过 2MB</span>
-            </div>
-            <input
-              ref="avatarInput"
-              type="file"
-              accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-              class="hidden"
-              @change="handleAvatarUpload"
-            />
-          </div>
-
-          <div class="space-y-2">
-            <label class="block text-sm dark:text-text-primary-dark">Display name</label>
-            <input v-model="profileForm.name" type="text" maxlength="50" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none dark:text-text-primary-dark" />
-          </div>
-
-          <div class="space-y-2">
-            <label class="block text-sm dark:text-text-primary-dark">Username</label>
-            <input :value="userProfile.username || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none dark:text-text-secondary-dark" disabled />
-          </div>
-
-          <div class="space-y-2">
-            <label class="block text-sm dark:text-text-primary-dark">Email</label>
-            <input :value="userProfile.email || ''" type="text" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5 outline-none dark:text-text-secondary-dark" disabled />
-          </div>
-
-          <div class="space-y-2">
-            <label class="block text-sm dark:text-text-primary-dark">Bio</label>
-            <textarea v-model="profileForm.bio" rows="4" maxlength="255" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent dark:bg-surface-dark outline-none resize-none dark:text-text-primary-dark"></textarea>
-          </div>
-        </div>
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="settingsVisible = false">Cancel</button>
-            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="saveProfile" :disabled="savingProfile">{{ savingProfile ? 'Saving...' : 'Save' }}</button>
-          </div>
-        </template>
-      </el-dialog>
-      <el-dialog v-model="cropDialogVisible" title="Crop avatar" width="560px">
-        <div class="space-y-4">
-          <div class="flex justify-center">
-            <div class="relative flex items-center justify-center w-72 h-72 overflow-hidden rounded-2xl border border-border-light dark:border-border-dark bg-black/5 dark:bg-white/5">
-              <img
-                v-if="cropPreviewUrl"
-                :src="cropPreviewUrl"
-                alt="Crop preview"
-                class="max-w-none select-none"
-                :style="cropImageStyle"
-              />
-            </div>
-          </div>
-          <div class="space-y-3">
-            <div>
-              <label class="block text-sm mb-2">Zoom</label>
-              <input v-model="cropScale" type="range" min="1" max="3" step="0.01" class="w-full" />
-            </div>
-            <div>
-              <label class="block text-sm mb-2">Horizontal offset</label>
-              <input v-model="cropOffsetX" type="range" min="-120" max="120" step="1" class="w-full" />
-            </div>
-            <div>
-              <label class="block text-sm mb-2">Vertical offset</label>
-              <input v-model="cropOffsetY" type="range" min="-120" max="120" step="1" class="w-full" />
-            </div>
-          </div>
-          <p class="text-xs text-text-secondary-light dark:text-text-secondary-dark">The crop ratio is fixed at 1:1 for avatar display.</p>
-        </div>
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="cancelAvatarCrop">Cancel</button>
-            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="confirmAvatarCrop" :disabled="uploadingAvatar">{{ uploadingAvatar ? 'Uploading...' : 'Confirm upload' }}</button>
-          </div>
-        </template>
-      </el-dialog>
-
-      <!-- 新建/重命名 文件夹弹窗 -->
-      <el-dialog v-model="folderDialogVisible" :title="folderDialogType === 'create' ? '新建文件夹' : '重命名文件夹'" width="400px">
-        <div class="space-y-4">
-          <div class="space-y-2">
-            <label class="block text-sm">文件夹名称</label>
-            <input v-model="folderForm.name" type="text" maxlength="50" placeholder="请输入文件夹名称" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none" @keydown.enter="submitFolderDialog" />
-          </div>
-        </div>
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="folderDialogVisible = false">取消</button>
-            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="submitFolderDialog" :disabled="!folderForm.name.trim() || submittingFolder">确认</button>
-          </div>
-        </template>
-      </el-dialog>
-
-      <!-- 重命名会话弹窗 -->
-      <el-dialog v-model="renameSessionDialogVisible" title="重命名会话" width="400px">
-        <div class="space-y-4">
-          <div class="space-y-2">
-            <label class="block text-sm">会话名称</label>
-            <input v-model="renameSessionForm.name" type="text" maxlength="50" placeholder="请输入会话名称" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none" @keydown.enter="submitRenameSession" />
-          </div>
-        </div>
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="renameSessionDialogVisible = false">取消</button>
-            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="submitRenameSession" :disabled="!renameSessionForm.name.trim() || submittingRenameSession">确认</button>
-          </div>
-        </template>
-      </el-dialog>
-
-      <!-- 移动到文件夹弹窗 -->
-      <el-dialog v-model="moveSessionDialogVisible" title="移动到文件夹" width="400px">
-        <div class="space-y-4">
-          <div class="space-y-2">
-            <label class="block text-sm">选择目标文件夹</label>
-            <select v-model="moveSessionForm.folderId" class="w-full px-3 py-2 rounded-lg border border-border-light dark:border-border-dark bg-transparent outline-none cursor-pointer">
-              <option value="" class="bg-surface-light dark:bg-surface-dark">-- 改为独立会话 (移出文件夹) --</option>
-              <option v-for="f in foldersList" :key="f.id" :value="f.id" class="bg-surface-light dark:bg-surface-dark">{{ f.name }}</option>
-            </select>
-          </div>
-        </div>
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <button type="button" class="px-3 py-2 rounded-lg bg-transparent border border-border-light dark:border-border-dark cursor-pointer" @click="moveSessionDialogVisible = false">取消</button>
-            <button type="button" class="px-3 py-2 rounded-lg bg-black text-white dark:bg-white dark:text-black border-none cursor-pointer" @click="submitMoveSession" :disabled="submittingMoveSession">确认</button>
-          </div>
-        </template>
-      </el-dialog>
+      <SettingsDialog
+        v-model="settingsVisible"
+        :user-profile="userProfile"
+        :profile-form="profileForm"
+        :uploading-avatar="uploadingAvatar"
+        :saving-profile="savingProfile"
+        @save="saveProfile"
+        @trigger-avatar-upload="triggerAvatarUpload"
+        @avatar-upload="handleAvatarUpload"
+      />
+      <CropAvatarDialog
+        v-model="cropDialogVisible"
+        :crop-scale="cropScale"
+        :crop-offset-x="cropOffsetX"
+        :crop-offset-y="cropOffsetY"
+        @update:cropScale="val => cropScale = val"
+        @update:cropOffsetX="val => cropOffsetX = val"
+        @update:cropOffsetY="val => cropOffsetY = val"
+        :crop-preview-url="cropPreviewUrl"
+        :crop-image-style="cropImageStyle"
+        :uploading-avatar="uploadingAvatar"
+        @cancel="cancelAvatarCrop"
+        @confirm="confirmAvatarCrop"
+      />
+      <FolderDialog
+        v-model="folderDialogVisible"
+        :folder-dialog-type="folderDialogType"
+        :folder-form="folderForm"
+        :submitting-folder="submittingFolder"
+        @submit="submitFolderDialog"
+      />
+      <RenameSessionDialog
+        v-model="renameSessionDialogVisible"
+        :rename-session-form="renameSessionForm"
+        :submitting-rename-session="submittingRenameSession"
+        @submit="submitRenameSession"
+      />
+      <MoveSessionDialog
+        v-model="moveSessionDialogVisible"
+        :move-session-form="moveSessionForm"
+        :submitting-move-session="submittingMoveSession"
+        :folders-list="foldersList"
+        @submit="submitMoveSession"
+      />
 
       <!-- Model Config Dialog -->
       <ModelConfigDialog v-model="modelConfigDialogVisible" @configsChanged="refreshConfigs" />
 
       <!-- File Manager Dialog -->
       <FileManagerDialog v-model="fileManagerVisible" />
-
     </section>
   </div>
 </template>
 
 <script>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watchEffect } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
-import api, { refreshClient } from '../utils/api'
-import { ensureAccessToken, clearTokens } from '../utils/token'
+import api from '../utils/api'
+import { clearTokens } from '../utils/token'
+import { useTheme } from '../composables/useTheme'
+import { useSidebarUI } from '../composables/useSidebarUI'
+import { useTTS } from '../composables/useTTS'
+import { useModelConfig } from '../composables/useModelConfig'
+import { useSessionStore } from '../composables/useSessionStore'
+import { useFolderManager } from '../composables/useFolderManager'
+import { useSessionManager } from '../composables/useSessionManager'
+import { useUserProfile } from '../composables/useUserProfile'
+import { useChatStream } from '../composables/useChatStream'
+import { useFileUpload } from '../composables/useFileUpload'
+import ChatSidebar from './components/ChatSidebar.vue'
+import ChatHeader from './components/ChatHeader.vue'
+import ChatEmptyState from './components/ChatEmptyState.vue'
+import ChatMessageList from './components/ChatMessageList.vue'
+import ChatInputArea from './components/ChatInputArea.vue'
 import ModelConfigDialog from './components/ModelConfigDialog.vue'
 import FileManagerDialog from './components/FileManagerDialog.vue'
-
-const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'timeout', 'failed', 'partial'])
-
-const CHAT_MODE_LABELS = {
-  chat: 'Chat',
-  chat_rag: 'RAG',
-  chat_mcp: 'MCP',
-  chat_rag_mcp: 'RAG + MCP'
-}
+import SettingsDialog from './components/SettingsDialog.vue'
+import CropAvatarDialog from './components/CropAvatarDialog.vue'
+import FolderDialog from './components/FolderDialog.vue'
+import RenameSessionDialog from './components/RenameSessionDialog.vue'
+import MoveSessionDialog from './components/MoveSessionDialog.vue'
 
 export default {
   name: 'AIChat',
-  components: { ModelConfigDialog, FileManagerDialog },
+  components: {
+    ChatSidebar, ChatHeader, ChatEmptyState, ChatMessageList, ChatInputArea,
+    ModelConfigDialog, FileManagerDialog, SettingsDialog, CropAvatarDialog,
+    FolderDialog, RenameSessionDialog, MoveSessionDialog
+  },
   setup() {
     const router = useRouter()
-    const isSidebarCollapsed = ref(false)
-    const isDark = ref(true)
-    const sessions = ref({}) // 仍保留平铺的数据结构管理消息状态
-    
-    // ----------- 文件夹 & 会话树状态 -----------
-    const foldersList = ref([])
-    const ungroupedSessionsList = ref([])
-    const collapsedFolders = ref({}) // track folder collapse state
-    
-    // Dialog state
-    const folderDialogVisible = ref(false)
-    const folderDialogType = ref('create') // 'create' or 'rename'
-    const folderForm = ref({ id: '', name: '' })
-    const submittingFolder = ref(false)
+    const chatMessageListRef = ref(null)
+    const chatInputAreaRef = ref(null)
 
-    const renameSessionDialogVisible = ref(false)
-    const renameSessionForm = ref({ sessionId: '', name: '' })
-    const submittingRenameSession = ref(false)
+    const { isDark, toggleTheme } = useTheme()
+    const { isSidebarCollapsed, userMenuVisible, toggleSidebar, toggleUserMenu } = useSidebarUI()
+    const { playTTS } = useTTS()
+    const {
+      modelConfigDialogVisible,
+      availableConfigs,
+      selectedConfigId,
+      selectedChatMode,
+      availableChatModes,
+      chatModeLabel,
+      onConfigChange,
+      loadConfigsMeta,
+      loadAvailableConfigs,
+      refreshConfigs,
+      openModelConfigDialog,
+      fileManagerVisible,
+      openFileManagerDialog
+    } = useModelConfig({ userMenuVisible })
+    const {
+      sessions,
+      foldersList,
+      ungroupedSessionsList,
+      sessionFolders,
+      collapsedFolders,
+      currentSessionId,
+      tempSession,
+      currentMessages,
+      messagesRef,
+      toggleFolder,
+      buildSessionRoutingHeaders,
+      buildSessionTitle,
+      scrollToBottom,
+      ensureSessionEntry,
+      upsertSessionEntry,
+      syncSessionMessagesFromCurrent,
+      loadSessions,
+      createNewSession,
+      ensureActiveDraftSession,
+      switchSession,
+      syncHistory
+    } = useSessionStore()
 
-    const moveSessionDialogVisible = ref(false)
-    const moveSessionForm = ref({ sessionId: '', folderId: '' })
-    const submittingMoveSession = ref(false)
-    // -------------------------------------------
-    const sessionFolders = ref([])
-    const ungroupedSessionIds = ref([])
-    const expandedFolders = ref({})
-    const currentSessionId = ref(null)
-    const tempSession = ref(false)
-    const currentMessages = ref([])
-    const inputMessage = ref('')
-    const loading = ref(false)
-    const messagesRef = ref(null)
-    const messageInput = ref(null)
-    const isStreaming = ref(true)
-    const uploading = ref(false)
-    const fileInput = ref(null)
-    const imageInput = ref(null)
-    const avatarInput = ref(null)
-    const settingsVisible = ref(false)
-    const userMenuVisible = ref(false)
-    const savingProfile = ref(false)
-    const uploadingAvatar = ref(false)
-    const cropDialogVisible = ref(false)
-    const cropPreviewUrl = ref('')
-    const cropScale = ref(1)
-    const cropOffsetX = ref(0)
-    const cropOffsetY = ref(0)
-    const cropImageNaturalWidth = ref(0)
-    const cropImageNaturalHeight = ref(0)
-    const pendingAvatarFile = ref(null)
-    const userProfile = ref({
-      id: null,
-      name: '',
-      username: '',
-      email: '',
-      avatar_url: '',
-      bio: ''
-    })
-    const profileForm = ref({
-      name: '',
-      bio: ''
-    })
-    const modelOptions = []
+    const {
+      folderDialogVisible,
+      folderDialogType,
+      folderForm,
+      submittingFolder,
+      showCreateFolderDialog,
+      handleFolderCommand,
+      submitFolderDialog
+    } = useFolderManager({ loadSessions })
 
-    // ----------- 模型配置与能力状态 -----------
-    const modelConfigDialogVisible = ref(false)
-    const availableConfigs = ref([])
-    const selectedConfigId = ref(null)
-    const selectedChatMode = ref('chat')
-    const configsMeta = ref({ providers: [], chatModes: [] })
+    const {
+      renameSessionDialogVisible,
+      renameSessionForm,
+      submittingRenameSession,
+      moveSessionDialogVisible,
+      moveSessionForm,
+      submittingMoveSession,
+      handleSessionCommand,
+      submitRenameSession,
+      submitMoveSession
+    } = useSessionManager({ currentSessionId, currentMessages, tempSession, loadSessions, createNewSession, sessionFolders })
 
-    const availableChatModes = computed(() => {
-      if (!selectedConfigId.value || !availableConfigs.value.length) {
-        return configsMeta.value.chatModes || ['chat']
-      }
-      const cfg = availableConfigs.value.find(c => c.id === selectedConfigId.value)
-      if (cfg?.providerCapability?.supportedChatModes?.length) {
-        return cfg.providerCapability.supportedChatModes
-      }
-      return configsMeta.value.chatModes || ['chat']
-    })
+    const {
+      userProfile,
+      profileForm,
+      savingProfile,
+      settingsVisible,
+      uploadingAvatar,
+      cropDialogVisible,
+      cropPreviewUrl,
+      cropScale,
+      cropOffsetX,
+      cropOffsetY,
+      cropImageStyle,
+      fetchUserProfile,
+      handleSettings,
+      saveProfile,
+      triggerAvatarUpload,
+      handleAvatarUpload,
+      cancelAvatarCrop,
+      confirmAvatarCrop
+    } = useUserProfile({ userMenuVisible })
 
-    const chatModeLabel = (mode) => CHAT_MODE_LABELS[mode] || mode
-
-    const onConfigChange = () => {
-      // 如果当前模式不在新配置支持的模式列表中，自动回退到第一个
-      if (!availableChatModes.value.includes(selectedChatMode.value)) {
-        selectedChatMode.value = availableChatModes.value[0] || 'chat'
-      }
-    }
-
-    const loadConfigsMeta = async () => {
-      try {
-        const res = await api.get('/AI/configs/meta')
-        if (res.data?.status_code === 1000) {
-          configsMeta.value = {
-            providers: res.data.providers || [],
-            chatModes: res.data.chatModes || ['chat']
-          }
-        }
-      } catch (e) {
-        console.error('Load configs meta error:', e)
-      }
-    }
-
-    const loadAvailableConfigs = async () => {
-      try {
-        const res = await api.get('/AI/configs')
-        if (res.data?.status_code === 1000 && res.data.configs) {
-          availableConfigs.value = res.data.configs
-          // 自动选择默认配置
-          if (!selectedConfigId.value) {
-            const defaultCfg = res.data.configs.find(c => c.isDefault)
-            selectedConfigId.value = defaultCfg ? defaultCfg.id : (res.data.configs[0]?.id || null)
-          }
-        }
-      } catch (e) {
-        console.error('Load configs error:', e)
-      }
-    }
-
-    const refreshConfigs = async () => {
-      await loadAvailableConfigs()
-      onConfigChange()
-    }
-
-    const openModelConfigDialog = () => {
-      userMenuVisible.value = false
-      modelConfigDialogVisible.value = true
-    }
-
-    const fileManagerVisible = ref(false)
-    const openFileManagerDialog = () => {
-      userMenuVisible.value = false
-      fileManagerVisible.value = true
-    }
-    // -------------------------------------------
-
-    // 用于中断当前请求，保证停止按钮和异常处理共用同一 controller。
-    const activeAbortController = ref(null)
-    // 记录当前流式响应对应的会话 ID，新会话开始时会先使用 temp。
-    const activeStreamingSessionId = ref(null)
-    // activeStreamId / messageId / lastSeq 共同组成恢复当前流式响应的最小水位信息。
-    const activeStreamId = ref(null)
-    const activeMessageId = ref(null)
-    const activeStreamLastSeq = ref(0)
-    // 指向当前 assistant 消息，便于更新停止、超时和失败状态。
-    const activeAssistantIndex = ref(-1)
-    // 区分用户手动停止与请求异常中断。
-    const manualStopRequested = ref(false)
-    const OWNER_MISMATCH_CODE = 2014
-    const MAX_OWNER_MISMATCH_RETRIES = 2
-
-    const renderMarkdown = (text) => {
-      if (!text && text !== '') return ''
-      return String(text)
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/`(.*?)`/g, '<code class="bg-black/5 dark:bg-white/10 px-1 py-0.5 rounded text-sm font-mono">$1</code>')
-        .replace(/\n/g, '<br>')
-    }
-
-    // 统一后端返回和前端临时消息的状态值。
-    const normalizeMessageStatus = (status) => {
-      if (!status) return 'completed'
-      const normalized = String(status).toLowerCase()
-      return TERMINAL_STATUSES.has(normalized) || normalized === 'streaming' ? normalized : 'completed'
-    }
-
-    const buildMessageMeta = (status, extra = {}) => ({
-      status: normalizeMessageStatus(status),
-      ...extra
+    const {
+      inputMessage,
+      loading,
+      messageInput,
+      isStreaming,
+      stopCurrentStream,
+      sendMessage
+    } = useChatStream({
+      sessions,
+      currentSessionId,
+      tempSession,
+      currentMessages,
+      syncSessionMessagesFromCurrent,
+      ensureSessionEntry,
+      upsertSessionEntry,
+      ensureActiveDraftSession,
+      scrollToBottom,
+      buildSessionRoutingHeaders,
+      buildSessionTitle,
+      loadSessions,
+      selectedConfigId,
+      selectedChatMode
     })
 
-    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+    const {
+      uploading,
+      fileInput,
+      imageInput,
+      handleFileUpload,
+      handleImageRecognition
+    } = useFileUpload({ currentMessages, loading, scrollToBottom })
 
-    const resolveRetryAfterMs = (value, fallback = 800) => {
-      const numeric = Number(value)
-      if (!Number.isFinite(numeric) || numeric <= 0) {
-        return fallback
+    // Proxy child component internal refs to composable refs
+    watchEffect(() => {
+      if (chatMessageListRef.value) {
+        messagesRef.value = chatMessageListRef.value.scrollContainer
       }
-      return Math.min(Math.max(Math.floor(numeric), 100), 3000)
-    }
-
-    const buildServerError = (statusCode, message, retryAfterMs = 0) => {
-      const error = new Error(message || '请求失败')
-      error.serverCode = Number(statusCode || 0)
-      error.retryAfterMs = resolveRetryAfterMs(retryAfterMs, 800)
-      return error
-    }
-
-    const isOwnerMismatchError = (error) => Number(error?.serverCode) === OWNER_MISMATCH_CODE
-
-    const postWithOwnerRetry = async (url, body, options = {}) => {
-      const maxRetries = typeof options.maxRetries === 'number' ? options.maxRetries : MAX_OWNER_MISMATCH_RETRIES
-      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-        const response = await api.post(url, body, options.requestConfig || {})
-        if (response.data?.status_code === 1000) {
-          return response
-        }
-
-        if (response.data?.status_code === OWNER_MISMATCH_CODE && attempt < maxRetries) {
-          await delay(resolveRetryAfterMs(response.data?.retry_after_ms, 800))
-          continue
-        }
-
-        throw buildServerError(
-          response.data?.status_code,
-          response.data?.status_msg || 'Send failed',
-          response.data?.retry_after_ms || 0
-        )
-      }
-    }
-
-    const buildSessionRoutingHeaders = (sessionId) => {
-      const normalizedId = String(sessionId || '').trim()
-      if (!normalizedId || normalizedId === 'temp') {
-        return {}
-      }
-      // 网关层若要做 session 级粘性路由，应优先基于该 header 做哈希，
-      // 这样无需解析请求体，就能在入口层把已有会话稳定打到同一实例。
-      return {
-        'X-Chat-Session-ID': normalizedId
-      }
-    }
-
-    const buildSessionTitle = (question) => {
-      const title = String(question || '').trim()
-      return title || 'New session'
-    }
-
-    const mapHistoryItemToMessage = (item) => ({
-      role: item.is_user ? 'user' : 'assistant',
-      content: item.content || '',
-      meta: buildMessageMeta(item.status)
-    })
-
-    const getMessageStatusLabel = (status) => {
-      switch (normalizeMessageStatus(status)) {
-      case 'streaming':
-        return 'Streaming'
-      case 'cancelled':
-        return 'Stopped'
-      case 'timeout':
-        return 'Timed out'
-      case 'failed':
-        return '失败'
-      case 'partial':
-        return '部分完成'
-      default:
-        return ''
-      }
-    }
-
-    const getMessageMetaStatus = (message) => {
-      if (!message || !message.meta) return ''
-      return message.meta.status || ''
-    }
-
-    const scrollToBottom = () => {
-      if (messagesRef.value) {
-        try {
-          messagesRef.value.scrollTop = messagesRef.value.scrollHeight
-        } catch (error) {
-          console.error('Scroll error:', error)
-        }
-      }
-    }
-
-    // 确保会话对象一定存在，避免新会话切换或异步返回时访问空对象。
-    const ensureSessionEntry = (sessionId) => {
-      const normalizedId = String(sessionId || '')
-      if (!normalizedId || normalizedId === 'temp') {
-        return null
-      }
-      if (!sessions.value[normalizedId]) {
-        sessions.value[normalizedId] = {
-          id: normalizedId,
-          name: `会话 ${normalizedId}`,
-          messages: []
-        }
-      } else if (!Array.isArray(sessions.value[normalizedId].messages)) {
-        sessions.value[normalizedId].messages = []
-      }
-      return sessions.value[normalizedId]
-    }
-
-    const upsertSessionEntry = (sessionData, options = {}) => {
-      const normalizedId = String(sessionData?.id || '')
-      if (!normalizedId || normalizedId === 'temp') {
-        return null
-      }
-
-      const existing = sessions.value[normalizedId] || {
-        id: normalizedId,
-        name: `会话 ${normalizedId}`,
-        messages: []
-      }
-      const nextEntry = {
-        ...existing,
-        ...sessionData,
-        id: normalizedId,
-        messages: Array.isArray(sessionData?.messages)
-          ? sessionData.messages
-          : (Array.isArray(existing.messages) ? existing.messages : [])
-      }
-
-      const nextSessions = {}
-      const shouldPrepend = options.prepend !== false
-      if (shouldPrepend) {
-        nextSessions[normalizedId] = nextEntry
-      }
-
-      Object.entries(sessions.value).forEach(([key, value]) => {
-        if (key !== normalizedId) {
-          nextSessions[key] = value
-        }
-      })
-
-      if (!shouldPrepend) {
-        nextSessions[normalizedId] = nextEntry
-      }
-
-      sessions.value = nextSessions
-      ensureSessionListed(normalizedId)
-      return nextEntry
-    }
-
-    const sidebarFolders = computed(() => sessionFolders.value.map(folder => ({
-      ...folder,
-      sessions: (folder.sessionIds || [])
-        .map(sessionId => sessions.value[sessionId])
-        .filter(Boolean)
-    })))
-
-    const ungroupedSessions = computed(() => ungroupedSessionIds.value
-      .map(sessionId => sessions.value[sessionId])
-      .filter(Boolean))
-
-    const isFolderExpanded = (folderId) => expandedFolders.value[String(folderId)] !== false
-
-    const toggleFolder = (folderId) => {
-      const key = String(folderId)
-      expandedFolders.value = {
-        ...expandedFolders.value,
-        [key]: !isFolderExpanded(key)
-      }
-      collapsedFolders.value[key] = !collapsedFolders.value[key]
-    }
-
-    const ensureSessionListed = (sessionId) => {
-      const normalizedId = String(sessionId || '')
-      if (!normalizedId || normalizedId === 'temp') return
-
-      const inFolder = sessionFolders.value.some(folder => (folder.sessionIds || []).includes(normalizedId))
-      const inUngrouped = ungroupedSessionIds.value.includes(normalizedId)
-      if (!inFolder && !inUngrouped) {
-        ungroupedSessionIds.value = [normalizedId, ...ungroupedSessionIds.value]
-      }
-    }
-
-    const applySessionTree = (tree) => {
-      const nextSessionMap = {}
-      const nextFolders = []
-      const nextExpanded = { ...expandedFolders.value }
-      const nextUngrouped = []
-
-      ;(tree?.folders || []).forEach(folder => {
-        const folderId = String(folder.id)
-        nextExpanded[folderId] = expandedFolders.value[folderId] !== false
-        const sessionIds = []
-
-        ;(folder.sessions || []).forEach(sessionItem => {
-          const sid = String(sessionItem.sessionId)
-          const existing = sessions.value[sid] || {}
-          nextSessionMap[sid] = {
-            ...existing,
-            id: sid,
-            name: sessionItem.name || existing.name || `Session ${sid}`,
-            messages: Array.isArray(existing.messages) ? existing.messages : []
-          }
-          sessionIds.push(sid)
-        })
-
-        nextFolders.push({
-          id: folder.id,
-          name: folder.name || `Folder ${folder.id}`,
-          sessionIds
-        })
-      })
-
-      ;(tree?.ungroupedSessions || []).forEach(sessionItem => {
-        const sid = String(sessionItem.sessionId)
-        const existing = sessions.value[sid] || {}
-        nextSessionMap[sid] = {
-          ...existing,
-          id: sid,
-          name: sessionItem.name || existing.name || `Session ${sid}`,
-          messages: Array.isArray(existing.messages) ? existing.messages : []
-        }
-        nextUngrouped.push(sid)
-      })
-
-      sessions.value = nextSessionMap
-      sessionFolders.value = nextFolders
-      ungroupedSessionIds.value = nextUngrouped
-      expandedFolders.value = nextExpanded
-    }
-
-    const CROP_PREVIEW_SIZE = 288
-    const CROP_OUTPUT_SIZE = 512
-
-    const cropImageStyle = computed(() => {
-      if (!cropImageNaturalWidth.value || !cropImageNaturalHeight.value) {
-        return {
-          transform: `translate(${cropOffsetX.value}px, ${cropOffsetY.value}px) scale(${cropScale.value})`,
-          transformOrigin: 'center center'
-        }
-      }
-
-      const baseScale = Math.max(
-        CROP_PREVIEW_SIZE / cropImageNaturalWidth.value,
-        CROP_PREVIEW_SIZE / cropImageNaturalHeight.value
-      )
-
-      return {
-        width: `${cropImageNaturalWidth.value * baseScale}px`,
-        height: `${cropImageNaturalHeight.value * baseScale}px`,
-        transform: `translate(${cropOffsetX.value}px, ${cropOffsetY.value}px) scale(${cropScale.value})`,
-        transformOrigin: 'center center'
+      if (chatInputAreaRef.value) {
+        messageInput.value = chatInputAreaRef.value.messageInput
+        fileInput.value = chatInputAreaRef.value.fileInput
+        imageInput.value = chatInputAreaRef.value.imageInput
       }
     })
 
-    const syncSessionMessagesFromCurrent = async () => {
-      if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]) {
-        sessions.value[currentSessionId.value].messages = [...currentMessages.value]
-      }
-      await nextTick()
-      scrollToBottom()
+    const switchSessionWithGuard = (sessionId) => {
+      if (loading.value) return
+      switchSession(sessionId)
     }
 
-    const setAssistantStatus = async (status) => {
-      if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
-        return
-      }
-      const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
-      currentMessages.value[activeAssistantIndex.value].meta = buildMessageMeta(status, {
-        streamId: prevMeta.streamId || activeStreamId.value,
-        messageId: prevMeta.messageId || activeMessageId.value,
-        lastSeq: typeof prevMeta.lastSeq === 'number' ? prevMeta.lastSeq : activeStreamLastSeq.value
-      })
-      currentMessages.value = [...currentMessages.value]
-      await syncSessionMessagesFromCurrent()
-    }
-
-    const patchActiveAssistantMeta = async (patch = {}) => {
-      if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
-        return
-      }
-      const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
-      const nextStatus = patch.status ? normalizeMessageStatus(patch.status) : normalizeMessageStatus(prevMeta.status || 'streaming')
-      currentMessages.value[activeAssistantIndex.value].meta = {
-        ...prevMeta,
-        ...patch,
-        status: nextStatus
-      }
-      currentMessages.value = [...currentMessages.value]
-      await syncSessionMessagesFromCurrent()
-    }
-
-    const appendAssistantChunk = async (chunk, seq = null) => {
-      if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
-        return
-      }
-      if (seq !== null && Number(seq) <= activeStreamLastSeq.value) {
-        return
-      }
-      currentMessages.value[activeAssistantIndex.value].content += chunk
-      if (seq !== null) {
-        activeStreamLastSeq.value = Number(seq)
-      }
-      const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
-      currentMessages.value[activeAssistantIndex.value].meta = {
-        ...prevMeta,
-        streamId: prevMeta.streamId || activeStreamId.value,
-        messageId: prevMeta.messageId || activeMessageId.value,
-        lastSeq: activeStreamLastSeq.value,
-        status: normalizeMessageStatus(prevMeta.status || 'streaming')
-      }
-      currentMessages.value = [...currentMessages.value]
-      await syncSessionMessagesFromCurrent()
-    }
-
-    const applyAssistantSnapshot = async (content, lastSeq) => {
-      if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
-        return
-      }
-      currentMessages.value[activeAssistantIndex.value].content = content || ''
-      activeStreamLastSeq.value = Number(lastSeq || 0)
-      const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
-      currentMessages.value[activeAssistantIndex.value].meta = {
-        ...prevMeta,
-        streamId: prevMeta.streamId || activeStreamId.value,
-        messageId: prevMeta.messageId || activeMessageId.value,
-        lastSeq: activeStreamLastSeq.value,
-        status: normalizeMessageStatus(prevMeta.status || 'streaming')
-      }
-      currentMessages.value = [...currentMessages.value]
-      await syncSessionMessagesFromCurrent()
-    }
-
-    const handleSSEPayload = async (data) => {
-      if (!data) {
-        return
-      }
-
-      if (data === '[DONE]') {
-        loading.value = false
-        await setAssistantStatus('completed')
-        return 'done'
-      }
-
-      if (!data.startsWith('{')) {
-        await appendAssistantChunk(data)
-        return
-      }
-
-      let parsed
-      try {
-        parsed = JSON.parse(data)
-      } catch {
-        // 非法 JSON 直接忽略，避免把协议数据漏到聊天内容里。
-        return
-      }
-
-      if (parsed.type === 'ready') {
-        if (parsed.streamId) {
-          activeStreamId.value = String(parsed.streamId)
-          await patchActiveAssistantMeta({ streamId: activeStreamId.value })
-        }
-        return
-      }
-
-      if (parsed.type === 'chunk') {
-        await appendAssistantChunk(parsed.delta || '', parsed.seq)
-        return
-      }
-
-      if (parsed.type === 'snapshot') {
-        if (parsed.streamId) {
-          activeStreamId.value = String(parsed.streamId)
-        }
-        if (parsed.messageId) {
-          activeMessageId.value = String(parsed.messageId)
-        }
-        await applyAssistantSnapshot(parsed.content || '', parsed.lastSeq || 0)
-        return
-      }
-
-      if (parsed.type === 'done') {
-        if (typeof parsed.lastSeq === 'number') {
-          activeStreamLastSeq.value = parsed.lastSeq
-        }
-        loading.value = false
-        await setAssistantStatus(parsed.status || 'completed')
-        return 'done'
-      }
-
-      if (parsed.type === 'session') {
-        if (parsed.streamId) {
-          activeStreamId.value = String(parsed.streamId)
-        }
-        if (parsed.messageId) {
-          activeMessageId.value = String(parsed.messageId)
-        }
-        activeStreamLastSeq.value = 0
-        await patchActiveAssistantMeta({
-          streamId: activeStreamId.value,
-          messageId: activeMessageId.value,
-          lastSeq: 0
-        })
-        return
-      }
-
-      if (parsed.sessionId) {
-        const newSid = String(parsed.sessionId)
-        activeStreamingSessionId.value = newSid
-        if (tempSession.value) {
-          upsertSessionEntry({
-            id: newSid,
-            name: buildSessionTitle(currentMessages.value.find(message => message.role === 'user')?.content),
-            messages: [...currentMessages.value]
-          })
-          currentSessionId.value = newSid
-          tempSession.value = false
-          loadSessions()
-        }
-        await patchActiveAssistantMeta({
-          streamId: activeStreamId.value,
-          messageId: activeMessageId.value,
-          lastSeq: activeStreamLastSeq.value
-        })
-        return
-      }
-
-      if (parsed.type === 'error') {
-        throw buildServerError(parsed.status_code, parsed.message || '流式响应失败', parsed.retry_after_ms || 0)
-      }
-    }
-
-    const clearActiveStreamState = () => {
-      activeAbortController.value = null
-      activeStreamingSessionId.value = null
-      activeStreamId.value = null
-      activeMessageId.value = null
-      activeStreamLastSeq.value = 0
-      activeAssistantIndex.value = -1
-      manualStopRequested.value = false
-    }
-
-    const playTTS = async (text) => {
-      try {
-        const createResponse = await api.post('/AI/chat/tts', { text })
-        if (createResponse.data && createResponse.data.status_code === 1000 && createResponse.data.task_id) {
-          const taskId = createResponse.data.task_id
-          await new Promise(resolve => setTimeout(resolve, 5000))
-
-          const maxAttempts = 30
-          const pollInterval = 2000
-          let attempts = 0
-
-          const pollResult = async () => {
-            const queryResponse = await api.get('/AI/chat/tts/query', { params: { task_id: taskId } })
-            if (queryResponse.data && queryResponse.data.status_code === 1000) {
-              const taskStatus = queryResponse.data.task_status
-              if (taskStatus === 'Success' && queryResponse.data.task_result) {
-                const audio = new Audio(queryResponse.data.task_result)
-                audio.play()
-                return true
-              }
-              if (taskStatus === 'Running' || taskStatus === 'Created') {
-                attempts++
-                if (attempts < maxAttempts) {
-                  await new Promise(resolve => setTimeout(resolve, pollInterval))
-                  return pollResult()
-                }
-                ElMessage.error('语音合成超时')
-                return true
-              }
-              ElMessage.error('语音合成失败')
-              return true
-            }
-
-            attempts++
-            if (attempts < maxAttempts) {
-              await new Promise(resolve => setTimeout(resolve, pollInterval))
-              return pollResult()
-            }
-            ElMessage.error('语音合成超时')
-            return true
-          }
-
-          await pollResult()
-        } else {
-          ElMessage.error('无法创建语音合成任务')
-        }
-      } catch (error) {
-        console.error('TTS error:', error)
-        ElMessage.error('语音接口请求失败')
-      }
-    }
-
-    const loadSessions = async () => {
-      try {
-        const response = await api.get('/AI/chat/session-tree')
-        if (response.data && response.data.status_code === 1000 && response.data.tree) {
-          const tree = response.data.tree
-          foldersList.value = tree.folders || []
-          ungroupedSessionsList.value = tree.ungrouped_sessions || []
-          applySessionTree({
-            folders: tree.folders || [],
-            ungroupedSessions: tree.ungroupedSessions || tree.ungrouped_sessions || []
-          })
-          const sessionMap = {}
-          // Initialize flat sessions map and collapsed states
-          foldersList.value.forEach(f => {
-            if (!(f.id in collapsedFolders.value)) {
-              collapsedFolders.value[f.id] = false
-            }
-            if (f.sessions) {
-              f.sessions.forEach(s => {
-                sessionMap[s.sessionId] = { id: s.sessionId, name: s.name, folderId: s.folderId, messages: sessions.value[s.sessionId]?.messages || [] }
-              })
-            } else {
-              f.sessions = []
-            }
-          })
-          ungroupedSessionsList.value.forEach(s => {
-            sessionMap[s.sessionId] = { id: s.sessionId, name: s.name, folderId: null, messages: sessions.value[s.sessionId]?.messages || [] }
-          })
-          sessions.value = sessionMap
-        }
-      } catch (error) {
-        console.error('Load session tree error:', error)
-      }
-    }
-
-    // --- 文件夹管理 ---
-    const showCreateFolderDialog = () => {
-      folderDialogType.value = 'create'
-      folderForm.value = { id: '', name: '' }
-      folderDialogVisible.value = true
-    }
-
-    const handleFolderCommand = (cmd, folder) => {
-      if (cmd === 'rename') {
-        folderDialogType.value = 'rename'
-        folderForm.value = { id: folder.id, name: folder.name }
-        folderDialogVisible.value = true
-      } else if (cmd === 'delete') {
-        ElMessageBox.confirm('删除文件夹后，其中的会话将被移出并作为独立会话保留。确定删除吗？', '删除确认', {
-          confirmButtonText: '确定',
-          cancelButtonText: '取消',
-          type: 'warning'
-        }).then(async () => {
-          try {
-            const res = await api.post('/AI/chat/folder/delete', { folderId: folder.id })
-            if (res.data?.status_code === 1000) {
-              ElMessage.success('已删除文件夹')
-              await loadSessions()
-            } else {
-              ElMessage.error(res.data?.status_msg || '删除失败')
-            }
-          } catch (e) {
-            ElMessage.error('服务器错误')
-          }
-        }).catch(() => {})
-      }
-    }
-
-    const submitFolderDialog = async () => {
-      if (!folderForm.value.name.trim() || submittingFolder.value) return
-      submittingFolder.value = true
-      try {
-        const url = folderDialogType.value === 'create' ? '/AI/chat/folder/create' : '/AI/chat/folder/rename'
-        const payload = folderDialogType.value === 'create' ? { name: folderForm.value.name } : { folderId: folderForm.value.id, name: folderForm.value.name }
-        const res = await api.post(url, payload)
-        if (res.data?.status_code === 1000) {
-          ElMessage.success(folderDialogType.value === 'create' ? '创建成功' : '重命名成功')
-          folderDialogVisible.value = false
-          await loadSessions()
-        } else {
-          ElMessage.error(res.data?.status_msg || '操作失败')
-        }
-      } catch (e) {
-        ElMessage.error('请求异常')
-      } finally {
-        submittingFolder.value = false
-      }
-    }
-
-    // --- 会话管理 ---
-    const handleSessionCommand = (cmd, session) => {
-      if (cmd === 'rename') {
-        renameSessionForm.value = { sessionId: session.sessionId, name: session.name }
-        renameSessionDialogVisible.value = true
-      } else if (cmd === 'move') {
-        moveSessionForm.value = { sessionId: session.sessionId, folderId: session.folderId || '' }
-        moveSessionDialogVisible.value = true
-      } else if (cmd === 'removeFromFolder') {
-        api.post('/AI/chat/session/remove-from-folder', { sessionId: session.sessionId }).then(res => {
-          if (res.data?.status_code === 1000) {
-            ElMessage.success('已移出文件夹')
-            loadSessions()
-          } else {
-            ElMessage.error('移出失败')
-          }
-        })
-      } else if (cmd === 'delete') {
-        ElMessageBox.confirm('会话删除后无法恢复，确定删除该会话吗？', '删除确认', {
-          confirmButtonText: '确定',
-          cancelButtonText: '取消',
-          type: 'warning'
-        }).then(async () => {
-          try {
-            const res = await api.post('/AI/chat/session/delete', { sessionId: session.sessionId })
-            if (res.data?.status_code === 1000) {
-              ElMessage.success('已删除')
-              if (currentSessionId.value === String(session.sessionId)) {
-                currentSessionId.value = 'temp'
-                currentMessages.value = []
-                tempSession.value = true
-              }
-              await loadSessions()
-            } else {
-              ElMessage.error(res.data?.status_msg || '删除失败')
-            }
-          } catch (e) {
-            ElMessage.error('删除异常')
-          }
-        }).catch(() => {})
-      }
-    }
-
-    const submitRenameSession = async () => {
-      if (!renameSessionForm.value.name.trim() || submittingRenameSession.value) return
-      submittingRenameSession.value = true
-      try {
-        const res = await api.post('/AI/chat/session/rename', { sessionId: renameSessionForm.value.sessionId, title: renameSessionForm.value.name })
-        if (res.data?.status_code === 1000) {
-          renameSessionDialogVisible.value = false
-          await loadSessions()
-        } else {
-          ElMessage.error('重命名失败')
-        }
-      } finally {
-        submittingRenameSession.value = false
-      }
-    }
-
-    const submitMoveSession = async () => {
-      if (submittingMoveSession.value) return
-      submittingMoveSession.value = true
-      try {
-        let res
-        if (!moveSessionForm.value.folderId) {
-          res = await api.post('/AI/chat/session/remove-from-folder', { sessionId: moveSessionForm.value.sessionId })
-        } else {
-          res = await api.post('/AI/chat/session/move', { sessionId: moveSessionForm.value.sessionId, folderId: moveSessionForm.value.folderId })
-        }
-        if (res.data?.status_code === 1000) {
-          moveSessionDialogVisible.value = false
-          await loadSessions()
-        } else {
-          ElMessage.error('移动失败')
-        }
-      } finally {
-        submittingMoveSession.value = false
-      }
-    }
-
-    const createFolder = async () => {
-      try {
-        const { value } = await ElMessageBox.prompt('Enter a folder name', 'Create Folder', {
-          confirmButtonText: 'OK',
-          cancelButtonText: 'Cancel',
-          inputPattern: /\S+/,
-          inputErrorMessage: 'Folder name is required'
-        })
-
-        const name = String(value || '').trim()
-        if (!name) return
-
-        const response = await api.post('/AI/chat/folder/create', { name })
-        if (response.data && response.data.status_code === 1000) {
-          await loadSessions()
-          ElMessage.success('Folder created')
-          return
-        }
-
-        ElMessage.error(response.data?.status_msg || 'Create folder failed')
-      } catch (error) {
-        if (error !== 'cancel' && error !== 'close') {
-          console.error('Create folder error:', error)
-          ElMessage.error('Create folder failed')
-        }
-      }
-    }
-
-    const renameFolder = async (folder) => {
-      if (!folder?.id) return
-      try {
-        const { value } = await ElMessageBox.prompt('Enter a new folder name', 'Rename Folder', {
-          confirmButtonText: 'OK',
-          cancelButtonText: 'Cancel',
-          inputValue: folder.name || '',
-          inputPattern: /\S+/,
-          inputErrorMessage: 'Folder name is required'
-        })
-        const name = String(value || '').trim()
-        if (!name) return
-
-        const response = await api.post('/AI/chat/folder/rename', {
-          folderId: Number(folder.id),
-          name
-        })
-        if (response.data?.status_code === 1000) {
-          await loadSessions()
-          ElMessage.success('Folder renamed')
-          return
-        }
-        ElMessage.error(response.data?.status_msg || 'Rename folder failed')
-      } catch (error) {
-        if (error !== 'cancel' && error !== 'close') {
-          console.error('Rename folder error:', error)
-          ElMessage.error('Rename folder failed')
-        }
-      }
-    }
-
-    const deleteFolder = async (folder) => {
-      if (!folder?.id) return
-      try {
-        await ElMessageBox.confirm(
-          `Delete folder "${folder.name || folder.id}"? Sessions will become ungrouped.`,
-          'Delete Folder',
-          {
-            confirmButtonText: 'Delete',
-            cancelButtonText: 'Cancel',
-            type: 'warning'
-          }
-        )
-
-        const response = await api.post('/AI/chat/folder/delete', {
-          folderId: Number(folder.id)
-        })
-        if (response.data?.status_code === 1000) {
-          await loadSessions()
-          ElMessage.success('Folder deleted')
-          return
-        }
-        ElMessage.error(response.data?.status_msg || 'Delete folder failed')
-      } catch (error) {
-        if (error !== 'cancel' && error !== 'close') {
-          console.error('Delete folder error:', error)
-          ElMessage.error('Delete folder failed')
-        }
-      }
-    }
-
-    const promptTargetFolderId = async () => {
-      const folders = sessionFolders.value || []
-      if (!folders.length) {
-        ElMessage.warning('Create a folder first')
-        return null
-      }
-
-      const hint = folders.map(item => `${item.id}:${item.name}`).join(' | ')
-      const { value } = await ElMessageBox.prompt(
-        `Choose target folder id: ${hint}`,
-        'Move Session',
-        {
-          confirmButtonText: 'Move',
-          cancelButtonText: 'Cancel',
-          inputPattern: /^\d+$/,
-          inputErrorMessage: 'Enter a numeric folder id'
-        }
-      )
-
-      const folderId = Number(value)
-      if (!Number.isInteger(folderId)) {
-        ElMessage.error('Invalid folder id')
-        return null
-      }
-      const exists = folders.some(item => Number(item.id) === folderId)
-      if (!exists) {
-        ElMessage.error('Folder id does not exist')
-        return null
-      }
-      return folderId
-    }
-
-    const moveSessionItem = async (session) => {
-      if (!session?.id) return
-      try {
-        const folderId = await promptTargetFolderId()
-        if (!folderId) return
-
-        const response = await api.post('/AI/chat/session/move', {
-          sessionId: String(session.id),
-          folderId
-        })
-        if (response.data?.status_code === 1000) {
-          await loadSessions()
-          ElMessage.success('Session moved')
-          return
-        }
-        ElMessage.error(response.data?.status_msg || 'Move session failed')
-      } catch (error) {
-        if (error !== 'cancel' && error !== 'close') {
-          console.error('Move session error:', error)
-          ElMessage.error('Move session failed')
-        }
-      }
-    }
-
-    const removeSessionItemFromFolder = async (session) => {
-      if (!session?.id) return
-      try {
-        const response = await api.post('/AI/chat/session/remove-from-folder', {
-          sessionId: String(session.id)
-        })
-        if (response.data?.status_code === 1000) {
-          await loadSessions()
-          ElMessage.success('Session removed from folder')
-          return
-        }
-        ElMessage.error(response.data?.status_msg || 'Remove from folder failed')
-      } catch (error) {
-        console.error('Remove from folder error:', error)
-        ElMessage.error('Remove from folder failed')
-      }
-    }
-
-    const renameSessionItem = async (session) => {
-      if (!session?.id) return
-      try {
-        const { value } = await ElMessageBox.prompt('Enter a new session title', 'Rename Session', {
-          confirmButtonText: 'OK',
-          cancelButtonText: 'Cancel',
-          inputValue: session.name || '',
-          inputPattern: /\S+/,
-          inputErrorMessage: 'Session title is required'
-        })
-        const title = String(value || '').trim()
-        if (!title) return
-
-        const response = await api.post('/AI/chat/session/rename', {
-          sessionId: String(session.id),
-          title
-        })
-        if (response.data?.status_code === 1000) {
-          await loadSessions()
-          if (sessions.value[String(session.id)]) {
-            sessions.value[String(session.id)].name = title
-          }
-          ElMessage.success('Session renamed')
-          return
-        }
-        ElMessage.error(response.data?.status_msg || 'Rename session failed')
-      } catch (error) {
-        if (error !== 'cancel' && error !== 'close') {
-          console.error('Rename session error:', error)
-          ElMessage.error('Rename session failed')
-        }
-      }
-    }
-
-    const deleteSessionItem = async (session) => {
-      if (!session?.id) return
-      try {
-        await ElMessageBox.confirm(
-          `Delete session "${session.name || session.id}"?`,
-          'Delete Session',
-          {
-            confirmButtonText: 'Delete',
-            cancelButtonText: 'Cancel',
-            type: 'warning'
-          }
-        )
-
-        const response = await api.post('/AI/chat/session/delete', {
-          sessionId: String(session.id)
-        })
-        if (response.data?.status_code === 1000) {
-          const deletedId = String(session.id)
-          if (currentSessionId.value === deletedId) {
-            createNewSession()
-          }
-          await loadSessions()
-          ElMessage.success('Session deleted')
-          return
-        }
-        ElMessage.error(response.data?.status_msg || 'Delete session failed')
-      } catch (error) {
-        if (error !== 'cancel' && error !== 'close') {
-          console.error('Delete session error:', error)
-          ElMessage.error('Delete session failed')
-        }
-      }
-    }
-
-    const loadHistoryIntoSession = async (sessionId) => {
-      const targetSession = ensureSessionEntry(sessionId)
-      const response = await api.post('/AI/chat/history', { sessionId }, {
-        headers: buildSessionRoutingHeaders(sessionId)
-      })
-      if (response.data && response.data.status_code === 1000 && Array.isArray(response.data.history)) {
-        targetSession.messages = response.data.history.map(mapHistoryItemToMessage)
-        return
-      }
-      throw new Error(response.data?.status_msg || '无法加载会话历史')
-    }
-
-    const createNewSession = () => {
-      currentSessionId.value = 'temp'
-      tempSession.value = true
-      currentMessages.value = []
+    const createNewSessionAndFocus = () => {
+      createNewSession()
       nextTick(() => {
-        if (messageInput.value) messageInput.value.focus()
+        if (messageInput.value) {
+          messageInput.value.focus()
+        }
       })
-    }
-
-    const ensureActiveDraftSession = () => {
-      if (currentSessionId.value && !tempSession.value) {
-        return
-      }
-      if (tempSession.value && currentSessionId.value === 'temp') {
-        return
-      }
-      currentSessionId.value = 'temp'
-      tempSession.value = true
-      currentMessages.value = []
-    }
-
-    const switchSession = async (sessionId) => {
-      if (!sessionId || loading.value) return
-      const targetSession = ensureSessionEntry(sessionId)
-      currentSessionId.value = String(sessionId)
-      tempSession.value = false
-
-      try {
-        if (!targetSession.messages || targetSession.messages.length === 0) {
-          await loadHistoryIntoSession(sessionId)
-        }
-        currentMessages.value = [...(ensureSessionEntry(sessionId)?.messages || [])]
-        await nextTick()
-        scrollToBottom()
-      } catch (error) {
-        console.error('Load history error:', error)
-        ElMessage.error('加载历史失败')
-      }
-    }
-
-    const syncHistory = async () => {
-      if (!currentSessionId.value || tempSession.value) {
-        ElMessage.warning('Please select an existing session first')
-        return
-      }
-      try {
-        await loadHistoryIntoSession(currentSessionId.value)
-        currentMessages.value = [...(ensureSessionEntry(currentSessionId.value)?.messages || [])]
-        await nextTick()
-        scrollToBottom()
-      } catch (error) {
-        console.error('Sync history error:', error)
-        ElMessage.error('同步历史失败')
-      }
-    }
-
-    const stopCurrentStream = async () => {
-      if (!loading.value || !isStreaming.value) return
-
-      manualStopRequested.value = true
-      const targetSessionId = activeStreamingSessionId.value && activeStreamingSessionId.value !== 'temp'
-        ? activeStreamingSessionId.value
-        : (!tempSession.value ? currentSessionId.value : null)
-
-      try {
-        if (targetSessionId) {
-          const response = await api.post('/AI/chat/stop', { sessionId: targetSessionId }, {
-            headers: buildSessionRoutingHeaders(targetSessionId)
-          })
-          if (response.data?.status_code !== 1000 && response.data?.status_code !== 2012) {
-            throw new Error(response.data?.status_msg || '停止生成失败')
-          }
-        }
-      } catch (error) {
-        console.error('Stop stream error:', error)
-      } finally {
-        if (activeAbortController.value) {
-          activeAbortController.value.abort()
-        }
-        loading.value = false
-        await setAssistantStatus('cancelled')
-        ElMessage.success('Stopped current generation')
-      }
-    }
-
-    const sendMessage = async () => {
-      if (!inputMessage.value || !inputMessage.value.trim()) {
-        ElMessage.warning('Please enter a message')
-        return
-      }
-
-      if (!currentSessionId.value) {
-        ensureActiveDraftSession()
-      }
-
-      const currentInput = inputMessage.value.trim()
-      const userMessage = {
-        role: 'user',
-        content: currentInput,
-        meta: buildMessageMeta('completed')
-      }
-      inputMessage.value = ''
-
-      currentMessages.value.push(userMessage)
-      if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]) {
-        upsertSessionEntry({
-          ...sessions.value[currentSessionId.value],
-          messages: [...currentMessages.value]
-        })
-      }
-      await syncSessionMessagesFromCurrent()
-
-      try {
-        loading.value = true
-        if (isStreaming.value) {
-          await handleStreaming(currentInput)
-        } else {
-          await handleNormal(currentInput)
-        }
-      } catch (error) {
-        console.error('Send message error:', error)
-        ElMessage.error(error.message || 'Send failed, please try again')
-
-        if (!tempSession.value && currentSessionId.value && sessions.value[currentSessionId.value]?.messages?.length) {
-          sessions.value[currentSessionId.value].messages.pop()
-        }
-        currentMessages.value.pop()
-      } finally {
-        if (!isStreaming.value) {
-          loading.value = false
-        }
-        await nextTick()
-        scrollToBottom()
-      }
-    }
-
-    async function handleStreaming(question) {
-      const aiMessage = {
-        role: 'assistant',
-        content: '',
-        meta: buildMessageMeta('streaming', {
-          streamId: null,
-          messageId: null,
-          lastSeq: 0
-        })
-      }
-
-      activeAssistantIndex.value = currentMessages.value.length
-      currentMessages.value.push(aiMessage)
-      await syncSessionMessagesFromCurrent()
-
-      const url = tempSession.value ? '/api/AI/chat/send-stream-new-session' : '/api/AI/chat/send-stream'
-      const accessToken = await ensureAccessToken(refreshClient)
-      const baseHeaders = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`
-      }
-      if (!tempSession.value && currentSessionId.value) {
-        Object.assign(baseHeaders, buildSessionRoutingHeaders(currentSessionId.value))
-      }
-      const body = tempSession.value
-        ? { question, llmConfigId: selectedConfigId.value, chatMode: selectedChatMode.value, modelType: '1' }
-        : { question, llmConfigId: selectedConfigId.value, chatMode: selectedChatMode.value, modelType: '1', sessionId: currentSessionId.value }
-
-      const controller = new AbortController()
-      activeAbortController.value = controller
-      activeStreamingSessionId.value = tempSession.value ? 'temp' : currentSessionId.value
-      activeStreamId.value = null
-      activeMessageId.value = null
-      activeStreamLastSeq.value = 0
-      manualStopRequested.value = false
-
-      const consumeSSEStream = async (response) => {
-        if (!response.ok || !response.body) {
-          throw new Error('流式请求失败')
-        }
-
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        let doneReceived = false
-        let streamClosed = false
-
-        while (!streamClosed) {
-          const { done, value } = await reader.read()
-          if (done) {
-            streamClosed = true
-            break
-          }
-
-          buffer += decoder.decode(value, { stream: true })
-          const events = buffer.split('\n\n')
-          buffer = events.pop() || ''
-
-          for (const eventText of events) {
-            const dataLines = eventText
-              .split('\n')
-              .map(line => line.trim())
-              .filter(line => line.startsWith('data:'))
-              .map(line => line.slice(5).trim())
-
-            if (!dataLines.length) {
-              continue
-            }
-
-            const eventData = dataLines.join('\n')
-            const result = await handleSSEPayload(eventData)
-            if (result === 'done') {
-              doneReceived = true
-            }
-          }
-        }
-
-        return doneReceived
-      }
-
-      const openInitialStream = async () => fetch(url, {
-        method: 'POST',
-        headers: baseHeaders,
-        body: JSON.stringify(body),
-        signal: controller.signal
-      })
-
-      const openResumeStream = async () => {
-        if (!activeStreamId.value || !activeStreamingSessionId.value || activeStreamingSessionId.value === 'temp') {
-          throw new Error('当前流缺少恢复信息')
-        }
-        // resume 请求需要重新按最新 sessionId 拼路由头。
-        // 新建会话场景下，初始请求发出时还没有正式 sessionId，如果这里继续复用旧 header，
-        // 恢复流就更容易漂到非 owner 实例。
-        const resumeHeaders = {
-          ...baseHeaders,
-          ...buildSessionRoutingHeaders(activeStreamingSessionId.value)
-        }
-        return fetch('/api/AI/chat/resume-stream', {
-          method: 'POST',
-          headers: resumeHeaders,
-          body: JSON.stringify({
-            sessionId: activeStreamingSessionId.value,
-            streamId: activeStreamId.value,
-            lastSeq: activeStreamLastSeq.value
-          }),
-          signal: controller.signal
-        })
-      }
-
-      let doneReceived = false
-      let streamError = null
-      let mode = 'initial'
-      let resumeAttempts = 0
-      let ownerMismatchRetries = 0
-
-      try {
-        while (!doneReceived) {
-          try {
-            const response = mode === 'initial'
-              ? await openInitialStream()
-              : await openResumeStream()
-            doneReceived = await consumeSSEStream(response)
-            if (!doneReceived) {
-              if (manualStopRequested.value || !activeStreamId.value || resumeAttempts >= 2) {
-                break
-              }
-              resumeAttempts += 1
-              mode = 'resume'
-            }
-          } catch (error) {
-            if (manualStopRequested.value || error.name === 'AbortError' || error.serverCode === 5004) {
-              throw error
-            }
-            if (isOwnerMismatchError(error) && ownerMismatchRetries < MAX_OWNER_MISMATCH_RETRIES) {
-              ownerMismatchRetries += 1
-              await delay(resolveRetryAfterMs(error.retryAfterMs, 800))
-              continue
-            }
-            if (activeStreamId.value && activeStreamingSessionId.value && activeStreamingSessionId.value !== 'temp' && resumeAttempts < 2) {
-              resumeAttempts += 1
-              mode = 'resume'
-              continue
-            }
-            streamError = error
-            break
-          }
-        }
-
-        if (streamError) {
-          throw streamError
-        }
-
-        loading.value = false
-        if (!doneReceived) {
-          await setAssistantStatus(manualStopRequested.value ? 'cancelled' : 'partial')
-        }
-      } catch (error) {
-        console.error('Stream error:', error)
-        loading.value = false
-
-        if (manualStopRequested.value || error.name === 'AbortError' || error.serverCode === 5004) {
-          await setAssistantStatus('cancelled')
-        } else if (error.serverCode === 4002) {
-          await setAssistantStatus('timeout')
-          ElMessage.error(error.message || '请求超时')
-        } else if (isOwnerMismatchError(error)) {
-          await setAssistantStatus('failed')
-          ElMessage.error(error.message || '会话正在切换执行节点，请稍后重试')
-        } else {
-          await setAssistantStatus('failed')
-          ElMessage.error(error.message || '流式响应异常')
-        }
-      } finally {
-        clearActiveStreamState()
-      }
-    }
-
-    async function handleNormal(question) {
-      if (tempSession.value) {
-        const response = await postWithOwnerRetry('/AI/chat/send-new-session', {
-          question,
-          llmConfigId: selectedConfigId.value,
-          chatMode: selectedChatMode.value,
-          modelType: '1'
-        })
-        if (response.data && response.data.status_code === 1000) {
-          const sessionId = String(response.data.sessionId)
-          const aiMessage = {
-            role: 'assistant',
-            content: response.data.Information || '',
-            meta: buildMessageMeta('completed')
-          }
-
-          upsertSessionEntry({
-            id: sessionId,
-            name: buildSessionTitle(question),
-            messages: [{ role: 'user', content: question, meta: buildMessageMeta('completed') }, aiMessage]
-          })
-          currentSessionId.value = sessionId
-          tempSession.value = false
-          currentMessages.value = [...sessions.value[sessionId].messages]
-          loadSessions()
-        }
-      } else {
-        const targetSession = ensureSessionEntry(currentSessionId.value)
-        const sessionMsgs = targetSession ? (targetSession.messages || []) : []
-        sessionMsgs.push({ role: 'user', content: question, meta: buildMessageMeta('completed') })
-        if (targetSession) {
-          targetSession.messages = sessionMsgs
-        }
-
-        const response = await postWithOwnerRetry('/AI/chat/send', {
-          question,
-          llmConfigId: selectedConfigId.value,
-          chatMode: selectedChatMode.value,
-          modelType: '1',
-          sessionId: currentSessionId.value
-        }, {
-          requestConfig: {
-            headers: buildSessionRoutingHeaders(currentSessionId.value)
-          }
-        })
-        if (response.data && response.data.status_code === 1000) {
-          sessionMsgs.push({
-            role: 'assistant',
-            content: response.data.Information || '',
-            meta: buildMessageMeta('completed')
-          })
-          currentMessages.value = [...sessionMsgs]
-        }
-      }
-    }
-
-    const triggerFileUpload = () => {
-      if (fileInput.value) {
-        fileInput.value.click()
-      }
-    }
-
-    const handleFileUpload = async (event) => {
-      const file = event.target.files[0]
-      if (!file) return
-
-      const fileName = file.name.toLowerCase()
-      if (!fileName.endsWith('.md') && !fileName.endsWith('.txt')) {
-        ElMessage.error('只支持上传 .md 或 .txt 文件')
-        if (fileInput.value) {
-          fileInput.value.value = ''
-        }
-        return
-      }
-
-      try {
-        uploading.value = true
-        const formData = new FormData()
-        formData.append('file', file)
-
-        const response = await api.post('/file/upload', formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
-        })
-
-        if (response.data && response.data.status_code === 1000) {
-          ElMessage.success('文件上传成功，请至 File Management 查看状态')
-        } else {
-          ElMessage.error(response.data?.status_msg || '文件上传失败')
-        }
-      } catch (error) {
-        console.error('File upload error:', error)
-        ElMessage.error('文件上传失败')
-      } finally {
-        uploading.value = false
-        if (fileInput.value) {
-          fileInput.value.value = ''
-        }
-      }
-    }
-
-    // ===== Image Recognition (inline in chat) =====
-    const triggerImageUpload = () => {
-      if (imageInput.value) {
-        imageInput.value.click()
-      }
-    }
-
-    const handleImageRecognition = async (event) => {
-      const file = event.target.files[0]
-      if (!file) return
-
-      const imageUrl = URL.createObjectURL(file)
-
-      // Add user message with image preview
-      currentMessages.value.push({
-        role: 'user',
-        content: `已上传图片 ${file.name}`,
-        imageUrl: imageUrl,
-        meta: buildMessageMeta('completed')
-      })
-      await nextTick()
-      scrollToBottom()
-
-      const formData = new FormData()
-      formData.append('image', file)
-
-      try {
-        loading.value = true
-        const response = await api.post('/image/recognize', formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
-        })
-
-        if (response.data && response.data.class_name) {
-          currentMessages.value.push({
-            role: 'assistant',
-            content: `识别结果: **${response.data.class_name}**`,
-            meta: buildMessageMeta('completed')
-          })
-        } else {
-          currentMessages.value.push({
-            role: 'assistant',
-            content: `[错误] ${response.data?.status_msg || '识别失败'}`,
-            meta: buildMessageMeta('failed')
-          })
-        }
-      } catch (error) {
-        console.error('Image recognition error:', error)
-        currentMessages.value.push({
-          role: 'assistant',
-          content: `[错误] 无法连接到服务器或识别失败: ${error.message}`,
-          meta: buildMessageMeta('failed')
-        })
-      } finally {
-        loading.value = false
-        await nextTick()
-        scrollToBottom()
-        if (imageInput.value) {
-          imageInput.value.value = ''
-        }
-      }
-    }
-
-    const applyUserProfile = (profile) => {
-      const nextProfile = profile || {}
-      userProfile.value = {
-        id: nextProfile.id || null,
-        name: nextProfile.name || '',
-        username: nextProfile.username || '',
-        email: nextProfile.email || '',
-        avatar_url: nextProfile.avatar_url || '',
-        bio: nextProfile.bio || ''
-      }
-      profileForm.value = {
-        name: userProfile.value.name || '',
-        bio: userProfile.value.bio || ''
-      }
-    }
-
-    const fetchUserProfile = async () => {
-      try {
-        const response = await api.get('/user/profile')
-        if (response.data?.status_code === 1000 && response.data.profile) {
-          applyUserProfile(response.data.profile)
-        }
-      } catch (error) {
-        console.error('Load profile error:', error)
-      }
-    }
-
-    const getUserDisplayName = () => userProfile.value.name || userProfile.value.username || '用户'
-
-    const getUserInitial = () => {
-      const source = getUserDisplayName().trim()
-      return source ? source.slice(0, 1).toUpperCase() : 'U'
-    }
-
-    const getCollapsedSessionLabel = (session) => {
-      const source = String(session?.name || session?.sessionId || '').trim()
-      return source ? source.slice(0, 1).toUpperCase() : '#'
-    }
-
-    const toggleUserMenu = () => {
-      userMenuVisible.value = !userMenuVisible.value
-    }
-
-    const handleSettings = async () => {
-      userMenuVisible.value = false
-      settingsVisible.value = true
-      await fetchUserProfile()
     }
 
     const handleSyncHistoryFromMenu = async () => {
       userMenuVisible.value = false
       await syncHistory()
-    }
-
-    const saveProfile = async () => {
-      try {
-        savingProfile.value = true
-        const response = await api.post('/user/profile/update', {
-          name: profileForm.value.name || '',
-          bio: profileForm.value.bio || ''
-        })
-        if (response.data?.status_code === 1000 && response.data.profile) {
-          applyUserProfile(response.data.profile)
-          settingsVisible.value = false
-          ElMessage.success('Profile updated')
-          return
-        }
-        ElMessage.error(response.data?.status_msg || '个人资料更新失败')
-      } catch (error) {
-        console.error('Save profile error:', error)
-        ElMessage.error('个人资料更新失败')
-      } finally {
-        savingProfile.value = false
-      }
-    }
-
-    const triggerAvatarUpload = () => {
-      if (avatarInput.value) {
-        avatarInput.value.click()
-      }
-    }
-
-    const handleAvatarUpload = async (event) => {
-      const file = event.target.files[0]
-      if (!file) return
-
-      try {
-        pendingAvatarFile.value = file
-        const { width, height } = await loadImageDimensions(file)
-        cropImageNaturalWidth.value = width
-        cropImageNaturalHeight.value = height
-        cropScale.value = 1
-        cropOffsetX.value = 0
-        cropOffsetY.value = 0
-        if (cropPreviewUrl.value) {
-          URL.revokeObjectURL(cropPreviewUrl.value)
-        }
-        cropPreviewUrl.value = URL.createObjectURL(file)
-        cropDialogVisible.value = true
-      } catch (error) {
-        pendingAvatarFile.value = null
-        cropImageNaturalWidth.value = 0
-        cropImageNaturalHeight.value = 0
-        console.error('Load avatar preview error:', error)
-        ElMessage.error('头像预览加载失败')
-      } finally {
-        if (avatarInput.value) {
-          avatarInput.value.value = ''
-        }
-      }
-    }
-
-    const cancelAvatarCrop = () => {
-      cropDialogVisible.value = false
-      pendingAvatarFile.value = null
-      cropImageNaturalWidth.value = 0
-      cropImageNaturalHeight.value = 0
-      if (cropPreviewUrl.value) {
-        URL.revokeObjectURL(cropPreviewUrl.value)
-        cropPreviewUrl.value = ''
-      }
-    }
-
-    const confirmAvatarCrop = async () => {
-      if (!pendingAvatarFile.value) return
-
-      try {
-        uploadingAvatar.value = true
-        const croppedFile = await buildCroppedAvatarFile(pendingAvatarFile.value)
-        const formData = new FormData()
-        formData.append('avatar', croppedFile)
-
-        const response = await api.post('/user/avatar/upload', formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
-        })
-
-        if (response.data?.status_code === 1000 && response.data.profile) {
-          applyUserProfile(response.data.profile)
-          cropDialogVisible.value = false
-          ElMessage.success('头像上传成功')
-        } else {
-          ElMessage.error(response.data?.status_msg || '头像上传失败')
-        }
-      } catch (error) {
-        console.error('Upload avatar error:', error)
-        ElMessage.error('头像上传失败')
-      } finally {
-        uploadingAvatar.value = false
-        cancelAvatarCrop()
-      }
-    }
-
-    const buildCroppedAvatarFile = (file) => new Promise((resolve, reject) => {
-      const image = new Image()
-      const objectUrl = URL.createObjectURL(file)
-      image.onload = () => {
-        const canvas = document.createElement('canvas')
-        const size = CROP_OUTPUT_SIZE
-        canvas.width = size
-        canvas.height = size
-        const ctx = canvas.getContext('2d')
-        if (!ctx) {
-          URL.revokeObjectURL(objectUrl)
-          reject(new Error('无法创建裁剪画布'))
-          return
-        }
-
-        const baseScale = Math.max(size / image.width, size / image.height)
-        const finalScale = baseScale * cropScale.value
-        const drawWidth = image.width * finalScale
-        const drawHeight = image.height * finalScale
-        const previewToOutputRatio = size / CROP_PREVIEW_SIZE
-        const offsetX = (size - drawWidth) / 2 + cropOffsetX.value * previewToOutputRatio
-        const offsetY = (size - drawHeight) / 2 + cropOffsetY.value * previewToOutputRatio
-        ctx.clearRect(0, 0, size, size)
-        ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight)
-
-        canvas.toBlob((blob) => {
-          URL.revokeObjectURL(objectUrl)
-          if (!blob) {
-            reject(new Error('无法生成裁剪结果'))
-            return
-          }
-          resolve(new File([blob], 'avatar.png', { type: 'image/png' }))
-        }, 'image/png')
-      }
-      image.onerror = () => {
-        URL.revokeObjectURL(objectUrl)
-        reject(new Error('头像预览加载失败'))
-      }
-      image.src = objectUrl
-    })
-
-    const loadImageDimensions = (file) => new Promise((resolve, reject) => {
-      const image = new Image()
-      const objectUrl = URL.createObjectURL(file)
-      image.onload = () => {
-        URL.revokeObjectURL(objectUrl)
-        resolve({
-          width: image.width,
-          height: image.height
-        })
-      }
-      image.onerror = () => {
-        URL.revokeObjectURL(objectUrl)
-        reject(new Error('头像预览加载失败'))
-      }
-      image.src = objectUrl
-    })
-
-    const toggleTheme = () => {
-      isDark.value = !isDark.value
-      if (isDark.value) {
-        document.documentElement.classList.add('dark')
-      } else {
-        document.documentElement.classList.remove('dark')
-      }
     }
 
     const handleLogout = async () => {
@@ -2377,23 +319,17 @@ export default {
         await api.post('/user/logout')
         clearTokens()
         ElMessage.success('Logged out')
-        router.push('/login')
+        router.push('/')
       } catch {
-        // 用户取消操作
+        // user cancelled
       }
     }
 
-    // eslint-disable-next-line no-unused-vars
-    const handleSettingsLegacy = () => {
-      ElMessage.info('设置功能开发中...')
-    }
-
-    const toggleSidebar = () => {
-      isSidebarCollapsed.value = !isSidebarCollapsed.value
+    const goLogin = () => {
+      router.push('/login')
     }
 
     onMounted(() => {
-      isDark.value = document.documentElement.classList.contains('dark')
       loadSessions()
       fetchUserProfile()
       loadConfigsMeta()
@@ -2401,50 +337,67 @@ export default {
     })
 
     return {
+      chatMessageListRef,
+      chatInputAreaRef,
       isSidebarCollapsed,
       isDark,
-      sessions: computed(() => Object.values(sessions.value)),
-      
-      // -- Folders & Session --
       foldersList,
       ungroupedSessionsList,
       collapsedFolders,
-      folderDialogVisible,
-      folderDialogType,
-      folderForm,
-      submittingFolder,
-      renameSessionDialogVisible,
-      renameSessionForm,
-      submittingRenameSession,
-      moveSessionDialogVisible,
-      moveSessionForm,
-      submittingMoveSession,
-
-      toggleFolder,
-      showCreateFolderDialog,
-      handleFolderCommand,
-      submitFolderDialog,
-      handleSessionCommand,
-      submitRenameSession,
-      submitMoveSession,
-      // ----------------------
-      sidebarFolders,
-      ungroupedSessions,
       currentSessionId,
       tempSession,
       currentMessages,
       inputMessage,
       loading,
-      messagesRef,
-      messageInput,
-      selectedModel: selectedConfigId,
       isStreaming,
       uploading,
-      fileInput,
-      imageInput,
-      avatarInput,
-      settingsVisible,
+      userProfile,
       userMenuVisible,
+      toggleSidebar,
+      toggleUserMenu,
+      toggleTheme,
+      toggleFolder,
+      switchSessionWithGuard,
+      createNewSessionAndFocus,
+      showCreateFolderDialog,
+      handleFolderCommand,
+      handleSessionCommand,
+      playTTS,
+      sendMessage,
+      stopCurrentStream,
+      handleFileUpload,
+      handleImageRecognition,
+      selectedConfigId,
+      selectedChatMode,
+      availableConfigs,
+      availableChatModes,
+      chatModeLabel,
+      onConfigChange,
+      openModelConfigDialog,
+      refreshConfigs,
+      modelConfigDialogVisible,
+      fileManagerVisible,
+      openFileManagerDialog,
+      handleSyncHistoryFromMenu,
+            handleLogout,
+      goLogin,
+      handleSettings,
+      // Dialog states
+      folderDialogVisible,
+      folderDialogType,
+      folderForm,
+      submittingFolder,
+      submitFolderDialog,
+      renameSessionDialogVisible,
+      renameSessionForm,
+      submittingRenameSession,
+      submitRenameSession,
+      moveSessionDialogVisible,
+      moveSessionForm,
+      submittingMoveSession,
+      submitMoveSession,
+      settingsVisible,
+      profileForm,
       savingProfile,
       uploadingAvatar,
       cropDialogVisible,
@@ -2452,139 +405,13 @@ export default {
       cropScale,
       cropOffsetX,
       cropOffsetY,
-      userProfile,
-      profileForm,
-      renderMarkdown,
       cropImageStyle,
-      modelOptions,
-      fileManagerVisible,
-      openFileManagerDialog,
-      // -- Model Config --
-      modelConfigDialogVisible,
-      availableConfigs,
-      selectedConfigId,
-      selectedChatMode,
-      availableChatModes,
-      chatModeLabel,
-      onConfigChange,
-      openModelConfigDialog,
-      refreshConfigs,
-      getCollapsedSessionLabel,
-      // -----------------
-      getMessageStatusLabel,
-      getMessageMetaStatus,
-      getUserDisplayName,
-      getUserInitial,
-      isFolderExpanded,
-      toggleUserMenu,
-      playTTS,
-      createFolder,
-      renameFolder,
-      deleteFolder,
-      moveSessionItem,
-      removeSessionItemFromFolder,
-      renameSessionItem,
-      deleteSessionItem,
-      createNewSession,
-      switchSession,
-      syncHistory,
-      stopCurrentStream,
-      sendMessage,
-      triggerFileUpload,
-      handleFileUpload,
-      triggerImageUpload,
-      handleImageRecognition,
       triggerAvatarUpload,
       handleAvatarUpload,
-      handleSyncHistoryFromMenu,
       cancelAvatarCrop,
       confirmAvatarCrop,
-      saveProfile,
-      toggleTheme,
-      handleLogout,
-      handleSettings,
-      toggleSidebar
+      saveProfile
     }
   }
 }
 </script>
-
-<style scoped>
-/* Custom scrollbar for sidebar */
-aside ::-webkit-scrollbar {
-  width: 4px;
-}
-aside ::-webkit-scrollbar-track {
-  background: transparent;
-}
-aside ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 999px;
-}
-.dark aside ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.toolbar-select-wrap {
-  position: relative;
-  display: flex;
-  min-width: 120px;
-  flex: 0 1 auto;
-}
-
-.toolbar-select {
-  width: 100%;
-  min-width: 0;
-  appearance: none;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 0.75rem;
-  background: rgba(255, 255, 255, 0.88);
-  color: inherit;
-  cursor: pointer;
-  outline: none;
-  padding: 0.45rem 2rem 0.45rem 0.75rem;
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, opacity 0.2s ease;
-}
-
-.toolbar-select:hover:not(:disabled) {
-  border-color: rgba(0, 0, 0, 0.16);
-}
-
-.toolbar-select:focus {
-  border-color: rgba(245, 158, 11, 0.5);
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
-}
-
-.toolbar-select:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.toolbar-select-icon {
-  position: absolute;
-  top: 50%;
-  right: 0.75rem;
-  display: flex;
-  align-items: center;
-  pointer-events: none;
-  transform: translateY(-50%);
-  color: inherit;
-  opacity: 0.68;
-}
-
-.dark .toolbar-select {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(23, 23, 23, 0.92);
-}
-
-.dark .toolbar-select:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.18);
-}
-
-.dark .toolbar-select:focus {
-  border-color: rgba(251, 191, 36, 0.55);
-  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.18);
-}
-</style>

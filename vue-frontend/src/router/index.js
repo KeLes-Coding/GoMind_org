@@ -1,13 +1,17 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import HomePage from '../views/HomePage.vue'
 import Login from '../views/Login.vue'
 import Register from '../views/Register.vue'
 import AIChat from '../views/AIChat.vue'
 import { hasSession } from '../utils/token'
 
+const skipAuth = process.env.VUE_APP_SKIP_AUTH === 'true'
+
 const routes = [
   {
     path: '/',
-    redirect: '/login'
+    name: 'Home',
+    component: HomePage
   },
   {
     path: '/login',
@@ -33,8 +37,18 @@ const router = createRouter({
 })
 
 router.beforeEach((to, from, next) => {
+  if (skipAuth) {
+    next()
+    return
+  }
+
+  if (to.path === '/' && hasSession()) {
+    next('/ai-chat')
+    return
+  }
+
   if (to.matched.some(record => record.meta.requiresAuth) && !hasSession()) {
-    next('/login')
+    next('/')
     return
   }
   next()

@@ -227,58 +227,7 @@ export default {
 </script>
 
 <style scoped>
-/* Inherit standard dialog styles from dark mode context */
 :deep(.el-dialog) {
-  background-color: #ffffff;
-  border: 1px solid #e0e0e0;
   border-radius: 1rem;
-}
-
-:deep(.el-dialog__title) {
-  color: #1a1a1a;
-  font-size: 1.125rem;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-}
-
-:deep(.el-dropdown-menu) {
-  background-color: #ffffff;
-  border-color: #e0e0e0;
-}
-
-:deep(.el-dropdown-menu__item) {
-  color: #1a1a1a;
-}
-
-:deep(.el-dropdown-menu__item:hover),
-:deep(.el-dropdown-menu__item:focus) {
-  background-color: rgba(0, 0, 0, 0.05);
-  color: #1a1a1a;
-}
-
-/* Popper background fixes */
-:global(.dark .el-dialog) {
-  background-color: #1e1e1e;
-  border-color: #333333;
-}
-
-:global(.dark .el-dialog__title) {
-  color: #f5f5f5;
-}
-
-:global(.dark .el-dropdown-menu),
-:global(.dark .el-popper.is-light) {
-  background-color: #1e1e1e;
-  border-color: #333333;
-}
-
-:global(.dark .el-dropdown-menu__item) {
-  color: #f5f5f5;
-}
-
-:global(.dark .el-dropdown-menu__item:hover),
-:global(.dark .el-dropdown-menu__item:focus) {
-  background-color: rgba(255, 255, 255, 0.05);
-  color: #f5f5f5;
 }
 </style>

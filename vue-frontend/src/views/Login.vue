@@ -1,6 +1,6 @@
 <template>
-  <div class="flex h-screen w-full items-center justify-center bg-bg-light dark:bg-bg-dark text-text-primary-light dark:text-text-primary-dark overflow-hidden relative">
-    <div class="w-[420px] bg-surface-light dark:bg-surface-dark rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.06)] dark:shadow-[0_20px_40px_rgba(0,0,0,0.2)] border border-border-light dark:border-border-dark relative z-10 p-8">
+  <div class="flex h-screen w-full items-center justify-center bg-bg-light dark:bg-bg-dark text-text-primary-light dark:text-text-primary-dark overflow-hidden relative login-page">
+    <div class="w-[420px] bg-surface-light dark:bg-surface-dark rounded-3xl shadow-[0_20px_40px_rgba(0,0,0,0.06)] dark:shadow-[0_20px_40px_rgba(0,0,0,0.2)] border border-border-light dark:border-border-dark relative z-10 p-8">
       <div class="text-center pb-8">
         <h2 class="text-2xl font-semibold m-0 tracking-tight">登录</h2>
       </div>
@@ -42,6 +42,9 @@
           >
             还没有账号？去注册
           </button>
+          <router-link to="/" class="block text-center text-sm text-text-secondary-light dark:text-text-secondary-dark hover:text-accent-light dark:hover:text-accent-dark transition-colors mt-2">
+            返回首页
+          </router-link>
         </div>
       </el-form>
     </div>
@@ -111,5 +114,35 @@ export default {
 </script>
 
 <style scoped>
-/* Scoped styles removed in favor of Tailwind CSS classes */
+:deep(.el-form-item__label) {
+  color: #1A1A1A;
+}
+:deep(.el-input__wrapper) {
+  background-color: #FFFFFF;
+  border: 1px solid #E0E0E0;
+  border-radius: 0.5rem;
+  box-shadow: none;
+}
+:deep(.el-input__inner) {
+  color: #1A1A1A;
+}
+:deep(.el-input__inner::placeholder) {
+  color: #666666;
+}
+</style>
+
+<style>
+html.dark .login-page .el-form-item__label {
+  color: #F5F5F5;
+}
+html.dark .login-page .el-input__wrapper {
+  background-color: #1E1E1E;
+  border-color: #333333;
+}
+html.dark .login-page .el-input__inner {
+  color: #F5F5F5;
+}
+html.dark .login-page .el-input__inner::placeholder {
+  color: #A0A0A0;
+}
 </style>
