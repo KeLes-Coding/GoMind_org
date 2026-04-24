@@ -16,7 +16,10 @@ func StartVectorizeWorker(ctx context.Context) error {
 
 	// worker 使用自己独立的 RabbitMQ channel。
 	// 这样发布和消费职责边界更清晰，也更符合后续独立部署的方向。
-	mq := rabbitmq.NewWorkRabbitMQ(model.QueueVectorize)
+	mq, err := rabbitmq.NewWorkRabbitMQ(model.QueueVectorize)
+	if err != nil {
+		return err
+	}
 	defer mq.Destroy()
 
 	// 当前一个 worker 进程内部仍按消息顺序消费。
@@ -29,11 +32,11 @@ func StartVectorizeWorker(ctx context.Context) error {
 }
 
 // StartAllWorkers 用于单机一体化运行。
-// 当前会顺带启动三类后台 worker：
+// 当前会顺带启动四类后台 worker：
 // 1. 向量化 worker 负责真正处理文件；
 // 2. 文件补偿 worker 负责把上传成功但没成功入队的文件补发到 MQ；
-// 3. 聊天 outbox relay worker 负责补偿消息发布；
-// 4. 会话补偿 worker 负责推进聊天链路的 persisted_version 水位。
+// 3. 会话补偿 worker 负责推进聊天链路的 persisted_version 水位；
+// 4. 通知 worker 负责消费聊天完成后的旁路通知任务。
 func StartAllWorkers(ctx context.Context) {
 	go func() {
 		if err := StartVectorizeWorker(ctx); err != nil {
@@ -54,8 +57,8 @@ func StartAllWorkers(ctx context.Context) {
 	}()
 
 	go func() {
-		if err := StartMessageOutboxRelayWorker(ctx); err != nil {
-			log.Printf("Message outbox relay worker error: %v", err)
+		if err := StartNotifyWorker(ctx); err != nil {
+			log.Printf("Notify worker error: %v", err)
 		}
 	}()
 

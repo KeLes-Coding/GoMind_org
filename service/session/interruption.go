@@ -1,10 +1,8 @@
 package session
 
 import (
-	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
 	myredis "GopherAI/common/redis"
-	"GopherAI/model"
 	"context"
 )
 
@@ -23,17 +21,6 @@ func mapContextErrorToCode(ctx context.Context) code.Code {
 	default:
 		return code.AIModelFail
 	}
-}
-
-// persistInterruptedAssistantMessage 用于在流式中断时，把已经生成出来的部分内容按“中断态消息”落库。
-// 这一步不是完整的断点续传实现，但至少可以保证：
-// 1. 用户已经看到的部分输出不至于完全丢失；
-// 2. 历史接口能明确告诉前端，这是一条 cancelled / timeout / partial 消息。
-func persistInterruptedAssistantMessage(helper *aihelper.AIHelper, userName string, content string, status model.MessageStatus) {
-	if helper == nil || content == "" {
-		return
-	}
-	helper.AddMessageWithStatus(content, userName, false, true, status)
 }
 
 // StopStreamGeneration 负责给当前会话发送“主动停止”信号。

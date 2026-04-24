@@ -66,6 +66,20 @@ func UpdateSessionProgress(sessionID string, version int64, summary string, summ
 		}).Error
 }
 
+// UpdateSessionProgressAndPersistedVersion 在同步持久化路径里同时推进正式 version 与 persisted_version。
+// 第四阶段开始，当 user/assistant 核心消息已经在 MySQL 内完成正式落库后，
+// 这里会把 session 的逻辑进度和持久化水位一次性收敛，避免中间态暴露太久。
+func UpdateSessionProgressAndPersistedVersion(sessionID string, version int64, summary string, summaryMessageCount int, persistedVersion int64) error {
+	return mysql.DB.Model(&model.Session{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]interface{}{
+			"context_summary":       summary,
+			"summary_message_count": summaryMessageCount,
+			"version":               version,
+			"persisted_version":     persistedVersion,
+		}).Error
+}
+
 // ListSessionsWithPersistenceLag 列出“正式版本已推进，但持久化水位尚未追平”的会话。
 func ListSessionsWithPersistenceLag(limit int) ([]model.Session, error) {
 	var sessions []model.Session

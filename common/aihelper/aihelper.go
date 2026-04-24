@@ -2,8 +2,6 @@ package aihelper
 
 import (
 	"GopherAI/common/observability"
-	"GopherAI/common/rabbitmq"
-	outboxDAO "GopherAI/dao/outbox"
 	"GopherAI/model"
 	"GopherAI/utils"
 	"context"
@@ -37,6 +35,9 @@ type AIHelper struct {
 	// version 用于给“共享热状态快照”打版本号。
 	// 这样后续把状态同步到 Redis 时，可以知道这是哪一次会话推进之后产生的新快照。
 	version int64
+	// persistedVersion 表示当前 helper 感知到的 MySQL 已持久化版本水位。
+	// 它与 version 分开维护，方便后续恢复和补偿逻辑判断“热状态是否领先于正式持久化状态”。
+	persistedVersion int64
 	// selectionSignature 用于标识当前 helper 绑定的模型/配置选择。
 	// 当会话切换 llmConfigId 或 chatMode 时，service 可以据此判断是否必须重建 helper。
 	selectionSignature string
@@ -61,58 +62,19 @@ func NewAIHelper(model_ AIModel, SessionID string, selectionSignature string) *A
 	return &AIHelper{
 		model:    model_,
 		messages: make([]*model.Message, 0),
-		// 第二阶段开始，消息先写入 outbox，再尝试即时发布到 MQ。
-		// 这样既保留“主链路尽量异步”的体验，也把“发布失败后还能补偿重放”的基线落到了数据库里。
-		saveFunc: func(msg *model.Message) (*model.Message, error) {
-			data := rabbitmq.GenerateMessageMQParam(
-				msg.MessageKey,
-				msg.SessionID,
-				msg.SessionVersion,
-				msg.Content,
-				msg.UserName,
-				msg.IsUser,
-				string(msg.Status),
-			)
-			now := time.Now()
-			outboxEvent := &model.MessageOutbox{
-				MessageKey:     msg.MessageKey,
-				SessionID:      msg.SessionID,
-				SessionVersion: msg.SessionVersion,
-				Status:         model.MessageOutboxStatusPending,
-				Payload:        string(data),
-				NextAttemptAt:  now,
-			}
-			if err := outboxDAO.SaveMessageOutbox(outboxEvent); err != nil {
-				return msg, err
-			}
-
-			// 先做一次即时发布，尽量维持原来的低延迟异步体验。
-			// 即时发布失败时不把消息丢掉，而是把失败信息留在 outbox，交给 relay worker 后续重试。
-			if rabbitmq.RMQMessage != nil {
-				if err := rabbitmq.RMQMessage.Publish(data); err == nil {
-					if markErr := outboxDAO.MarkMessageOutboxPublished(msg.MessageKey); markErr != nil {
-						log.Println("AIHelper save message mark outbox published error:", markErr)
-					}
-					return msg, nil
-				} else if markErr := outboxDAO.MarkMessageOutboxPublishFailed(msg.MessageKey, err.Error()); markErr != nil {
-					log.Println("AIHelper save message mark outbox publish failed error:", markErr)
-				}
-			}
-
-			// 这里不再直接同步落 message 表，而是明确交给 outbox 补偿链路处理。
-			// 这样消息最终是通过同一条“发布 -> 消费 -> 落库 -> 回执”路径收敛，避免出现多套真相源。
-			observability.RecordMQFallback()
-			return msg, nil
-		},
+		// 第八阶段开始，聊天主链路彻底移除 outbox/MQ。
+		// helper 默认只维护运行时上下文，不再隐式承担任何持久化副作用。
+		saveFunc:           nil,
 		SessionID:          SessionID,
 		version:            1,
+		persistedVersion:   0,
 		selectionSignature: selectionSignature,
 		recoveryMode:       RecoveryModeFull,
 	}
 }
 
 // AddMessage 把一条消息加入当前会话的内存上下文。
-// Save=true 时继续走异步持久化；Save=false 时只做内存回放，不重复入库。
+// 第八阶段后，Save 只保留给测试或显式注入的自定义持久化策略，聊天主链路本身不再依赖它。
 func (a *AIHelper) AddMessage(Content string, UserName string, IsUser bool, Save bool) {
 	a.AddMessageWithStatus(Content, UserName, IsUser, Save, model.MessageStatusCompleted)
 }
@@ -192,6 +154,9 @@ func (a *AIHelper) LoadHotState(state *model.SessionHotState) {
 	if state.Version > 0 {
 		a.version = state.Version
 	}
+	if state.PersistedVersion >= 0 {
+		a.persistedVersion = state.PersistedVersion
+	}
 	a.recoveryMode = RecoveryModeWarm
 }
 
@@ -225,6 +190,7 @@ func (a *AIHelper) ExportHotState() *model.SessionHotState {
 		SessionID:           a.SessionID,
 		SelectionSignature:  a.selectionSignature,
 		Version:             a.version,
+		PersistedVersion:    a.persistedVersion,
 		UpdatedAt:           time.Now(),
 		ContextSummary:      a.contextSummary,
 		SummaryMessageCount: a.summaryMessageCount,
@@ -234,7 +200,7 @@ func (a *AIHelper) ExportHotState() *model.SessionHotState {
 }
 
 // LoadMessages 用数据库中的历史消息回放当前会话上下文。
-// 这里不会再次触发 saveFunc，避免把旧消息重复投递到消息队列。
+// 这里不会再次触发 saveFunc，避免把旧消息重复送入任何外部副作用链路。
 func (a *AIHelper) LoadMessages(messages []model.Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -302,6 +268,24 @@ func (a *AIHelper) SetVersion(version int64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.version = version
+}
+
+// GetPersistedVersion 返回当前 helper 感知到的 MySQL 已持久化版本水位。
+func (a *AIHelper) GetPersistedVersion() int64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.persistedVersion
+}
+
+// SetPersistedVersion 用显式水位覆盖 helper 当前持久化版本认知。
+func (a *AIHelper) SetPersistedVersion(version int64) {
+	if version < 0 {
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.persistedVersion = version
 }
 
 // GetMessages 返回当前会话的内存消息快照，避免外部直接修改内部切片。
@@ -600,13 +584,11 @@ func (a *AIHelper) streamWithRetryAndFallback(
 	return "", fallbackErr
 }
 
-// GenerateResponse 走同步模型调用。
-func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQuestion string) (*model.Message, error) {
-	// 先把用户本轮问题写入上下文，保证模型能看到完整多轮历史。
-	a.AddMessage(userQuestion, userName, true, true)
-
+// GenerateResponseForPreparedUserMessage 在“用户消息已经提前进入上下文”后执行同步模型调用。
+// 这样 service 层就可以把“用户消息进入 helper”与“热状态同步提交”放在模型调用之前完成。
+func (a *AIHelper) GenerateResponseForPreparedUserMessage(userName string, ctx context.Context) (*model.Message, error) {
 	if err := a.ensureContextSummary(ctx); err != nil {
-		log.Printf("AIHelper GenerateResponse ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper GenerateResponseForPreparedUserMessage ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
 
@@ -618,39 +600,42 @@ func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQu
 
 	// 真正的模型调用前先申请并发令牌。
 	// 这样即使外层接口层没有足够细的限流，实例内部也不会无限制地把请求全部压给模型。
-	log.Printf("AIHelper GenerateResponse acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
+	log.Printf("AIHelper GenerateResponseForPreparedUserMessage acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
 	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
 	if err != nil {
-		log.Printf("AIHelper GenerateResponse acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper GenerateResponseForPreparedUserMessage acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, fmt.Errorf("model concurrency limited: %w", err)
 	}
 	defer releasePermit()
 
-	log.Printf("AIHelper GenerateResponse invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
+	log.Printf("AIHelper GenerateResponseForPreparedUserMessage invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
 	schemaMsg, err := a.generateWithRetryAndFallback(ctx, "generate", messages, usedSummary, func(model AIModel) (*schema.Message, error) {
 		return model.GenerateResponse(ctx, messages)
 	})
 	if err != nil {
-		log.Printf("AIHelper GenerateResponse model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper GenerateResponseForPreparedUserMessage model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
-	log.Printf("AIHelper GenerateResponse model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(schemaMsg.Content))
+	log.Printf("AIHelper GenerateResponseForPreparedUserMessage model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(schemaMsg.Content))
 
 	modelMsg := utils.ConvertToModelMessage(a.SessionID, userName, schemaMsg)
-
-	// 再把模型回复写回上下文，这样下一轮问题就能带上当前回答。
-	a.AddMessage(modelMsg.Content, userName, false, true)
-
-	return modelMsg, nil
+	// 第四阶段开始，聊天核心消息由 service 层同步写 MySQL。
+	// 因此这里先只把 assistant 消息加入内存上下文，不再直接触发 outbox/MQ 主链路。
+	return a.AddMessageWithStatus(modelMsg.Content, userName, false, false, model.MessageStatusCompleted), nil
 }
 
-// StreamResponse 走流式模型调用。
-func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb StreamCallback, userQuestion string) (*model.Message, error) {
-	// 流式场景也要先把用户问题放入上下文，否则模型拿不到当前轮问题。
-	a.AddMessage(userQuestion, userName, true, true)
+// GenerateResponse 走同步模型调用。
+func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQuestion string) (*model.Message, error) {
+	// 先把用户本轮问题写入上下文，保证模型能看到完整多轮历史。
+	a.AddMessage(userQuestion, userName, true, false)
+	return a.GenerateResponseForPreparedUserMessage(userName, ctx)
+}
 
+// StreamResponseForPreparedUserMessage 在“用户消息已经提前进入上下文”后执行流式模型调用。
+// 这样 service 层可以在真正发起流式生成前，先把用户消息对应的 Redis 热状态同步提交出去。
+func (a *AIHelper) StreamResponseForPreparedUserMessage(userName string, ctx context.Context, cb StreamCallback) (*model.Message, error) {
 	if err := a.ensureContextSummary(ctx); err != nil {
-		log.Printf("AIHelper StreamResponse ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper StreamResponseForPreparedUserMessage ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
 
@@ -660,16 +645,16 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 		usedSummary = true
 	}
 
-	log.Printf("AIHelper StreamResponse acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
+	log.Printf("AIHelper StreamResponseForPreparedUserMessage acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
 	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
 	if err != nil {
-		log.Printf("AIHelper StreamResponse acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper StreamResponseForPreparedUserMessage acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, fmt.Errorf("model concurrency limited: %w", err)
 	}
 	defer releasePermit()
 
 	emitted := false
-	log.Printf("AIHelper StreamResponse invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
+	log.Printf("AIHelper StreamResponseForPreparedUserMessage invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
 	content, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
 		return !emitted
 	}, func(model AIModel) (string, error) {
@@ -679,10 +664,10 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 		})
 	})
 	if err != nil {
-		log.Printf("AIHelper StreamResponse model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper StreamResponseForPreparedUserMessage model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
-	log.Printf("AIHelper StreamResponse model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(content))
+	log.Printf("AIHelper StreamResponseForPreparedUserMessage model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(content))
 
 	modelMsg := &model.Message{
 		SessionID: a.SessionID,
@@ -691,20 +676,23 @@ func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb Strea
 		IsUser:    false,
 	}
 
-	// 流式结束后把完整回复写回上下文，为下一轮对话做准备。
-	a.AddMessage(modelMsg.Content, userName, false, true)
-
-	return modelMsg, nil
+	// 第四阶段开始，流式主消息的正式持久化改由 service 层同步写 MySQL。
+	// 这里先只维护 helper 内存上下文，不再直接触发 outbox/MQ 主链路。
+	return a.AddMessageWithStatus(modelMsg.Content, userName, false, false, model.MessageStatusCompleted), nil
 }
 
-// StreamResponseWithExistingAssistant 和 StreamResponse 类似，但最终 assistant 消息使用外部已确定的 message_key。
-// 这主要用于流式占位消息：先创建 streaming 占位，再在流结束时把完整内容补回同一条消息。
-func (a *AIHelper) StreamResponseWithExistingAssistant(userName string, ctx context.Context, cb StreamCallback, userQuestion string, assistantMessage *model.Message) (*model.Message, error) {
+// StreamResponse 走流式模型调用。
+func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb StreamCallback, userQuestion string) (*model.Message, error) {
 	// 流式场景也要先把用户问题放入上下文，否则模型拿不到当前轮问题。
-	a.AddMessage(userQuestion, userName, true, true)
+	a.AddMessage(userQuestion, userName, true, false)
+	return a.StreamResponseForPreparedUserMessage(userName, ctx, cb)
+}
 
+// StreamResponseWithExistingAssistantForPreparedUserMessage 在“用户消息已经提前进入上下文”后执行流式模型调用，
+// 并把最终 assistant 内容回填到外部已存在的占位消息上。
+func (a *AIHelper) StreamResponseWithExistingAssistantForPreparedUserMessage(userName string, ctx context.Context, cb StreamCallback, assistantMessage *model.Message) (*model.Message, error) {
 	if err := a.ensureContextSummary(ctx); err != nil {
-		log.Printf("AIHelper StreamResponseWithExistingAssistant ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage ensureContextSummary failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
 
@@ -714,16 +702,16 @@ func (a *AIHelper) StreamResponseWithExistingAssistant(userName string, ctx cont
 		usedSummary = true
 	}
 
-	log.Printf("AIHelper StreamResponseWithExistingAssistant acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
+	log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage acquiring permit: session=%s model=%s messages=%d", a.SessionID, a.model.GetModelType(), len(messages))
 	releasePermit, err := globalModelConcurrencyManager.acquire(ctx, a.model.GetModelType())
 	if err != nil {
-		log.Printf("AIHelper StreamResponseWithExistingAssistant acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage acquire permit failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, fmt.Errorf("model concurrency limited: %w", err)
 	}
 	defer releasePermit()
 
 	emitted := false
-	log.Printf("AIHelper StreamResponseWithExistingAssistant invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
+	log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
 	content, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
 		return !emitted
 	}, func(model AIModel) (string, error) {
@@ -733,10 +721,10 @@ func (a *AIHelper) StreamResponseWithExistingAssistant(userName string, ctx cont
 		})
 	})
 	if err != nil {
-		log.Printf("AIHelper StreamResponseWithExistingAssistant model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
+		log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
-	log.Printf("AIHelper StreamResponseWithExistingAssistant model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(content))
+	log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(content))
 
 	finalAssistant := &model.Message{
 		MessageKey:     assistantMessage.MessageKey,
@@ -750,6 +738,14 @@ func (a *AIHelper) StreamResponseWithExistingAssistant(userName string, ctx cont
 
 	a.AppendExistingMessage(finalAssistant)
 	return finalAssistant, nil
+}
+
+// StreamResponseWithExistingAssistant 和 StreamResponse 类似，但最终 assistant 消息使用外部已确定的 message_key。
+// 这主要用于流式占位消息：先创建 streaming 占位，再在流结束时把完整内容补回同一条消息。
+func (a *AIHelper) StreamResponseWithExistingAssistant(userName string, ctx context.Context, cb StreamCallback, userQuestion string, assistantMessage *model.Message) (*model.Message, error) {
+	// 流式场景也要先把用户问题放入上下文，否则模型拿不到当前轮问题。
+	a.AddMessage(userQuestion, userName, true, false)
+	return a.StreamResponseWithExistingAssistantForPreparedUserMessage(userName, ctx, cb, assistantMessage)
 }
 
 // GetModelType 返回当前 helper 绑定的模型类型。

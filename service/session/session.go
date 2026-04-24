@@ -6,15 +6,13 @@ import (
 	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
 	messageDAO "GopherAI/dao/message"
-	outboxDAO "GopherAI/dao/outbox"
 	sessionDAO "GopherAI/dao/session"
 	"GopherAI/model"
+	notifyservice "GopherAI/service/notify"
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +26,8 @@ const (
 	// 此时宁可退回全量对账，也不在主链路继续信任可能不完整的热快照。
 	maxWarmResumeVersionLag int64 = 8
 )
+
+var publishChatMessageReadyFunc = notifyservice.PublishChatMessageReady
 
 // ensureOwnedSession 校验会话是否存在且归当前用户所有。
 // 后续所有读写操作都应先经过该检查，避免越权访问其他用户会话。
@@ -69,6 +69,7 @@ func ensureSessionWriteOwnership(ctx context.Context, sessionID string) code.Cod
 }
 
 // persistSessionProgress 将 helper 当前的摘要状态和版本号持久化到 session。
+// 这个方法保留给“消息正式落库与 session 进度推进暂时分离”的路径使用。
 func persistSessionProgress(ctx context.Context, sessionID string, helper *aihelper.AIHelper) code.Code {
 	if code_ := ensureSessionWriteOwnership(ctx, sessionID); code_ != code.CodeSuccess {
 		return code_
@@ -76,6 +77,7 @@ func persistSessionProgress(ctx context.Context, sessionID string, helper *aihel
 	afterSummary, afterCount := helper.GetSummaryState()
 	nextVersion := helper.GetVersion() + 1
 	if err := sessionDAO.UpdateSessionProgress(sessionID, nextVersion, afterSummary, afterCount); err != nil {
+		observability.RecordDBPersistFail()
 		log.Println("persistSessionProgress UpdateSessionProgress error:", err)
 		return code.CodeServerBusy
 	}
@@ -84,11 +86,33 @@ func persistSessionProgress(ctx context.Context, sessionID string, helper *aihel
 	return code.CodeSuccess
 }
 
-// persistHelperHotState 将 helper 的热状态写入 Redis。
-// 写入失败只记录观测信息，不影响主流程返回结果。
-func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
+// persistSessionProgressWithPersistedVersion 在核心消息已经同步写入 MySQL 后，
+// 同步推进 session.version 与 session.persisted_version。
+func persistSessionProgressWithPersistedVersion(ctx context.Context, sessionID string, helper *aihelper.AIHelper) code.Code {
+	if code_ := ensureSessionWriteOwnership(ctx, sessionID); code_ != code.CodeSuccess {
+		return code_
+	}
+	afterSummary, afterCount := helper.GetSummaryState()
+	nextVersion := helper.GetVersion() + 1
+	if err := sessionDAO.UpdateSessionProgressAndPersistedVersion(sessionID, nextVersion, afterSummary, afterCount, nextVersion); err != nil {
+		observability.RecordDBPersistFail()
+		log.Println("persistSessionProgressWithPersistedVersion UpdateSessionProgressAndPersistedVersion error:", err)
+		return code.CodeServerBusy
+	}
+
+	helper.SetVersion(nextVersion)
+	helper.SetPersistedVersion(nextVersion)
+	return code.CodeSuccess
+}
+
+// commitHelperHotState 将 helper 的热状态同步提交到 Redis。
+// 第三阶段开始，这个方法用于关键提交点：
+// 1. 用户消息进入上下文后
+// 2. assistant 终态完成后
+// 3. 其他需要让外部请求立刻可见的正式热状态推进点
+func commitHelperHotState(ctx context.Context, helper *aihelper.AIHelper) code.Code {
 	if helper == nil {
-		return
+		return code.CodeInvalidParams
 	}
 	guard := sessionOwnerGuardFromContext(ctx)
 	if guard != nil && guard.SessionID == helper.SessionID {
@@ -97,11 +121,11 @@ func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 			observability.RecordRedisHotStateSaveFail()
 			logSessionTrace(ctx, "hot_state_owner_validate_fail", "err=%v", err)
 			log.Println("persistHelperHotState ValidateSessionOwnerFence error:", err)
-			return
+			return code.CodeServerBusy
 		}
 		if !valid {
 			logSessionTrace(ctx, "hot_state_owner_reject", "owner=%s fence=%d", guard.OwnerID, guard.FenceToken)
-			return
+			return code.AIModelCancelled
 		}
 	}
 
@@ -115,10 +139,82 @@ func persistHelperHotState(ctx context.Context, helper *aihelper.AIHelper) {
 		observability.RecordRedisHotStateSaveFail()
 		logSessionTrace(ctx, "hot_state_save_fail", "err=%v", err)
 		log.Println("persistHelperHotState SaveSessionHotState error:", err)
-		return
+		return code.CodeServerBusy
+	}
+	if result == myredis.SessionHotStateSaveUnavailable {
+		observability.RecordRedisHotStateSaveFail()
+		logSessionTrace(ctx, "hot_state_save_fail", "detail=redis_unavailable")
+		return code.CodeServerBusy
 	}
 	if result == myredis.SessionHotStateSaveIgnoredStale {
 		logSessionTrace(ctx, "hot_state_save_ignored", "detail=stale_snapshot")
+		return code.AIModelCancelled
+	}
+	return code.CodeSuccess
+}
+
+// appendUserMessageAndCommitHotState 负责把用户消息先写入 helper，再同步提交 Redis 热状态。
+// 这样模型真正开始执行前，其他请求就能从 Redis 看见这次会话推进。
+func appendUserMessageAndCommitHotState(ctx context.Context, helper *aihelper.AIHelper, userName string, userQuestion string) (*model.Message, code.Code) {
+	if helper == nil {
+		return nil, code.CodeInvalidParams
+	}
+	message := helper.AddMessageWithStatus(userQuestion, userName, true, false, model.MessageStatusCompleted)
+	if code_ := commitHelperHotState(ctx, helper); code_ != code.CodeSuccess {
+		return nil, code_
+	}
+	return message, code.CodeSuccess
+}
+
+// finalizeAssistantMessageAndCommitHotState 负责把 assistant 终态写回 helper，并同步提交 Redis 热状态。
+// 第三阶段开始，assistant 完整回复、partial、cancelled、timeout 都应在这里形成正式可恢复热状态。
+func finalizeAssistantMessageAndCommitHotState(ctx context.Context, helper *aihelper.AIHelper, message *model.Message) code.Code {
+	if helper == nil || message == nil {
+		return code.CodeInvalidParams
+	}
+	helper.AppendExistingMessage(message)
+	return commitHelperHotState(ctx, helper)
+}
+
+// persistMessageSync 把聊天核心消息同步写入 MySQL。
+// 第四阶段开始，user/assistant 主消息都应通过这个入口完成正式落库，
+// 而不是继续依赖 AIHelper.saveFunc 触发的 outbox/MQ 主链路。
+func persistMessageSync(ctx context.Context, message *model.Message) code.Code {
+	if message == nil {
+		return code.CodeInvalidParams
+	}
+	if code_ := ensureSessionWriteOwnership(ctx, message.SessionID); code_ != code.CodeSuccess {
+		return code_
+	}
+	if _, err := messageDAO.CreateMessage(message); err != nil {
+		observability.RecordDBPersistFail()
+		log.Println("persistMessageSync CreateMessage error:", err)
+		return code.CodeServerBusy
+	}
+	return code.CodeSuccess
+}
+
+// publishAssistantReadyNotificationBestEffort 在 assistant 完整回复正式落库后投递旁路通知。
+// 这里明确采用 best-effort 策略：
+// 1. 通知失败不回滚主链路；
+// 2. 只有 completed assistant 才发送，避免 partial/cancelled/timeout 产生噪音；
+// 3. 这样 MQ 就只承担旁路价值，而不再影响聊天核心一致性。
+func publishAssistantReadyNotificationBestEffort(ctx context.Context, sess *model.Session, message *model.Message) {
+	if sess == nil || message == nil {
+		return
+	}
+	if message.IsUser || message.Status != model.MessageStatusCompleted {
+		return
+	}
+
+	err := publishChatMessageReadyFunc(ctx, notifyservice.ChatMessageReadyParams{
+		UserID:     sess.UserID,
+		SessionID:  sess.ID,
+		MessageKey: message.MessageKey,
+		Content:    message.Content,
+	})
+	if err != nil {
+		log.Println("publishAssistantReadyNotificationBestEffort error:", err)
 	}
 }
 
@@ -129,6 +225,7 @@ func applySessionMetadataToHelper(sess *model.Session, helper *aihelper.AIHelper
 		return
 	}
 	helper.SetVersion(sess.Version)
+	helper.SetPersistedVersion(sess.PersistedVersion)
 	helper.SetSummaryState(sess.ContextSummary, sess.SummaryMessageCount)
 }
 
@@ -287,8 +384,8 @@ func syncHelperWithDatabase(sessionID string, helper *aihelper.AIHelper) code.Co
 	return code.CodeSuccess
 }
 
-// getOrSyncHelperWithHistory 获取当前会话的 helper，并按“热恢复优先、全量对账兜底”的顺序恢复。
-// 主链路先尝试进程内 helper，再尝试 Redis warm resume，只有热态不可信时才回退 DB 全量对账。
+// getOrSyncHelperWithHistory 获取当前会话的 helper，并按“Redis 热恢复优先、全量对账兜底”的顺序恢复。
+// 本地 helper 只作为 execution cache 复用对象，不再承担主恢复入口语义。
 func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *model.Session, resolved *resolvedChatRequest) (*aihelper.AIHelper, code.Code) {
 	if resolved == nil || !aihelper.IsSupportedModelType(resolved.ModelType) {
 		return nil, code.CodeInvalidParams
@@ -297,29 +394,29 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 	sessionID := sess.ID
 	selectionSignature := resolved.RuntimeConfig.SelectionSignature(resolved.ModelType)
 	manager := aihelper.GetGlobalManager()
-	if helper, exists := manager.GetAIHelper(userName, sessionID); exists {
-		if helper.MatchesSelection(selectionSignature) {
-			observability.RecordHelperRecover(observability.HelperRecoverSourceProcess)
-			if code_ := lightReconcileHelperWithSession(sess, helper); code_ != code.CodeSuccess {
-				return nil, code_
-			}
-			return helper, code.CodeSuccess
-		}
-		manager.RemoveAIHelper(userName, sessionID)
-	}
 
-	helper, err := manager.GetOrCreateAIHelper(userName, sessionID, resolved.ModelType, resolved.RuntimeConfig)
-	if err != nil {
-		log.Println("getOrCreateHelperWithHistory GetOrCreateAIHelper error:", err)
-		return nil, code.AIModelFail
+	if !myredis.IsAvailable() {
+		// Redis 降级时明确声明：跨请求恢复不再尝试热状态，直接回退 DB rebuild。
+		logSessionTrace(ctx, "hot_state_disabled", "detail=redis_degraded_fallback_db")
+		observability.RecordRedisHotStateLookup(false)
+		observability.RecordHelperWarmResumeFallbackDB()
+		observability.RecordHelperRecover(observability.HelperRecoverSourceDB)
+		helper, reused, dbResult := BuildEphemeralHelperFromDB(ctx, userName, sess, resolved)
+		if !dbResult.ok {
+			return nil, dbResult.code
+		}
+		if reused {
+			logSessionTrace(ctx, "process_helper_reused", "runtime_source=%s", SessionRuntimeSourceProcessEphemeral)
+		}
+		manager.SetAIHelper(userName, sessionID, helper)
+		return helper, code.CodeSuccess
 	}
-	applySessionMetadataToHelper(sess, helper)
 
 	hotState, err := myredis.GetSessionHotState(ctx, sessionID)
 	if err != nil {
 		observability.RecordRedisHotStateLookup(false)
 		logSessionTrace(ctx, "hot_state_read_fail", "err=%v", err)
-		log.Println("getOrCreateHelperWithHistory GetSessionHotState error:", err)
+		log.Println("getOrSyncHelperWithHistory GetSessionHotState error:", err)
 	} else if hotState != nil {
 		observability.RecordHelperWarmResumeCandidate()
 		currentLease, leaseErr := myredis.GetSessionOwnerLeaseDetail(ctx, sessionID)
@@ -332,9 +429,13 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 			warmResumeStart := time.Now()
 			observability.RecordRedisHotStateLookup(true)
 			observability.RecordHelperRecover(observability.HelperRecoverSourceRedis)
-			helper.LoadHotState(hotState)
-			if code_ := lightReconcileHelperWithSession(sess, helper); code_ != code.CodeSuccess {
-				return nil, code_
+			helper, reused, buildErr := BuildEphemeralHelperFromHotState(ctx, userName, sess, resolved, hotState)
+			if buildErr != nil {
+				log.Println("getOrSyncHelperWithHistory BuildEphemeralHelperFromHotState error:", buildErr)
+				return nil, code.AIModelFail
+			}
+			if reused {
+				logSessionTrace(ctx, "process_helper_reused", "runtime_source=%s", SessionRuntimeSourceProcessEphemeral)
 			}
 			observability.RecordHelperWarmResumeApplied(time.Since(warmResumeStart))
 			manager.SetAIHelper(userName, sessionID, helper)
@@ -355,10 +456,13 @@ func getOrSyncHelperWithHistory(ctx context.Context, userName string, sess *mode
 
 	// 热态未命中或不可信时，再回退到全量 DB 对账。
 	observability.RecordHelperRecover(observability.HelperRecoverSourceDB)
-	if code_ := fullReconcileHelperWithDatabase(sess, helper); code_ != code.CodeSuccess {
-		return nil, code_
+	helper, reused, dbResult := BuildEphemeralHelperFromDB(ctx, userName, sess, resolved)
+	if !dbResult.ok {
+		return nil, dbResult.code
 	}
-
+	if reused {
+		logSessionTrace(ctx, "process_helper_reused", "runtime_source=%s", SessionRuntimeSourceProcessEphemeral)
+	}
 	manager.SetAIHelper(userName, sessionID, helper)
 	return helper, code.CodeSuccess
 }
@@ -433,16 +537,30 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 			return codeExecutorResult{code: code_}
 		}
 
-		aiResponse, err := helper.GenerateResponse(userName, execCtx, userQuestion)
+		userMessage, code_ := appendUserMessageAndCommitHotState(execCtx, helper, userName, userQuestion)
+		if code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		if code_ = persistMessageSync(execCtx, userMessage); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+
+		aiResponse, err := helper.GenerateResponseForPreparedUserMessage(userName, execCtx)
 		if err != nil {
 			log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSessionProgress(execCtx, createdSession.ID, helper); code_ != code.CodeSuccess {
+		if code_ = persistMessageSync(execCtx, aiResponse); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
+		if code_ = persistSessionProgressWithPersistedVersion(execCtx, createdSession.ID, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		publishAssistantReadyNotificationBestEffort(execCtx, createdSession, aiResponse)
 
-		persistHelperHotState(execCtx, helper)
 		return codeExecutorResult{
 			code:       code.CodeSuccess,
 			aiResponse: aiResponse.Content,
@@ -534,6 +652,14 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 			return codeExecutorResult{code: code_}
 		}
 
+		userMessage, code_ := appendUserMessageAndCommitHotState(execCtx, helper, userName, userQuestion)
+		if code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		if code_ = persistMessageSync(execCtx, userMessage); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+
 		cb := func(msg string) {
 			// SSE 需要按 data: <chunk> 后跟两个换行的格式持续写出，并在每次写后 flush。
 			_, err := writer.Write([]byte("data: " + msg + "\n\n"))
@@ -544,18 +670,25 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 			flusher.Flush()
 		}
 
-		if _, err := helper.StreamResponse(userName, execCtx, cb, userQuestion); err != nil {
+		if _, err := helper.StreamResponseForPreparedUserMessage(userName, execCtx, cb); err != nil {
 			log.Println("StreamMessageToExistingSession StreamResponse error:", err)
 			if execCtx.Err() != nil {
 				observability.RecordStreamDisconnect()
 			}
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSessionProgress(execCtx, sessionID, helper); code_ != code.CodeSuccess {
+		assistantMessage := helper.GetLatestMessage()
+		if code_ = persistMessageSync(execCtx, assistantMessage); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
+		if code_ = persistSessionProgressWithPersistedVersion(execCtx, sessionID, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		publishAssistantReadyNotificationBestEffort(execCtx, sess, assistantMessage)
 
-		persistHelperHotState(execCtx, helper)
 		return codeExecutorResult{code: code.CodeSuccess}
 	})
 	if result.err != nil {
@@ -635,16 +768,30 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 			return codeExecutorResult{code: code_}
 		}
 
-		aiResponse, err := helper.GenerateResponse(userName, execCtx, userQuestion)
+		userMessage, code_ := appendUserMessageAndCommitHotState(execCtx, helper, userName, userQuestion)
+		if code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		if code_ = persistMessageSync(execCtx, userMessage); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+
+		aiResponse, err := helper.GenerateResponseForPreparedUserMessage(userName, execCtx)
 		if err != nil {
 			log.Println("ChatSend GenerateResponse error:", err)
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistSessionProgress(execCtx, sessionID, helper); code_ != code.CodeSuccess {
+		if code_ = persistMessageSync(execCtx, aiResponse); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
+		if code_ = persistSessionProgressWithPersistedVersion(execCtx, sessionID, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
+			return codeExecutorResult{code: code_}
+		}
+		publishAssistantReadyNotificationBestEffort(execCtx, sess, aiResponse)
 
-		persistHelperHotState(execCtx, helper)
 		return codeExecutorResult{
 			code:       code.CodeSuccess,
 			aiResponse: aiResponse.Content,
@@ -683,10 +830,6 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 		log.Println("GetChatHistory GetMessagesBySessionID error:", err)
 		return nil, code.CodeServerBusy
 	}
-	messages, code_ := mergeUndeliveredOutboxMessages(sessionID, messages)
-	if code_ != code.CodeSuccess {
-		return nil, code_
-	}
 
 	history := make([]model.History, 0, len(messages))
 	for _, msg := range messages {
@@ -699,75 +842,6 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 	}
 
 	return history, code.CodeSuccess
-}
-
-func mergeUndeliveredOutboxMessages(sessionID string, messages []model.Message) ([]model.Message, code.Code) {
-	events, err := outboxDAO.ListUndeliveredMessageOutboxesBySessionID(sessionID)
-	if err != nil {
-		log.Println("mergeUndeliveredOutboxMessages ListUndeliveredMessageOutboxesBySessionID error:", err)
-		return nil, code.CodeServerBusy
-	}
-	if len(events) == 0 {
-		return messages, code.CodeSuccess
-	}
-
-	messageKeys := make(map[string]struct{}, len(messages))
-	for _, msg := range messages {
-		messageKeys[msg.MessageKey] = struct{}{}
-	}
-
-	for _, event := range events {
-		if _, exists := messageKeys[event.MessageKey]; exists {
-			continue
-		}
-		var payload struct {
-			MessageKey     string `json:"message_key"`
-			SessionID      string `json:"session_id"`
-			SessionVersion int64  `json:"session_version"`
-			Content        string `json:"content"`
-			UserName       string `json:"user_name"`
-			IsUser         bool   `json:"is_user"`
-			Status         string `json:"status"`
-		}
-		if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {
-			log.Println("mergeUndeliveredOutboxMessages payload unmarshal error:", err)
-			continue
-		}
-		if payload.SessionID != sessionID {
-			continue
-		}
-		status := model.MessageStatus(payload.Status)
-		if status == "" {
-			status = model.MessageStatusCompleted
-		}
-		messages = append(messages, model.Message{
-			MessageKey:     payload.MessageKey,
-			SessionID:      payload.SessionID,
-			SessionVersion: payload.SessionVersion,
-			UserName:       payload.UserName,
-			Content:        payload.Content,
-			IsUser:         payload.IsUser,
-			Status:         status,
-			CreatedAt:      event.CreatedAt,
-			UpdatedAt:      event.UpdatedAt,
-		})
-		messageKeys[payload.MessageKey] = struct{}{}
-	}
-
-	sort.SliceStable(messages, func(i, j int) bool {
-		if messages[i].SessionVersion != messages[j].SessionVersion {
-			return messages[i].SessionVersion < messages[j].SessionVersion
-		}
-		if messages[i].IsUser != messages[j].IsUser {
-			return messages[i].IsUser
-		}
-		if !messages[i].CreatedAt.Equal(messages[j].CreatedAt) {
-			return messages[i].CreatedAt.Before(messages[j].CreatedAt)
-		}
-		return messages[i].MessageKey < messages[j].MessageKey
-	})
-
-	return messages, code.CodeSuccess
 }
 
 // ChatStreamSend 是 StreamMessageToExistingSession 的简单封装。

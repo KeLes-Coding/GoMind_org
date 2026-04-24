@@ -6,6 +6,7 @@ import (
 	myredis "GopherAI/common/redis"
 	"GopherAI/model"
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -19,6 +20,9 @@ const (
 	activeStreamBufferMaxChunks = 512
 	// activeStreamBufferMaxBytes 控制本地缓冲区最多保留多少字符，避免长回答无限占内存。
 	activeStreamBufferMaxBytes = 256 * 1024
+	// activeStreamTerminalRetention 控制流式任务进入终态后在本地注册表里额外保留多久。
+	// 这样前端在最后一跳网络抖动时，仍有机会命中本地 done/backlog，而不是立刻只能回退 Redis。
+	activeStreamTerminalRetention = 30 * time.Second
 )
 
 type activeStreamEventType string
@@ -61,6 +65,7 @@ type activeStreamTask struct {
 	bufferBytes    int
 	subscribers    map[string]chan activeStreamEvent
 	resumeDeadline *time.Time
+	commitErr      error
 }
 
 func newActiveStreamTask(userName string, sessionID string, streamID string, messageID string, cancel context.CancelFunc) *activeStreamTask {
@@ -164,6 +169,23 @@ func (t *activeStreamTask) requestStop(status model.MessageStatus) {
 	t.cancel()
 }
 
+func (t *activeStreamTask) setCommitError(err error) {
+	if err == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.commitErr == nil {
+		t.commitErr = err
+	}
+}
+
+func (t *activeStreamTask) getCommitError() error {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.commitErr
+}
+
 func (t *activeStreamTask) interruptedMessageStatus(ctx context.Context) model.MessageStatus {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -210,9 +232,9 @@ func (t *activeStreamTask) buildAssistantMessage(status model.MessageStatus) *mo
 	}
 }
 
-// appendChunk 既更新本地环形缓冲区，也同步更新 Redis 恢复层。
-// 这样同实例内可以直接走内存恢复，跨实例时仍能从 Redis 兜底。
-func (t *activeStreamTask) appendChunk(chunk string) model.StreamChunkSnapshot {
+// appendChunkLocalOnly 只更新本地环形缓冲区和订阅广播所需数据。
+// 第三阶段开始，Redis 写入会在调用方里作为同步提交点单独处理。
+func (t *activeStreamTask) appendChunkLocalOnly(chunk string) (model.StreamChunkSnapshot, []chan activeStreamEvent) {
 	now := time.Now()
 
 	t.mu.Lock()
@@ -239,13 +261,30 @@ func (t *activeStreamTask) appendChunk(chunk string) model.StreamChunkSnapshot {
 	}
 	t.mu.Unlock()
 
-	// Redis 写入失败不应打断主链路，因此这里按 best effort 处理。
+	return item, subscribers
+}
+
+// appendChunkAndCommit 先更新本地 chunk 缓冲，再同步提交 Redis 的 chunk/snapshot/meta。
+// 第三阶段把这里提升为正式恢复层提交点，一旦提交失败，会把错误上抛给主链路处理。
+func (t *activeStreamTask) appendChunkAndCommit(chunk string) error {
+	item, subscribers := t.appendChunkLocalOnly(chunk)
+
 	if t.canPersistRecoveryState() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = myredis.AppendActiveStreamChunk(ctx, t.streamID, &item, activeStreamBufferMaxChunks)
-		_ = myredis.SaveActiveStreamSnapshot(ctx, t.exportSnapshot())
-		_ = myredis.SaveActiveStreamMeta(ctx, t.exportMeta())
-		cancel()
+		defer cancel()
+
+		if err := myredis.AppendActiveStreamChunk(ctx, t.streamID, &item, activeStreamBufferMaxChunks); err != nil {
+			observability.RecordStreamChunkSyncFail()
+			return fmt.Errorf("append active stream chunk failed: %w", err)
+		}
+		if err := myredis.SaveActiveStreamSnapshot(ctx, t.exportSnapshot()); err != nil {
+			observability.RecordStreamSnapshotSyncFail()
+			return fmt.Errorf("save active stream snapshot failed: %w", err)
+		}
+		if err := myredis.SaveActiveStreamMeta(ctx, t.exportMeta()); err != nil {
+			observability.RecordStreamMetaSyncFail()
+			return fmt.Errorf("save active stream meta failed: %w", err)
+		}
 	}
 
 	event := activeStreamEvent{
@@ -258,7 +297,7 @@ func (t *activeStreamTask) appendChunk(chunk string) model.StreamChunkSnapshot {
 		default:
 		}
 	}
-	return item
+	return nil
 }
 
 func (t *activeStreamTask) attachSubscriber(lastSeq int64) (string, *model.StreamSnapshot, []model.StreamChunkSnapshot, model.StreamRuntimeStatus, <-chan activeStreamEvent) {
@@ -412,12 +451,16 @@ type activeStreamRegistry struct {
 	mu          sync.RWMutex
 	bySessionID map[string]*activeStreamTask
 	byStreamID  map[string]*activeStreamTask
+	expiresAt   map[string]time.Time
+	nowFunc     func() time.Time
 }
 
 func newActiveStreamRegistry() *activeStreamRegistry {
 	return &activeStreamRegistry{
 		bySessionID: make(map[string]*activeStreamTask),
 		byStreamID:  make(map[string]*activeStreamTask),
+		expiresAt:   make(map[string]time.Time),
+		nowFunc:     time.Now,
 	}
 }
 
@@ -429,6 +472,19 @@ func (r *activeStreamRegistry) register(task *activeStreamTask) {
 	defer r.mu.Unlock()
 	r.bySessionID[task.sessionID] = task
 	r.byStreamID[task.streamID] = task
+	delete(r.expiresAt, task.streamID)
+}
+
+func (r *activeStreamRegistry) markRetained(task *activeStreamTask, ttl time.Duration) {
+	if task == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.byStreamID[task.streamID]; !exists {
+		return
+	}
+	r.expiresAt[task.streamID] = r.nowFunc().Add(ttl)
 }
 
 func (r *activeStreamRegistry) unregister(task *activeStreamTask) {
@@ -439,23 +495,29 @@ func (r *activeStreamRegistry) unregister(task *activeStreamTask) {
 	defer r.mu.Unlock()
 	delete(r.bySessionID, task.sessionID)
 	delete(r.byStreamID, task.streamID)
+	delete(r.expiresAt, task.streamID)
 }
 
 func (r *activeStreamRegistry) getBySessionID(sessionID string) *activeStreamTask {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cleanupExpiredLocked()
 	return r.bySessionID[sessionID]
 }
 
 func (r *activeStreamRegistry) getByStreamID(streamID string) *activeStreamTask {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cleanupExpiredLocked()
 	return r.byStreamID[streamID]
 }
 
 func (r *activeStreamRegistry) stop(userName string, sessionID string) (string, code.Code) {
 	task := r.getBySessionID(sessionID)
 	if task == nil {
+		return "", code.CodeChatNotRunning
+	}
+	if isTerminalStreamStatus(task.exportMeta().Status) {
 		return "", code.CodeChatNotRunning
 	}
 	if task.userName != userName {
@@ -467,17 +529,21 @@ func (r *activeStreamRegistry) stop(userName string, sessionID string) (string, 
 	return partialContent, code.CodeSuccess
 }
 
-var globalActiveStreamRegistry = newActiveStreamRegistry()
-
-// resolveInterruptedMessageStatus 把上下文中断原因翻译成消息状态。
-// 这里把“用户取消”和“请求超时”分开，后续历史查询和面试表达才有区分度。
-func resolveInterruptedMessageStatus(ctx context.Context) model.MessageStatus {
-	switch ctx.Err() {
-	case context.DeadlineExceeded:
-		return model.MessageStatusTimeout
-	case context.Canceled:
-		return model.MessageStatusCancelled
-	default:
-		return model.MessageStatusPartial
+func (r *activeStreamRegistry) cleanupExpiredLocked() {
+	now := r.nowFunc()
+	for streamID, expireAt := range r.expiresAt {
+		if expireAt.After(now) {
+			continue
+		}
+		task := r.byStreamID[streamID]
+		delete(r.expiresAt, streamID)
+		if task == nil {
+			delete(r.byStreamID, streamID)
+			continue
+		}
+		delete(r.byStreamID, streamID)
+		delete(r.bySessionID, task.sessionID)
 	}
 }
+
+var globalActiveStreamRegistry = newActiveStreamRegistry()

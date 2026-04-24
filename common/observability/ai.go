@@ -47,6 +47,8 @@ type AISnapshot struct {
 	HelperRecoverProcess         int64         `json:"helper_recover_process_total"`
 	HelperRecoverRedis           int64         `json:"helper_recover_redis_total"`
 	HelperRecoverDB              int64         `json:"helper_recover_db_total"`
+	HelperExecutionReuse         int64         `json:"helper_execution_reuse_total"`
+	HelperExecutionRelease       int64         `json:"helper_execution_release_total"`
 	HelperWarmResumeCandidate    int64         `json:"helper_warm_resume_candidate_total"`
 	HelperWarmResumeApplied      int64         `json:"helper_warm_resume_applied_total"`
 	HelperWarmResumeFallbackDB   int64         `json:"helper_warm_resume_fallback_db_total"`
@@ -59,6 +61,10 @@ type AISnapshot struct {
 	RedisHotStateHit             int64         `json:"redis_hot_state_hit"`
 	RedisHotStateMiss            int64         `json:"redis_hot_state_miss"`
 	RedisHotStateSaveFail        int64         `json:"redis_hot_state_save_fail"`
+	DBPersistFail                int64         `json:"db_persist_fail"`
+	StreamMetaSyncFail           int64         `json:"stream_meta_sync_fail"`
+	StreamSnapshotSyncFail       int64         `json:"stream_snapshot_sync_fail"`
+	StreamChunkSyncFail          int64         `json:"stream_chunk_sync_fail"`
 	StreamActive                 int64         `json:"stream_active"`
 	StreamDisconnect             int64         `json:"stream_disconnect"`
 	StreamCreated                int64         `json:"stream_created_total"`
@@ -66,6 +72,7 @@ type AISnapshot struct {
 	StreamResumeLocal            int64         `json:"stream_resume_local_total"`
 	StreamResumeRedis            int64         `json:"stream_resume_redis_total"`
 	StreamResumeOwnerRedirect    int64         `json:"stream_resume_owner_redirect_total"`
+	StreamResumeRedisDegraded    int64         `json:"stream_resume_redis_degraded_total"`
 	StreamResumeTakeoverAttempt  int64         `json:"stream_resume_takeover_attempt_total"`
 	StreamResumeTakeoverSuccess  int64         `json:"stream_resume_takeover_success_total"`
 	StreamResumeSnapshotFallback int64         `json:"stream_resume_snapshot_fallback_total"`
@@ -79,6 +86,7 @@ type AISnapshot struct {
 	MQRetryTotal                 int64         `json:"mq_retry_total"`
 	MQDeadLetterTotal            int64         `json:"mq_dead_letter_total"`
 	MQFallbackTotal              int64         `json:"mq_fallback_total"`
+	NotificationPublishFail      int64         `json:"notification_publish_fail"`
 	MQMainQueueDepth             int64         `json:"mq_main_queue_depth"`
 	MQDLQDepth                   int64         `json:"mq_dlq_depth"`
 	MQQueueDepthMax              int64         `json:"mq_queue_depth_max"`
@@ -175,6 +183,8 @@ type aiObserver struct {
 	helperRecoverProcess         int64
 	helperRecoverRedis           int64
 	helperRecoverDB              int64
+	helperExecutionReuse         int64
+	helperExecutionRelease       int64
 	helperWarmResumeCandidate    int64
 	helperWarmResumeApplied      int64
 	helperWarmResumeFallbackDB   int64
@@ -187,6 +197,10 @@ type aiObserver struct {
 	redisHotStateHit             int64
 	redisHotStateMiss            int64
 	redisHotStateSaveFail        int64
+	dbPersistFail                int64
+	streamMetaSyncFail           int64
+	streamSnapshotSyncFail       int64
+	streamChunkSyncFail          int64
 	streamActive                 int64
 	streamDisconnect             int64
 	streamCreated                int64
@@ -194,6 +208,7 @@ type aiObserver struct {
 	streamResumeLocal            int64
 	streamResumeRedis            int64
 	streamResumeOwnerRedirect    int64
+	streamResumeRedisDegraded    int64
 	streamResumeTakeoverAttempt  int64
 	streamResumeTakeoverSuccess  int64
 	streamResumeSnapshotFallback int64
@@ -207,6 +222,7 @@ type aiObserver struct {
 	mqRetryTotal                 int64
 	mqDeadLetterTotal            int64
 	mqFallbackTotal              int64
+	notificationPublishFail      int64
 	mqMainQueueDepth             int64
 	mqDLQDepth                   int64
 	mqQueueDepthMax              int64
@@ -446,6 +462,22 @@ func RecordHelperRecover(source string) {
 	}
 }
 
+// RecordHelperExecutionReuse 记录一次进程内 execution cache 复用命中。
+func RecordHelperExecutionReuse() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.helperExecutionReuse++
+}
+
+// RecordHelperExecutionRelease 记录一次本地 execution cache 释放。
+func RecordHelperExecutionRelease() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.helperExecutionRelease++
+}
+
 // RecordHelperWarmResumeCandidate 记录一次“当前请求具备热恢复候选条件”的机会。
 func RecordHelperWarmResumeCandidate() {
 	globalAIObserver.mu.Lock()
@@ -505,6 +537,39 @@ func RecordRedisHotStateSaveFail() {
 	globalAIObserver.redisHotStateSaveFail++
 }
 
+// RecordDBPersistFail 记录一次 MySQL 持久化失败。
+// 第七阶段开始，这个指标用于把“Redis 热状态失败”和“DB 正式持久化失败”区分开来。
+func RecordDBPersistFail() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.dbPersistFail++
+}
+
+// RecordStreamMetaSyncFail 记录流式元数据同步提交失败次数。
+func RecordStreamMetaSyncFail() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamMetaSyncFail++
+}
+
+// RecordStreamSnapshotSyncFail 记录流式快照同步提交失败次数。
+func RecordStreamSnapshotSyncFail() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamSnapshotSyncFail++
+}
+
+// RecordStreamChunkSyncFail 记录流式 chunk 同步提交失败次数。
+func RecordStreamChunkSyncFail() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamChunkSyncFail++
+}
+
 // RecordStreamActiveDelta 更新当前活跃流式请求数。
 func RecordStreamActiveDelta(delta int64) {
 	globalAIObserver.mu.Lock()
@@ -562,6 +627,14 @@ func RecordStreamResumeOwnerRedirect() {
 	defer globalAIObserver.mu.Unlock()
 
 	globalAIObserver.streamResumeOwnerRedirect++
+}
+
+// RecordStreamResumeRedisDegraded 记录一次 Redis 降级模式下无法继续走 Redis-backed resume。
+func RecordStreamResumeRedisDegraded() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.streamResumeRedisDegraded++
 }
 
 // RecordStreamResumeTakeoverAttempt 记录一次 detached 流恢复层 owner 接管尝试。
@@ -658,6 +731,15 @@ func RecordMQFallback() {
 	defer globalAIObserver.mu.Unlock()
 
 	globalAIObserver.mqFallbackTotal++
+}
+
+// RecordNotificationPublishFail 记录一次通知旁路任务发布失败。
+// 该指标只反映旁路通知失败，不应与聊天核心持久化失败混为一谈。
+func RecordNotificationPublishFail() {
+	globalAIObserver.mu.Lock()
+	defer globalAIObserver.mu.Unlock()
+
+	globalAIObserver.notificationPublishFail++
 }
 
 // RecordMQQueueDepth 记录主队列或死信队列的最近观测深度以及历史最大值。
@@ -805,6 +887,8 @@ func SnapshotAI() AISnapshot {
 		HelperRecoverProcess:         globalAIObserver.helperRecoverProcess,
 		HelperRecoverRedis:           globalAIObserver.helperRecoverRedis,
 		HelperRecoverDB:              globalAIObserver.helperRecoverDB,
+		HelperExecutionReuse:         globalAIObserver.helperExecutionReuse,
+		HelperExecutionRelease:       globalAIObserver.helperExecutionRelease,
 		HelperWarmResumeCandidate:    globalAIObserver.helperWarmResumeCandidate,
 		HelperWarmResumeApplied:      globalAIObserver.helperWarmResumeApplied,
 		HelperWarmResumeFallbackDB:   globalAIObserver.helperWarmResumeFallbackDB,
@@ -817,6 +901,10 @@ func SnapshotAI() AISnapshot {
 		RedisHotStateHit:             globalAIObserver.redisHotStateHit,
 		RedisHotStateMiss:            globalAIObserver.redisHotStateMiss,
 		RedisHotStateSaveFail:        globalAIObserver.redisHotStateSaveFail,
+		DBPersistFail:                globalAIObserver.dbPersistFail,
+		StreamMetaSyncFail:           globalAIObserver.streamMetaSyncFail,
+		StreamSnapshotSyncFail:       globalAIObserver.streamSnapshotSyncFail,
+		StreamChunkSyncFail:          globalAIObserver.streamChunkSyncFail,
 		StreamActive:                 globalAIObserver.streamActive,
 		StreamDisconnect:             globalAIObserver.streamDisconnect,
 		StreamCreated:                globalAIObserver.streamCreated,
@@ -824,6 +912,7 @@ func SnapshotAI() AISnapshot {
 		StreamResumeLocal:            globalAIObserver.streamResumeLocal,
 		StreamResumeRedis:            globalAIObserver.streamResumeRedis,
 		StreamResumeOwnerRedirect:    globalAIObserver.streamResumeOwnerRedirect,
+		StreamResumeRedisDegraded:    globalAIObserver.streamResumeRedisDegraded,
 		StreamResumeTakeoverAttempt:  globalAIObserver.streamResumeTakeoverAttempt,
 		StreamResumeTakeoverSuccess:  globalAIObserver.streamResumeTakeoverSuccess,
 		StreamResumeSnapshotFallback: globalAIObserver.streamResumeSnapshotFallback,
@@ -837,6 +926,7 @@ func SnapshotAI() AISnapshot {
 		MQRetryTotal:                 globalAIObserver.mqRetryTotal,
 		MQDeadLetterTotal:            globalAIObserver.mqDeadLetterTotal,
 		MQFallbackTotal:              globalAIObserver.mqFallbackTotal,
+		NotificationPublishFail:      globalAIObserver.notificationPublishFail,
 		MQMainQueueDepth:             globalAIObserver.mqMainQueueDepth,
 		MQDLQDepth:                   globalAIObserver.mqDLQDepth,
 		MQQueueDepthMax:              globalAIObserver.mqQueueDepthMax,

@@ -1,64 +1,57 @@
 package aihelper
 
 import (
-	"context"
+	"GopherAI/common/observability"
 	"sync"
+	"time"
 )
 
-var ctx = context.Background()
+const (
+	// defaultHelperExecutionCacheTTL 控制本地 helper 作为 execution cache 的默认存活时间。
+	// 第五阶段开始，它只服务于同实例短时复用，不再作为跨请求恢复真相源。
+	defaultHelperExecutionCacheTTL = 90 * time.Second
+)
+
+type helperCacheEntry struct {
+	helper    *AIHelper
+	expiresAt time.Time
+}
 
 // AIHelperManager 负责管理 user -> session -> helper 的运行时映射关系。
 // 它是运行时缓存，不应该再承担会话列表或聊天历史的真相来源职责。
 type AIHelperManager struct {
-	helpers map[string]map[string]*AIHelper
-	mu      sync.RWMutex
+	helpers   map[string]map[string]*helperCacheEntry
+	helperTTL time.Duration
+	nowFunc   func() time.Time
+	mu        sync.RWMutex
 }
 
 // NewAIHelperManager 创建新的管理器实例。
 func NewAIHelperManager() *AIHelperManager {
 	return &AIHelperManager{
-		helpers: make(map[string]map[string]*AIHelper),
+		helpers:   make(map[string]map[string]*helperCacheEntry),
+		helperTTL: defaultHelperExecutionCacheTTL,
+		nowFunc:   time.Now,
 	}
-}
-
-// GetOrCreateAIHelper 获取或创建某个用户某个会话对应的 helper。
-func (m *AIHelperManager) GetOrCreateAIHelper(userName string, sessionID string, modelType string, config RuntimeConfig) (*AIHelper, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	userHelpers, exists := m.helpers[userName]
-	if !exists {
-		userHelpers = make(map[string]*AIHelper)
-		m.helpers[userName] = userHelpers
-	}
-
-	helper, exists := userHelpers[sessionID]
-	if exists && helper.MatchesSelection(config.SelectionSignature(modelType)) {
-		return helper, nil
-	}
-
-	factory := GetGlobalFactory()
-	helper, err := factory.CreateAIHelper(ctx, modelType, sessionID, config)
-	if err != nil {
-		return nil, err
-	}
-
-	userHelpers[sessionID] = helper
-	return helper, nil
 }
 
 // GetAIHelper 读取指定用户、指定会话的 helper。
 func (m *AIHelperManager) GetAIHelper(userName string, sessionID string) (*AIHelper, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupExpiredLocked()
 
 	userHelpers, exists := m.helpers[userName]
 	if !exists {
 		return nil, false
 	}
 
-	helper, exists := userHelpers[sessionID]
-	return helper, exists
+	entry, exists := userHelpers[sessionID]
+	if !exists || entry == nil || entry.helper == nil {
+		return nil, false
+	}
+	entry.expiresAt = m.nextExpiryLocked()
+	return entry.helper, true
 }
 
 // SetAIHelper 把一个已经准备好的 helper 放入管理器。
@@ -66,14 +59,18 @@ func (m *AIHelperManager) GetAIHelper(userName string, sessionID string) (*AIHel
 func (m *AIHelperManager) SetAIHelper(userName string, sessionID string, helper *AIHelper) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.cleanupExpiredLocked()
 
 	userHelpers, exists := m.helpers[userName]
 	if !exists {
-		userHelpers = make(map[string]*AIHelper)
+		userHelpers = make(map[string]*helperCacheEntry)
 		m.helpers[userName] = userHelpers
 	}
 
-	userHelpers[sessionID] = helper
+	userHelpers[sessionID] = &helperCacheEntry{
+		helper:    helper,
+		expiresAt: m.nextExpiryLocked(),
+	}
 }
 
 // RemoveAIHelper 移除指定会话对应的 helper。
@@ -87,6 +84,7 @@ func (m *AIHelperManager) RemoveAIHelper(userName string, sessionID string) {
 	}
 
 	delete(userHelpers, sessionID)
+	observability.RecordHelperExecutionRelease()
 	if len(userHelpers) == 0 {
 		delete(m.helpers, userName)
 	}
@@ -95,8 +93,9 @@ func (m *AIHelperManager) RemoveAIHelper(userName string, sessionID string) {
 // GetUserSessions 返回当前进程内缓存过的 sessionID 列表。
 // 这个方法保留给运行时观察使用，不再建议作为业务接口真相来源。
 func (m *AIHelperManager) GetUserSessions(userName string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupExpiredLocked()
 
 	userHelpers, exists := m.helpers[userName]
 	if !exists {
@@ -109,6 +108,25 @@ func (m *AIHelperManager) GetUserSessions(userName string) []string {
 	}
 
 	return sessionIDs
+}
+
+func (m *AIHelperManager) nextExpiryLocked() time.Time {
+	return m.nowFunc().Add(m.helperTTL)
+}
+
+func (m *AIHelperManager) cleanupExpiredLocked() {
+	now := m.nowFunc()
+	for userName, userHelpers := range m.helpers {
+		for sessionID, entry := range userHelpers {
+			if entry == nil || entry.helper == nil || (!entry.expiresAt.IsZero() && !entry.expiresAt.After(now)) {
+				delete(userHelpers, sessionID)
+				observability.RecordHelperExecutionRelease()
+			}
+		}
+		if len(userHelpers) == 0 {
+			delete(m.helpers, userName)
+		}
+	}
 }
 
 var globalManager *AIHelperManager

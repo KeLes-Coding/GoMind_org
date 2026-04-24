@@ -74,3 +74,71 @@ func TestRecordRAGCacheMetrics(t *testing.T) {
 		t.Fatalf("expected rag_store_mode to be milvus_with_redis_cache, got %q", snapshot.RAGStoreMode)
 	}
 }
+
+// TestRecordStreamSyncFailMetrics 验证第三阶段新增的 Redis 同步提交失败指标能够正确累计。
+func TestRecordStreamSyncFailMetrics(t *testing.T) {
+	globalAIObserver = &aiObserver{
+		requests: make(map[string]*requestCounter),
+		models:   make(map[string]*modelCounter),
+	}
+
+	RecordStreamMetaSyncFail()
+	RecordStreamSnapshotSyncFail()
+	RecordStreamChunkSyncFail()
+	RecordStreamChunkSyncFail()
+
+	snapshot := SnapshotAI()
+	if snapshot.StreamMetaSyncFail != 1 {
+		t.Fatalf("expected stream_meta_sync_fail=1, got %d", snapshot.StreamMetaSyncFail)
+	}
+	if snapshot.StreamSnapshotSyncFail != 1 {
+		t.Fatalf("expected stream_snapshot_sync_fail=1, got %d", snapshot.StreamSnapshotSyncFail)
+	}
+	if snapshot.StreamChunkSyncFail != 2 {
+		t.Fatalf("expected stream_chunk_sync_fail=2, got %d", snapshot.StreamChunkSyncFail)
+	}
+}
+
+// TestRecordHelperExecutionCacheMetrics 验证 execution cache 的复用和释放指标能被正确累计。
+func TestRecordHelperExecutionCacheMetrics(t *testing.T) {
+	globalAIObserver = &aiObserver{
+		requests: make(map[string]*requestCounter),
+		models:   make(map[string]*modelCounter),
+	}
+
+	RecordHelperExecutionReuse()
+	RecordHelperExecutionReuse()
+	RecordHelperExecutionRelease()
+
+	snapshot := SnapshotAI()
+	if snapshot.HelperExecutionReuse != 2 {
+		t.Fatalf("expected helper_execution_reuse_total=2, got %d", snapshot.HelperExecutionReuse)
+	}
+	if snapshot.HelperExecutionRelease != 1 {
+		t.Fatalf("expected helper_execution_release_total=1, got %d", snapshot.HelperExecutionRelease)
+	}
+}
+
+// TestRecordStage7DegradeMetrics 验证第七阶段新增的 DB 持久化失败、通知失败和 Redis 恢复降级指标。
+func TestRecordStage7DegradeMetrics(t *testing.T) {
+	globalAIObserver = &aiObserver{
+		requests: make(map[string]*requestCounter),
+		models:   make(map[string]*modelCounter),
+	}
+
+	RecordDBPersistFail()
+	RecordDBPersistFail()
+	RecordNotificationPublishFail()
+	RecordStreamResumeRedisDegraded()
+
+	snapshot := SnapshotAI()
+	if snapshot.DBPersistFail != 2 {
+		t.Fatalf("expected db_persist_fail=2, got %d", snapshot.DBPersistFail)
+	}
+	if snapshot.NotificationPublishFail != 1 {
+		t.Fatalf("expected notification_publish_fail=1, got %d", snapshot.NotificationPublishFail)
+	}
+	if snapshot.StreamResumeRedisDegraded != 1 {
+		t.Fatalf("expected stream_resume_redis_degraded_total=1, got %d", snapshot.StreamResumeRedisDegraded)
+	}
+}

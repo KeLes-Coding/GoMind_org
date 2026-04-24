@@ -20,11 +20,20 @@ type SessionHotMessage struct {
 // 它只承载“最近窗口消息 + 摘要状态 + 版本号”这类共享数据，
 // 不承载模型实例、锁、函数指针等运行时对象。
 type SessionHotState struct {
-	SessionID           string    `json:"session_id"`
-	SelectionSignature  string    `json:"selection_signature,omitempty"`
-	OwnerID             string    `json:"owner_id"`
-	FenceToken          int64     `json:"fence_token"`
-	Version             int64     `json:"version"`
+	SessionID          string `json:"session_id"`
+	SelectionSignature string `json:"selection_signature,omitempty"`
+	OwnerID            string `json:"owner_id"`
+	FenceToken         int64  `json:"fence_token"`
+	Version            int64  `json:"version"`
+	// PersistedVersion 表示当前热状态所对应的 MySQL 持久化水位。
+	// 后续恢复时可以据此判断 Redis 热状态和 DB 正式状态之间的收敛程度。
+	PersistedVersion int64 `json:"persisted_version"`
+	// PendingPersist 用于标记“热状态已推进，但持久层仍待补偿”的场景。
+	// 第一阶段先把字段放进协议，后续阶段再接入真实补偿逻辑。
+	PendingPersist bool `json:"pending_persist,omitempty"`
+	// HotStateDirty 用于标记“本次会话推进后，Redis 热状态可能未完全追平”的场景。
+	// 它主要服务于降级观测和后续修复任务。
+	HotStateDirty       bool      `json:"hot_state_dirty,omitempty"`
 	UpdatedAt           time.Time `json:"updated_at"`
 	ContextSummary      string    `json:"context_summary"`
 	SummaryMessageCount int       `json:"summary_message_count"`

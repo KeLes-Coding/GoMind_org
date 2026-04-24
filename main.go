@@ -5,7 +5,6 @@ import (
 	commonMilvus "GopherAI/common/milvus"
 	"GopherAI/common/mysql"
 	"GopherAI/common/observability"
-	"GopherAI/common/rabbitmq"
 	"GopherAI/common/redis"
 	rt "GopherAI/common/runtime"
 	"GopherAI/common/vectorruntime"
@@ -63,9 +62,6 @@ func main() {
 		log.Println("milvus init success")
 	}
 
-	rabbitmq.InitRabbitMQ()
-	log.Println("rabbitmq init success")
-
 	// 当前先统一使用一个根 context 管理进程级生命周期。
 	// 后续如果要做优雅停机，可以在这里对接 signal 和 cancel。
 	redis.StartChatInstanceHeartbeat(ctx)
@@ -82,13 +78,6 @@ func main() {
 				}
 			}()
 		}
-		// server 模式也需要跑聊天链路的 relay / persisted_version 补偿。
-		// 否则如果只启动 API，不启动独立 worker，消息 outbox 会无人处理。
-		go func() {
-			if err := worker.StartMessageOutboxRelayWorker(ctx); err != nil {
-				log.Printf("Message outbox relay worker error: %v", err)
-			}
-		}()
 		go func() {
 			if err := worker.StartSessionPersistenceCompensationWorker(ctx); err != nil {
 				log.Printf("Session persistence compensation worker error: %v", err)

@@ -27,7 +27,10 @@ func PublishVectorizeTask(ctx context.Context, fileID string, version int) error
 
 	// 这里只释放本次发布新开的 channel，不销毁共享 connection。
 	// 否则上传接口每发布一次任务，都可能把 worker 正在使用的连接一起关掉。
-	mq := rabbitmq.NewWorkRabbitMQ(model.QueueVectorize)
+	mq, err := rabbitmq.NewWorkRabbitMQ(model.QueueVectorize)
+	if err != nil {
+		return fmt.Errorf("create vectorize mq publisher failed: %w", err)
+	}
 	defer mq.CloseChannels()
 
 	return mq.Publish(taskData)

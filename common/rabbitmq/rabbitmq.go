@@ -15,20 +15,16 @@ import (
 var conn *amqp.Connection
 
 const (
-	// messageQueueName 是主业务消息队列。
-	// 当前它主要服务站内消息相关逻辑，不直接参与文件向量化，
-	// 但整个 RabbitMQ 基础设施是共享的，所以连接生命周期策略必须统一设计。
-	messageQueueName = "Message"
-	// messageDLQName 是主业务消息的死信队列。
-	// 当同一条消息超过最大重试次数后，会被投递到这里等待人工排查。
-	messageDLQName = "Message.dlq"
+	// deadLetterQueueSuffix 为每个工作队列派生独立死信队列后缀。
+	// 这样聊天链路退场后，向量化与通知也不会继续共用历史遗留的 Message.dlq 名称。
+	deadLetterQueueSuffix = ".dlq"
 	// messageRetryHeader 记录当前消息已重试的次数。
 	messageRetryHeader = "x-retry-count"
 	// messageMaxRetryTime 限制单条消息的最大自动重试次数，避免毒消息无限回队。
 	messageMaxRetryTime = 3
 )
 
-func initConn() {
+func initConn() error {
 	c := config.GetConfig()
 	mqURL := fmt.Sprintf(
 		"amqp://%s:%s@%s:%d/%s",
@@ -38,8 +34,9 @@ func initConn() {
 	var err error
 	conn, err = amqp.Dial(mqURL)
 	if err != nil {
-		log.Fatalf("RabbitMQ connection failed: %v", err)
+		return fmt.Errorf("rabbitmq connection failed: %w", err)
 	}
+	return nil
 }
 
 // RabbitMQ 同时维护发布和消费两条 channel。
@@ -134,37 +131,42 @@ func (r *RabbitMQ) Destroy() {
 // 这里继续沿用共享 connection + 独立 channel 的结构：
 // 1. 连接成本高，适合复用；
 // 2. channel 成本低，适合按实例拆分职责。
-func NewWorkRabbitMQ(queue string) *RabbitMQ {
+func NewWorkRabbitMQ(queue string) (*RabbitMQ, error) {
 	rabbitmq := NewRabbitMQ("", queue)
 
 	if conn == nil {
-		initConn()
+		if err := initConn(); err != nil {
+			return nil, err
+		}
 	}
 	rabbitmq.conn = conn
 
 	var err error
 	rabbitmq.publishChannel, err = rabbitmq.conn.Channel()
 	if err != nil {
-		panic(err.Error())
+		return nil, err
 	}
 
 	rabbitmq.consumeChannel, err = rabbitmq.conn.Channel()
 	if err != nil {
-		panic(err.Error())
+		rabbitmq.CloseChannels()
+		return nil, err
 	}
 
 	// 开启发布确认，只有 broker 确认收到消息后，Publish 才返回成功。
 	if err = rabbitmq.publishChannel.Confirm(false); err != nil {
-		panic(err.Error())
+		rabbitmq.CloseChannels()
+		return nil, err
 	}
 	rabbitmq.confirmChan = rabbitmq.publishChannel.NotifyPublish(make(chan amqp.Confirmation, 1))
 
 	// 每次只预取一条消息，确保消费端按“处理完成后再取下一条”的节奏前进。
 	if err = rabbitmq.consumeChannel.Qos(1, 0, false); err != nil {
-		panic(err.Error())
+		rabbitmq.CloseChannels()
+		return nil, err
 	}
 
-	return rabbitmq
+	return rabbitmq, nil
 }
 
 // ensureQueue 保证发布和消费看到的是同一个 durable queue。
@@ -186,10 +188,14 @@ func (r *RabbitMQ) ensureQueue(channel *amqp.Channel) (amqp.Queue, error) {
 	return queue, nil
 }
 
-// ensureDeadLetterQueue 保证死信队列存在。
+func (r *RabbitMQ) deadLetterQueueName() string {
+	return r.Key + deadLetterQueueSuffix
+}
+
+// ensureDeadLetterQueue 保证当前工作队列对应的死信队列存在。
 func (r *RabbitMQ) ensureDeadLetterQueue(channel *amqp.Channel) (amqp.Queue, error) {
 	queue, err := channel.QueueDeclare(
-		messageDLQName,
+		r.deadLetterQueueName(),
 		true,
 		false,
 		false,
@@ -214,7 +220,7 @@ func (r *RabbitMQ) publishWithHeaders(queueName string, message []byte, headers 
 	if err != nil {
 		return err
 	}
-	if queueName == messageDLQName {
+	if queueName == r.deadLetterQueueName() {
 		observability.RecordMQQueueDepth(observability.MQQueueDLQ, queue.Messages)
 	} else if queueName == r.Key {
 		observability.RecordMQQueueDepth(observability.MQQueueMain, queue.Messages)
@@ -306,7 +312,7 @@ func (r *RabbitMQ) Consume(handle func(msg *amqp.Delivery) error) {
 
 			// 不再对失败消息做无限 requeue，避免形成毒消息风暴。
 			if nextRetryCount > messageMaxRetryTime {
-				if publishErr := r.publishWithHeaders(messageDLQName, msg.Body, headers); publishErr != nil {
+				if publishErr := r.publishWithHeaders(r.deadLetterQueueName(), msg.Body, headers); publishErr != nil {
 					log.Println("rabbitmq publish dead letter error:", publishErr)
 					observability.RecordMQNack()
 					_ = msg.Nack(false, true)

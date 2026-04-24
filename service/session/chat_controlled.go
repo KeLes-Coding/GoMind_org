@@ -83,6 +83,13 @@ func ResumeStreamWithControl(ctx context.Context, userName string, sessionID str
 			lastSeq:             lastSeq,
 		})
 	}
+	if !myredis.IsAvailable() {
+		// Redis 降级模式下，当前实例既拿不到共享恢复层，也不应继续做 detached resume/takeover 推断。
+		// 这里直接返回 server busy，让客户端保留当前已看到内容并等待 Redis 恢复或重新发起请求。
+		observability.RecordStreamResumeRedisDegraded()
+		log.Println("ResumeStreamWithControl redis degraded: redis-backed resume disabled")
+		return code.CodeServerBusy
+	}
 
 	meta, err := myredis.GetActiveStreamMeta(context.Background(), streamID)
 	if err != nil {
@@ -178,13 +185,32 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 	observability.RecordStreamCreated()
 
 	ctx, cancelPersist := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = myredis.SaveSessionActiveStream(ctx, sess.ID, task.streamID)
-	_ = myredis.SaveActiveStreamMeta(ctx, task.exportMeta())
-	_ = myredis.SaveActiveStreamSnapshot(ctx, task.exportSnapshot())
+	if err := myredis.SaveSessionActiveStream(ctx, sess.ID, task.streamID); err != nil {
+		cancelPersist()
+		globalActiveStreamRegistry.unregister(task)
+		cancel()
+		log.Println("startActiveStream SaveSessionActiveStream error:", err)
+		return nil, code.CodeServerBusy
+	}
+	if err := myredis.SaveActiveStreamMeta(ctx, task.exportMeta()); err != nil {
+		cancelPersist()
+		globalActiveStreamRegistry.unregister(task)
+		cancel()
+		observability.RecordStreamMetaSyncFail()
+		log.Println("startActiveStream SaveActiveStreamMeta error:", err)
+		return nil, code.CodeServerBusy
+	}
+	if err := myredis.SaveActiveStreamSnapshot(ctx, task.exportSnapshot()); err != nil {
+		cancelPersist()
+		globalActiveStreamRegistry.unregister(task)
+		cancel()
+		observability.RecordStreamSnapshotSyncFail()
+		log.Println("startActiveStream SaveActiveStreamSnapshot error:", err)
+		return nil, code.CodeServerBusy
+	}
 	cancelPersist()
 
 	go func() {
-		defer globalActiveStreamRegistry.unregister(task)
 		defer cancel()
 
 		requestStart := time.Now()
@@ -193,11 +219,23 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 			if guard := sessionOwnerGuardFromContext(execCtx); guard != nil {
 				task.setOwnerGuard(guard.OwnerID, guard.FenceToken)
 				ctx, cancelPersist := context.WithTimeout(context.Background(), 2*time.Second)
-				_ = myredis.SaveActiveStreamMeta(ctx, task.exportMeta())
+				if err := myredis.SaveActiveStreamMeta(ctx, task.exportMeta()); err != nil {
+					observability.RecordStreamMetaSyncFail()
+					cancelPersist()
+					log.Println("startActiveStream SaveActiveStreamMeta owner guard error:", err)
+					return codeExecutorResult{code: code.CodeServerBusy}
+				}
 				cancelPersist()
 			}
 			helper, code_ := getOrSyncHelperWithHistory(execCtx, userName, sess, resolved)
 			if code_ != code.CodeSuccess {
+				return codeExecutorResult{code: code_}
+			}
+			userMessage, code_ := appendUserMessageAndCommitHotState(execCtx, helper, userName, userQuestion)
+			if code_ != code.CodeSuccess {
+				return codeExecutorResult{code: code_}
+			}
+			if code_ = persistMessageSync(execCtx, userMessage); code_ != code.CodeSuccess {
 				return codeExecutorResult{code: code_}
 			}
 			assistantPlaceholder := task.buildAssistantMessage(model.MessageStatusStreaming)
@@ -208,23 +246,58 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 
 			go watchRemoteStopSignal(execCtx, task)
 
-			if _, err := helper.StreamResponseWithExistingAssistant(userName, execCtx, func(msg string) {
-				task.appendChunk(msg)
-			}, userQuestion, assistantPlaceholder); err != nil {
+			if _, err := helper.StreamResponseWithExistingAssistantForPreparedUserMessage(userName, execCtx, func(msg string) {
+				if commitErr := task.appendChunkAndCommit(msg); commitErr != nil {
+					task.setCommitError(commitErr)
+					task.requestStop(model.MessageStatusPartial)
+				}
+			}, assistantPlaceholder); err != nil {
 				log.Println("startActiveStream StreamResponse error:", err)
+				if commitErr := task.getCommitError(); commitErr != nil {
+					log.Println("startActiveStream stream chunk commit error:", commitErr)
+					if persistErr := persistActiveStreamAssistantMessage(execCtx, task, model.MessageStatusPartial); persistErr != nil {
+						log.Println("startActiveStream persist partial assistant placeholder after commit fail error:", persistErr)
+					}
+					if code_ = finalizeAssistantMessageAndCommitHotState(execCtx, helper, task.buildAssistantMessage(model.MessageStatusPartial)); code_ != code.CodeSuccess {
+						return codeExecutorResult{code: code_}
+					}
+					if code_ = persistSessionProgressWithPersistedVersion(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
+						return codeExecutorResult{code: code_}
+					}
+					if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
+						return codeExecutorResult{code: code_}
+					}
+					return codeExecutorResult{code: code.CodeServerBusy}
+				}
 				if execCtx.Err() != nil {
 					observability.RecordStreamDisconnect()
 					finalStatus := task.interruptedMessageStatus(execCtx)
 					if persistErr := persistActiveStreamAssistantMessage(execCtx, task, finalStatus); persistErr != nil {
 						log.Println("startActiveStream persist interrupted assistant placeholder error:", persistErr)
 					}
-					helper.AppendExistingMessage(task.buildAssistantMessage(finalStatus))
+					if code_ = finalizeAssistantMessageAndCommitHotState(execCtx, helper, task.buildAssistantMessage(finalStatus)); code_ != code.CodeSuccess {
+						return codeExecutorResult{code: code_}
+					}
+					if code_ = persistSessionProgressWithPersistedVersion(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
+						return codeExecutorResult{code: code_}
+					}
+					if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
+						return codeExecutorResult{code: code_}
+					}
 					return codeExecutorResult{code: mapContextErrorToCode(execCtx)}
 				}
 				if persistErr := persistActiveStreamAssistantMessage(execCtx, task, model.MessageStatusPartial); persistErr != nil {
 					log.Println("startActiveStream persist partial assistant placeholder error:", persistErr)
 				}
-				helper.AppendExistingMessage(task.buildAssistantMessage(model.MessageStatusPartial))
+				if code_ = finalizeAssistantMessageAndCommitHotState(execCtx, helper, task.buildAssistantMessage(model.MessageStatusPartial)); code_ != code.CodeSuccess {
+					return codeExecutorResult{code: code_}
+				}
+				if code_ = persistSessionProgressWithPersistedVersion(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
+					return codeExecutorResult{code: code_}
+				}
+				if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
+					return codeExecutorResult{code: code_}
+				}
 				return codeExecutorResult{code: code.AIModelFail}
 			}
 
@@ -232,11 +305,13 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 				log.Println("startActiveStream persist completed assistant placeholder error:", persistErr)
 				return codeExecutorResult{code: code.CodeServerBusy}
 			}
-
-			if code_ = persistSessionProgress(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
+			if code_ = persistSessionProgressWithPersistedVersion(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
 				return codeExecutorResult{code: code_}
 			}
-			persistHelperHotState(execCtx, helper)
+			if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
+				return codeExecutorResult{code: code_}
+			}
+			publishAssistantReadyNotificationBestEffort(execCtx, sess, task.buildAssistantMessage(model.MessageStatusCompleted))
 			return codeExecutorResult{code: code.CodeSuccess}
 		})
 
@@ -262,6 +337,7 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 		}
 
 		observability.RecordRequest("chat_stream_background", resolved.ModelType, result.code == code.CodeSuccess, time.Since(requestStart))
+		globalActiveStreamRegistry.markRetained(task, activeStreamTerminalRetention)
 	}()
 
 	return task, code.CodeSuccess
@@ -301,6 +377,9 @@ func persistActiveStreamAssistantMessage(ctx context.Context, task *activeStream
 	}
 	message := task.buildAssistantMessage(status)
 	_, err := messageDAO.CreateMessage(message)
+	if err != nil {
+		observability.RecordDBPersistFail()
+	}
 	return err
 }
 
@@ -501,6 +580,9 @@ func ensureResumeRoutingOwnership(ctx context.Context, meta *model.StreamResumeM
 	if meta == nil {
 		return code.CodeChatNotRunning
 	}
+	if !myredis.IsAvailable() {
+		return code.CodeSuccess
+	}
 
 	ownerID := strings.TrimSpace(meta.OwnerID)
 	if ownerID == "" || ownerID == rt.CurrentInstanceID() {
@@ -524,6 +606,11 @@ func ensureResumeRoutingOwnership(ctx context.Context, meta *model.StreamResumeM
 func tryTakeoverDetachedStreamResume(ctx context.Context, meta *model.StreamResumeMeta) (*model.StreamResumeMeta, code.Code) {
 	if meta == nil || meta.Status != model.StreamStatusDetached || !rt.IsOwnerEligible() {
 		return nil, code.CodeSuccess
+	}
+	if !myredis.IsAvailable() {
+		// Redis 已经降级时，不再尝试接管 detached 恢复层 owner，避免在不完整共享状态上继续漂移。
+		observability.RecordStreamResumeRedisDegraded()
+		return nil, code.CodeServerBusy
 	}
 
 	ownerID := strings.TrimSpace(meta.OwnerID)
