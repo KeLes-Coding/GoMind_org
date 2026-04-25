@@ -43,6 +43,14 @@ export function useChatStream({
   const activeAssistantIndex = ref(-1)
   const manualStopRequested = ref(false)
 
+  const normalizedSelectedConfigId = () => {
+    if (selectedConfigId.value === null || selectedConfigId.value === undefined || selectedConfigId.value === '') {
+      return null
+    }
+    const numericId = Number(selectedConfigId.value)
+    return Number.isFinite(numericId) ? numericId : selectedConfigId.value
+  }
+
   const postWithOwnerRetry = async (url, body, options = {}) => {
     const maxRetries = typeof options.maxRetries === 'number' ? options.maxRetries : MAX_OWNER_MISMATCH_RETRIES
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -383,9 +391,10 @@ export function useChatStream({
     if (!tempSession.value && currentSessionId.value) {
       Object.assign(baseHeaders, buildSessionRoutingHeaders(currentSessionId.value))
     }
+    const llmConfigId = normalizedSelectedConfigId()
     const body = tempSession.value
-      ? { question, llmConfigId: selectedConfigId.value, chatMode: selectedChatMode.value, modelType: '1' }
-      : { question, llmConfigId: selectedConfigId.value, chatMode: selectedChatMode.value, modelType: '1', sessionId: currentSessionId.value }
+      ? { question, llmConfigId, chatMode: selectedChatMode.value, modelType: '1' }
+      : { question, llmConfigId, chatMode: selectedChatMode.value, modelType: '1', sessionId: currentSessionId.value }
 
     const controller = new AbortController()
     activeAbortController.value = controller
@@ -538,7 +547,7 @@ export function useChatStream({
     if (tempSession.value) {
       const response = await postWithOwnerRetry('/AI/chat/send-new-session', {
         question,
-        llmConfigId: selectedConfigId.value,
+        llmConfigId: normalizedSelectedConfigId(),
         chatMode: selectedChatMode.value,
         modelType: '1'
       })
@@ -570,7 +579,7 @@ export function useChatStream({
 
       const response = await postWithOwnerRetry('/AI/chat/send', {
         question,
-        llmConfigId: selectedConfigId.value,
+        llmConfigId: normalizedSelectedConfigId(),
         chatMode: selectedChatMode.value,
         modelType: '1',
         sessionId: currentSessionId.value

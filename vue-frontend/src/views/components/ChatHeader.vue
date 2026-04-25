@@ -52,7 +52,7 @@ export default {
     hasMessages: { type: Boolean, default: false },
     isDark: { type: Boolean, default: false },
     loading: { type: Boolean, default: false },
-    selectedConfigId: { type: String, default: '' },
+    selectedConfigId: { type: [String, Number], default: '' },
     availableConfigs: { type: Array, default: () => [] }
   },
   emits: ['toggle-theme', 'update:selectedConfigId', 'config-change', 'open-model-config-dialog'],
@@ -76,7 +76,7 @@ export default {
   methods: {
     selectConfig(id) {
       this.modelMenuOpen = false
-      this.$emit('update:selectedConfigId', String(id))
+      this.$emit('update:selectedConfigId', id)
       this.$emit('config-change')
     },
     openModelConfigs() {

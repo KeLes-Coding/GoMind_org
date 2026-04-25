@@ -14,7 +14,7 @@ export function useModelConfig({ userMenuVisible } = {}) {
     if (!selectedConfigId.value || !availableConfigs.value.length) {
       return configsMeta.value.chatModes || ['chat']
     }
-    const cfg = availableConfigs.value.find(c => c.id === selectedConfigId.value)
+    const cfg = availableConfigs.value.find(c => String(c.id) === String(selectedConfigId.value))
     if (cfg?.providerCapability?.supportedChatModes?.length) {
       return cfg.providerCapability.supportedChatModes
     }
