@@ -6,14 +6,17 @@ import "time"
 // 这里故意不把整个 AIHelper 直接序列化出去，而是只保留跨实例恢复真正需要的字段，
 // 这样可以把“运行时对象”和“共享状态快照”拆开，降低后续分布式演进复杂度。
 type SessionHotMessage struct {
-	ID         uint      `json:"id"`
-	MessageKey string    `json:"message_key"`
-	SessionID  string    `json:"session_id"`
-	UserName   string    `json:"user_name"`
-	Content    string    `json:"content"`
-	IsUser     bool      `json:"is_user"`
-	Status     string    `json:"status,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID         uint   `json:"id"`
+	MessageKey string `json:"message_key"`
+	SessionID  string `json:"session_id"`
+	// SessionVersion 让 Redis 热状态也能表达“这条消息属于哪一轮正式会话推进”。
+	// 这样当 MySQL 同步写失败但 Redis 仍保存了最新热状态时，repair worker 才能准确回放到对应版本。
+	SessionVersion int64     `json:"session_version"`
+	UserName       string    `json:"user_name"`
+	Content        string    `json:"content"`
+	IsUser         bool      `json:"is_user"`
+	Status         string    `json:"status,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // SessionHotState 是 Redis 中保存的会话热状态快照。

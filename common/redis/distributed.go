@@ -335,6 +335,53 @@ func GetSessionHotState(ctx context.Context, sessionID string) (*model.SessionHo
 	return &state, nil
 }
 
+// ListSessionHotStatesNeedingRepair 列出当前被标记为待修复的热状态。
+// 第九阶段先按最小可用方案直接扫 `ai:session:hot:*`，数量受 limit 控制。
+func ListSessionHotStatesNeedingRepair(ctx context.Context, limit int) ([]*model.SessionHotState, error) {
+	if !IsAvailable() {
+		return nil, nil
+	}
+
+	keys, err := Rdb.Keys(ctx, GenerateSessionHotStateKey("*")).Result()
+	if err != nil {
+		setAvailability(false)
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	states := make([]*model.SessionHotState, 0, len(keys))
+	for _, key := range keys {
+		if limit > 0 && len(states) >= limit {
+			break
+		}
+
+		raw, readErr := Rdb.Get(ctx, key).Result()
+		if readErr != nil {
+			if readErr == redisCli.Nil {
+				continue
+			}
+			setAvailability(false)
+			return nil, readErr
+		}
+
+		var state model.SessionHotState
+		if err := json.Unmarshal([]byte(raw), &state); err != nil {
+			continue
+		}
+		if !state.PendingPersist && !state.HotStateDirty {
+			continue
+		}
+		states = append(states, &state)
+	}
+
+	sort.Slice(states, func(i, j int) bool {
+		return states[i].UpdatedAt.Before(states[j].UpdatedAt)
+	})
+	return states, nil
+}
+
 // DeleteSessionHotState 删除 Redis 中的热状态快照，避免已删除会话被旧快照复活。
 func DeleteSessionHotState(ctx context.Context, sessionID string) error {
 	if strings.TrimSpace(sessionID) == "" || !IsAvailable() {

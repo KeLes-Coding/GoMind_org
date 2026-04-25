@@ -79,8 +79,8 @@ func main() {
 			}()
 		}
 		go func() {
-			if err := worker.StartSessionPersistenceCompensationWorker(ctx); err != nil {
-				log.Printf("Session persistence compensation worker error: %v", err)
+			if err := worker.StartSessionRepairWorker(ctx); err != nil {
+				log.Printf("Session repair worker error: %v", err)
 			}
 		}()
 		if err := StartServer(host, port); err != nil {

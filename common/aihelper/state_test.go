@@ -46,6 +46,9 @@ func TestExportHotStateIncludesPersistedVersion(t *testing.T) {
 	if len(state.RecentMessages) != 2 {
 		t.Fatalf("expected 2 recent messages, got %d", len(state.RecentMessages))
 	}
+	if state.RecentMessages[0].SessionVersion != 7 {
+		t.Fatalf("expected session_version 7 in exported hot message, got %d", state.RecentMessages[0].SessionVersion)
+	}
 }
 
 func TestLoadHotStateRoundTrip(t *testing.T) {
@@ -62,14 +65,15 @@ func TestLoadHotStateRoundTrip(t *testing.T) {
 		RecentMessagesStart: 6,
 		RecentMessages: []model.SessionHotMessage{
 			{
-				ID:         1,
-				MessageKey: "msg-1",
-				SessionID:  "session-1",
-				UserName:   "tester",
-				Content:    "hello",
-				IsUser:     true,
-				Status:     string(model.MessageStatusCompleted),
-				CreatedAt:  now,
+				ID:             1,
+				MessageKey:     "msg-1",
+				SessionID:      "session-1",
+				SessionVersion: 9,
+				UserName:       "tester",
+				Content:        "hello",
+				IsUser:         true,
+				Status:         string(model.MessageStatusCompleted),
+				CreatedAt:      now,
 			},
 		},
 	})
@@ -89,6 +93,9 @@ func TestLoadHotStateRoundTrip(t *testing.T) {
 	}
 	if len(exported.RecentMessages) != 1 {
 		t.Fatalf("expected 1 recent message, got %d", len(exported.RecentMessages))
+	}
+	if exported.RecentMessages[0].SessionVersion != 9 {
+		t.Fatalf("expected session_version 9 after round trip, got %d", exported.RecentMessages[0].SessionVersion)
 	}
 }
 

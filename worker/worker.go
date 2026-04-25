@@ -35,7 +35,7 @@ func StartVectorizeWorker(ctx context.Context) error {
 // 当前会顺带启动四类后台 worker：
 // 1. 向量化 worker 负责真正处理文件；
 // 2. 文件补偿 worker 负责把上传成功但没成功入队的文件补发到 MQ；
-// 3. 会话补偿 worker 负责推进聊天链路的 persisted_version 水位；
+// 3. 会话 repair worker 负责处理 pending_persist 和 hot_state_rebuild；
 // 4. 通知 worker 负责消费聊天完成后的旁路通知任务。
 func StartAllWorkers(ctx context.Context) {
 	go func() {
@@ -51,8 +51,8 @@ func StartAllWorkers(ctx context.Context) {
 	}()
 
 	go func() {
-		if err := StartSessionPersistenceCompensationWorker(ctx); err != nil {
-			log.Printf("Session persistence compensation worker error: %v", err)
+		if err := StartSessionRepairWorker(ctx); err != nil {
+			log.Printf("Session repair worker error: %v", err)
 		}
 	}()
 

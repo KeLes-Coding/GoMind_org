@@ -85,6 +85,7 @@ func migration() error {
 		new(model.UserLLMConfig),
 		new(model.Session),
 		new(model.Message),
+		new(model.SessionRepairTask),
 		new(model.FileAsset),
 	)
 }

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"GopherAI/common/aihelper"
 	"GopherAI/common/code"
 	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
@@ -22,6 +23,23 @@ const activeStreamExecutionTimeout = 3 * time.Minute
 type streamAttachOptions struct {
 	includeSessionEvent bool
 	lastSeq             int64
+}
+
+// mapContextErrorToCode 统一把上下文取消原因翻译成业务错误码。
+// 这样 stop / timeout / 普通模型失败三种语义不会在不同调用点再次混成 AIModelFail。
+func mapContextErrorToCode(ctx context.Context) code.Code {
+	if ctx == nil {
+		return code.AIModelFail
+	}
+
+	switch ctx.Err() {
+	case context.DeadlineExceeded:
+		return code.CodeRequestTimeout
+	case context.Canceled:
+		return code.AIModelCancelled
+	default:
+		return code.AIModelFail
+	}
 }
 
 // CreateSessionAndSendMessageWithControl 在保留原有同步链路的同时，补充了 timeout / cancelled 的错误映射。
@@ -184,31 +202,12 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 	globalActiveStreamRegistry.register(task)
 	observability.RecordStreamCreated()
 
-	ctx, cancelPersist := context.WithTimeout(context.Background(), 2*time.Second)
-	if err := myredis.SaveSessionActiveStream(ctx, sess.ID, task.streamID); err != nil {
-		cancelPersist()
+	if err := persistActiveStreamRecoveryState(task, sess.ID); err != nil {
 		globalActiveStreamRegistry.unregister(task)
 		cancel()
-		log.Println("startActiveStream SaveSessionActiveStream error:", err)
+		log.Println("startActiveStream persistActiveStreamRecoveryState error:", err)
 		return nil, code.CodeServerBusy
 	}
-	if err := myredis.SaveActiveStreamMeta(ctx, task.exportMeta()); err != nil {
-		cancelPersist()
-		globalActiveStreamRegistry.unregister(task)
-		cancel()
-		observability.RecordStreamMetaSyncFail()
-		log.Println("startActiveStream SaveActiveStreamMeta error:", err)
-		return nil, code.CodeServerBusy
-	}
-	if err := myredis.SaveActiveStreamSnapshot(ctx, task.exportSnapshot()); err != nil {
-		cancelPersist()
-		globalActiveStreamRegistry.unregister(task)
-		cancel()
-		observability.RecordStreamSnapshotSyncFail()
-		log.Println("startActiveStream SaveActiveStreamSnapshot error:", err)
-		return nil, code.CodeServerBusy
-	}
-	cancelPersist()
 
 	go func() {
 		defer cancel()
@@ -255,64 +254,17 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 				log.Println("startActiveStream StreamResponse error:", err)
 				if commitErr := task.getCommitError(); commitErr != nil {
 					log.Println("startActiveStream stream chunk commit error:", commitErr)
-					if persistErr := persistActiveStreamAssistantMessage(execCtx, task, model.MessageStatusPartial); persistErr != nil {
-						log.Println("startActiveStream persist partial assistant placeholder after commit fail error:", persistErr)
-					}
-					if code_ = finalizeAssistantMessageAndCommitHotState(execCtx, helper, task.buildAssistantMessage(model.MessageStatusPartial)); code_ != code.CodeSuccess {
-						return codeExecutorResult{code: code_}
-					}
-					if code_ = persistSessionProgressWithPersistedVersion(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
-						return codeExecutorResult{code: code_}
-					}
-					if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
-						return codeExecutorResult{code: code_}
-					}
-					return codeExecutorResult{code: code.CodeServerBusy}
+					return settleActiveStreamTerminalFailure(execCtx, sess, helper, task, model.MessageStatusPartial, code.CodeServerBusy, "startActiveStream persist partial assistant placeholder after commit fail")
 				}
 				if execCtx.Err() != nil {
 					observability.RecordStreamDisconnect()
 					finalStatus := task.interruptedMessageStatus(execCtx)
-					if persistErr := persistActiveStreamAssistantMessage(execCtx, task, finalStatus); persistErr != nil {
-						log.Println("startActiveStream persist interrupted assistant placeholder error:", persistErr)
-					}
-					if code_ = finalizeAssistantMessageAndCommitHotState(execCtx, helper, task.buildAssistantMessage(finalStatus)); code_ != code.CodeSuccess {
-						return codeExecutorResult{code: code_}
-					}
-					if code_ = persistSessionProgressWithPersistedVersion(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
-						return codeExecutorResult{code: code_}
-					}
-					if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
-						return codeExecutorResult{code: code_}
-					}
-					return codeExecutorResult{code: mapContextErrorToCode(execCtx)}
+					return settleActiveStreamTerminalFailure(execCtx, sess, helper, task, finalStatus, mapContextErrorToCode(execCtx), "startActiveStream persist interrupted assistant placeholder")
 				}
-				if persistErr := persistActiveStreamAssistantMessage(execCtx, task, model.MessageStatusPartial); persistErr != nil {
-					log.Println("startActiveStream persist partial assistant placeholder error:", persistErr)
-				}
-				if code_ = finalizeAssistantMessageAndCommitHotState(execCtx, helper, task.buildAssistantMessage(model.MessageStatusPartial)); code_ != code.CodeSuccess {
-					return codeExecutorResult{code: code_}
-				}
-				if code_ = persistSessionProgressWithPersistedVersion(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
-					return codeExecutorResult{code: code_}
-				}
-				if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
-					return codeExecutorResult{code: code_}
-				}
-				return codeExecutorResult{code: code.AIModelFail}
+				return settleActiveStreamTerminalFailure(execCtx, sess, helper, task, model.MessageStatusPartial, code.AIModelFail, "startActiveStream persist partial assistant placeholder")
 			}
 
-			if persistErr := persistActiveStreamAssistantMessage(execCtx, task, model.MessageStatusCompleted); persistErr != nil {
-				log.Println("startActiveStream persist completed assistant placeholder error:", persistErr)
-				return codeExecutorResult{code: code.CodeServerBusy}
-			}
-			if code_ = persistSessionProgressWithPersistedVersion(execCtx, sess.ID, helper); code_ != code.CodeSuccess {
-				return codeExecutorResult{code: code_}
-			}
-			if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
-				return codeExecutorResult{code: code_}
-			}
-			publishAssistantReadyNotificationBestEffort(execCtx, sess, task.buildAssistantMessage(model.MessageStatusCompleted))
-			return codeExecutorResult{code: code.CodeSuccess}
+			return settleActiveStreamTerminalSuccess(execCtx, sess, helper, task)
 		})
 
 		switch {
@@ -343,6 +295,30 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 	return task, code.CodeSuccess
 }
 
+// persistActiveStreamRecoveryState 把新建流的 session-active-stream、meta、snapshot 一次性写入恢复层。
+// 这里单独抽出来，避免 startActiveStream 里继续堆三段相似的初始化提交代码。
+func persistActiveStreamRecoveryState(task *activeStreamTask, sessionID string) error {
+	if task == nil || sessionID == "" {
+		return nil
+	}
+
+	ctx, cancelPersist := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelPersist()
+
+	if err := myredis.SaveSessionActiveStream(ctx, sessionID, task.streamID); err != nil {
+		return err
+	}
+	if err := myredis.SaveActiveStreamMeta(ctx, task.exportMeta()); err != nil {
+		observability.RecordStreamMetaSyncFail()
+		return err
+	}
+	if err := myredis.SaveActiveStreamSnapshot(ctx, task.exportSnapshot()); err != nil {
+		observability.RecordStreamSnapshotSyncFail()
+		return err
+	}
+	return nil
+}
+
 func watchRemoteStopSignal(ctx context.Context, task *activeStreamTask) {
 	if task == nil {
 		return
@@ -364,6 +340,48 @@ func watchRemoteStopSignal(ctx context.Context, task *activeStreamTask) {
 			}
 		}
 	}
+}
+
+// settleActiveStreamTerminalFailure 在 active stream 失败、中断或 partial 场景下统一收敛 assistant 终态。
+// 这里复用同一套“写 assistant 终态 -> 推进 session -> 提交热状态”的流程，避免重复分支继续膨胀。
+func settleActiveStreamTerminalFailure(ctx context.Context, sess *model.Session, helper *aihelper.AIHelper, task *activeStreamTask, status model.MessageStatus, resultCode code.Code, logPrefix string) codeExecutorResult {
+	if persistErr := persistActiveStreamAssistantMessage(ctx, task, status); persistErr != nil {
+		log.Printf("%s error: %v", logPrefix, persistErr)
+		savePendingPersistHotStateBestEffort(ctx, helper)
+	}
+	if code_ := finalizeAssistantMessageAndCommitHotState(ctx, helper, task.buildAssistantMessage(status)); code_ != code.CodeSuccess {
+		enqueueHotStateRebuildRepairBestEffort(helper)
+		return codeExecutorResult{code: code_}
+	}
+	if code_ := persistSessionProgressWithPersistedVersion(ctx, sess.ID, helper); code_ != code.CodeSuccess {
+		savePendingPersistHotStateBestEffort(ctx, helper)
+		return codeExecutorResult{code: code_}
+	}
+	if code_ := commitHelperHotState(ctx, helper); code_ != code.CodeSuccess {
+		enqueueHotStateRebuildRepairBestEffort(helper)
+		return codeExecutorResult{code: code_}
+	}
+	return codeExecutorResult{code: resultCode}
+}
+
+// settleActiveStreamTerminalSuccess 在 active stream 正常完成后统一收敛 assistant 正式状态。
+// 成功路径里 assistant 已经写回 helper，因此这里只需要正式写库、推进 version、提交热状态并发通知。
+func settleActiveStreamTerminalSuccess(ctx context.Context, sess *model.Session, helper *aihelper.AIHelper, task *activeStreamTask) codeExecutorResult {
+	if persistErr := persistActiveStreamAssistantMessage(ctx, task, model.MessageStatusCompleted); persistErr != nil {
+		log.Println("startActiveStream persist completed assistant placeholder error:", persistErr)
+		savePendingPersistHotStateBestEffort(ctx, helper)
+		return codeExecutorResult{code: code.CodeServerBusy}
+	}
+	if code_ := persistSessionProgressWithPersistedVersion(ctx, sess.ID, helper); code_ != code.CodeSuccess {
+		savePendingPersistHotStateBestEffort(ctx, helper)
+		return codeExecutorResult{code: code_}
+	}
+	if code_ := commitHelperHotState(ctx, helper); code_ != code.CodeSuccess {
+		enqueueHotStateRebuildRepairBestEffort(helper)
+		return codeExecutorResult{code: code_}
+	}
+	publishAssistantReadyNotificationBestEffort(ctx, sess, task.buildAssistantMessage(model.MessageStatusCompleted))
+	return codeExecutorResult{code: code.CodeSuccess}
 }
 
 // persistActiveStreamAssistantMessage 把 active stream 对应的 assistant 占位消息更新为最新正文和终态。
@@ -666,4 +684,44 @@ func writeDoneEvent(writer http.ResponseWriter, flusher http.Flusher, streamID s
 		return code.CodeSuccess
 	}
 	return code.CodeSuccess
+}
+
+// StopStreamGeneration 负责给当前会话发送“主动停止”信号。
+// 它只对“正在执行中的流式任务”生效；如果当前会话没有活跃流式任务，会返回 CodeChatNotRunning。
+func StopStreamGeneration(userName string, sessionID string) (string, code.Code) {
+	if _, code_ := ensureOwnedSession(userName, sessionID); code_ != code.CodeSuccess {
+		return "", code_
+	}
+
+	if partialContent, code_ := globalActiveStreamRegistry.stop(userName, sessionID); code_ == code.CodeSuccess {
+		if task := globalActiveStreamRegistry.getBySessionID(sessionID); task != nil {
+			_ = myredis.SaveActiveStreamStopSignal(context.Background(), task.streamID)
+		}
+		return partialContent, code.CodeSuccess
+	}
+
+	streamID, err := myredis.GetSessionActiveStream(context.Background(), sessionID)
+	if err != nil {
+		return "", code.CodeServerBusy
+	}
+	if streamID == "" {
+		return "", code.CodeChatNotRunning
+	}
+
+	meta, err := myredis.GetActiveStreamMeta(context.Background(), streamID)
+	if err != nil {
+		return "", code.CodeServerBusy
+	}
+	if meta == nil || meta.UserName != "" && meta.UserName != userName {
+		return "", code.CodeChatNotRunning
+	}
+
+	if err := myredis.SaveActiveStreamStopSignal(context.Background(), streamID); err != nil {
+		return "", code.CodeServerBusy
+	}
+	snapshot, snapshotErr := myredis.GetActiveStreamSnapshot(context.Background(), streamID)
+	if snapshotErr != nil || snapshot == nil {
+		return "", code.CodeSuccess
+	}
+	return snapshot.Content, code.CodeSuccess
 }

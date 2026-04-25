@@ -63,3 +63,39 @@ type SessionTree struct {
 	Folders           []SessionFolderDetail `json:"folders"`
 	UngroupedSessions []SessionInfo         `json:"ungrouped_sessions"`
 }
+
+type SessionRepairTaskType string
+
+type SessionRepairTaskStatus string
+
+const (
+	// SessionRepairTaskTypeHotStateRebuild 表示“数据库已经成功，但 Redis 热状态提交失败”后的重建任务。
+	SessionRepairTaskTypeHotStateRebuild SessionRepairTaskType = "hot_state_rebuild"
+
+	SessionRepairTaskStatusPending   SessionRepairTaskStatus = "pending"
+	SessionRepairTaskStatusCompleted SessionRepairTaskStatus = "completed"
+)
+
+// SessionRepairTask 保存会话修复任务。
+// 这里并回 session model，避免 repair 只为一个模型单独占一个文件。
+type SessionRepairTask struct {
+	ID uint `gorm:"primaryKey;autoIncrement" json:"id"`
+	// TaskKey 用于幂等收口同一会话同一版本的同类 repair。
+	TaskKey string `gorm:"type:varchar(191);uniqueIndex;not null" json:"task_key"`
+
+	SessionID string                `gorm:"index;type:varchar(36);not null" json:"session_id"`
+	TaskType  SessionRepairTaskType `gorm:"type:varchar(64);index;not null" json:"task_type"`
+	// SelectionSignature 为热状态重建保留当前会话绑定的模型选择签名，
+	// 避免 worker 只重建了消息窗口，却丢掉 warm resume 必需的选择约束。
+	SelectionSignature string `gorm:"type:text" json:"selection_signature"`
+	TargetVersion      int64  `gorm:"index;not null;default:0" json:"target_version"`
+
+	Status     SessionRepairTaskStatus `gorm:"type:varchar(32);index;not null;default:'pending'" json:"status"`
+	RetryCount int                     `gorm:"not null;default:0" json:"retry_count"`
+	LastError  string                  `gorm:"type:text" json:"last_error"`
+
+	NextAttemptAt time.Time  `gorm:"index;not null" json:"next_attempt_at"`
+	CompletedAt   *time.Time `json:"completed_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}

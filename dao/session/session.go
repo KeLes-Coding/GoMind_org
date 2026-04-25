@@ -3,10 +3,14 @@ package session
 import (
 	"GopherAI/common/mysql"
 	"GopherAI/model"
+	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+const sessionRepairRetryBackoff = 10 * time.Second
 
 func GetSessionsByUserName(userName string) ([]model.Session, error) {
 	var sessions []model.Session
@@ -80,69 +84,6 @@ func UpdateSessionProgressAndPersistedVersion(sessionID string, version int64, s
 		}).Error
 }
 
-// ListSessionsWithPersistenceLag 列出“正式版本已推进，但持久化水位尚未追平”的会话。
-func ListSessionsWithPersistenceLag(limit int) ([]model.Session, error) {
-	var sessions []model.Session
-	query := mysql.DB.
-		Where("version > persisted_version").
-		Order("updated_at asc")
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	err := query.Find(&sessions).Error
-	return sessions, err
-}
-
-// TryAdvancePersistedVersionIfReady 在消息已经可靠落库后尝试推进 persisted_version。
-// 当前规则要求同一个 session_version 下至少已经持久化了一条用户消息和一条 assistant 消息，
-// 避免只写入半轮对话时就把水位错误推进。
-func TryAdvancePersistedVersionIfReady(sessionID string, targetVersion int64) (bool, error) {
-	if sessionID == "" || targetVersion <= 0 {
-		return false, nil
-	}
-
-	var advanced bool
-	err := mysql.DB.Transaction(func(tx *gorm.DB) error {
-		var session model.Session
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", sessionID).First(&session).Error; err != nil {
-			return err
-		}
-		if session.PersistedVersion >= targetVersion || session.Version < targetVersion {
-			return nil
-		}
-
-		var userCount int64
-		if err := tx.Model(&model.Message{}).
-			Where("session_id = ? AND session_version = ? AND is_user = ?", sessionID, targetVersion, true).
-			Count(&userCount).Error; err != nil {
-			return err
-		}
-		if userCount == 0 {
-			return nil
-		}
-
-		var assistantCount int64
-		if err := tx.Model(&model.Message{}).
-			Where("session_id = ? AND session_version = ? AND is_user = ?", sessionID, targetVersion, false).
-			Count(&assistantCount).Error; err != nil {
-			return err
-		}
-		if assistantCount == 0 {
-			return nil
-		}
-
-		result := tx.Model(&model.Session{}).
-			Where("id = ? AND persisted_version < ?", sessionID, targetVersion).
-			Update("persisted_version", targetVersion)
-		if result.Error != nil {
-			return result.Error
-		}
-		advanced = result.RowsAffected > 0
-		return nil
-	})
-	return advanced, err
-}
-
 func UpdateSessionTitle(userName string, sessionID string, title string) error {
 	result := mysql.DB.Model(&model.Session{}).
 		Where("id = ? AND user_name = ?", sessionID, userName).
@@ -184,4 +125,91 @@ func SoftDeleteSession(userName string, sessionID string) error {
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+func buildSessionRepairTaskKey(sessionID string, taskType model.SessionRepairTaskType, targetVersion int64) string {
+	return fmt.Sprintf("%s|%s|%d", sessionID, taskType, targetVersion)
+}
+
+// SaveHotStateRebuildTask 以幂等方式登记一条 Redis 热状态重建任务。
+func SaveHotStateRebuildTask(sessionID string, selectionSignature string, targetVersion int64) error {
+	if sessionID == "" || targetVersion <= 0 {
+		return nil
+	}
+
+	task := &model.SessionRepairTask{
+		TaskKey:            buildSessionRepairTaskKey(sessionID, model.SessionRepairTaskTypeHotStateRebuild, targetVersion),
+		SessionID:          sessionID,
+		TaskType:           model.SessionRepairTaskTypeHotStateRebuild,
+		SelectionSignature: selectionSignature,
+		TargetVersion:      targetVersion,
+		Status:             model.SessionRepairTaskStatusPending,
+		NextAttemptAt:      time.Now(),
+	}
+
+	return mysql.DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "task_key"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"selection_signature": selectionSignature,
+			"target_version":      targetVersion,
+			"status":              model.SessionRepairTaskStatusPending,
+			"last_error":          "",
+			"next_attempt_at":     time.Now(),
+			"updated_at":          time.Now(),
+		}),
+	}).Create(task).Error
+}
+
+// ListPendingSessionRepairTasks 列出当前待执行的 repair task。
+func ListPendingSessionRepairTasks(limit int) ([]model.SessionRepairTask, error) {
+	var tasks []model.SessionRepairTask
+	query := mysql.DB.
+		Where("status = ? AND next_attempt_at <= ?", model.SessionRepairTaskStatusPending, time.Now()).
+		Order("next_attempt_at asc").
+		Order("id asc")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	err := query.Find(&tasks).Error
+	return tasks, err
+}
+
+// MarkSessionRepairTaskCompleted 把 repair task 标记为完成。
+func MarkSessionRepairTaskCompleted(taskID uint) error {
+	if taskID == 0 {
+		return nil
+	}
+	now := time.Now()
+	return mysql.DB.Model(&model.SessionRepairTask{}).
+		Where("id = ?", taskID).
+		Updates(map[string]interface{}{
+			"status":          model.SessionRepairTaskStatusCompleted,
+			"last_error":      "",
+			"completed_at":    now,
+			"next_attempt_at": now,
+		}).Error
+}
+
+// MarkSessionRepairTaskFailed 记录一次 repair 执行失败，并安排下一次重试时间。
+func MarkSessionRepairTaskFailed(taskID uint, errText string) error {
+	if taskID == 0 {
+		return nil
+	}
+	now := time.Now()
+	return mysql.DB.Model(&model.SessionRepairTask{}).
+		Where("id = ?", taskID).
+		Updates(map[string]interface{}{
+			"retry_count":     clause.Expr{SQL: "retry_count + 1"},
+			"last_error":      errText,
+			"next_attempt_at": now.Add(sessionRepairRetryBackoff),
+			"updated_at":      now,
+		}).Error
+}
+
+// DeleteSessionRepairTasksBySessionID 在会话被删除时联动清理其 repair task。
+func DeleteSessionRepairTasksBySessionID(sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	return mysql.DB.Where("session_id = ?", sessionID).Delete(&model.SessionRepairTask{}).Error
 }

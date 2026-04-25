@@ -136,14 +136,15 @@ func (a *AIHelper) LoadHotState(state *model.SessionHotState) {
 	for i := range state.RecentMessages {
 		msg := state.RecentMessages[i]
 		modelMsg := &model.Message{
-			ID:         msg.ID,
-			MessageKey: msg.MessageKey,
-			SessionID:  msg.SessionID,
-			UserName:   msg.UserName,
-			Content:    msg.Content,
-			IsUser:     msg.IsUser,
-			Status:     model.MessageStatus(msg.Status),
-			CreatedAt:  msg.CreatedAt,
+			ID:             msg.ID,
+			MessageKey:     msg.MessageKey,
+			SessionID:      msg.SessionID,
+			SessionVersion: msg.SessionVersion,
+			UserName:       msg.UserName,
+			Content:        msg.Content,
+			IsUser:         msg.IsUser,
+			Status:         model.MessageStatus(msg.Status),
+			CreatedAt:      msg.CreatedAt,
 		}
 		a.messages = append(a.messages, modelMsg)
 	}
@@ -175,14 +176,15 @@ func (a *AIHelper) ExportHotState() *model.SessionHotState {
 	recentMessages := make([]model.SessionHotMessage, 0, len(a.messages[start:]))
 	for _, msg := range a.messages[start:] {
 		recentMessages = append(recentMessages, model.SessionHotMessage{
-			ID:         msg.ID,
-			MessageKey: msg.MessageKey,
-			SessionID:  msg.SessionID,
-			UserName:   msg.UserName,
-			Content:    msg.Content,
-			IsUser:     msg.IsUser,
-			Status:     string(msg.Status),
-			CreatedAt:  msg.CreatedAt,
+			ID:             msg.ID,
+			MessageKey:     msg.MessageKey,
+			SessionID:      msg.SessionID,
+			SessionVersion: msg.SessionVersion,
+			UserName:       msg.UserName,
+			Content:        msg.Content,
+			IsUser:         msg.IsUser,
+			Status:         string(msg.Status),
+			CreatedAt:      msg.CreatedAt,
 		})
 	}
 
@@ -624,13 +626,6 @@ func (a *AIHelper) GenerateResponseForPreparedUserMessage(userName string, ctx c
 	return a.AddMessageWithStatus(modelMsg.Content, userName, false, false, model.MessageStatusCompleted), nil
 }
 
-// GenerateResponse 走同步模型调用。
-func (a *AIHelper) GenerateResponse(userName string, ctx context.Context, userQuestion string) (*model.Message, error) {
-	// 先把用户本轮问题写入上下文，保证模型能看到完整多轮历史。
-	a.AddMessage(userQuestion, userName, true, false)
-	return a.GenerateResponseForPreparedUserMessage(userName, ctx)
-}
-
 // StreamResponseForPreparedUserMessage 在“用户消息已经提前进入上下文”后执行流式模型调用。
 // 这样 service 层可以在真正发起流式生成前，先把用户消息对应的 Redis 热状态同步提交出去。
 func (a *AIHelper) StreamResponseForPreparedUserMessage(userName string, ctx context.Context, cb StreamCallback) (*model.Message, error) {
@@ -679,13 +674,6 @@ func (a *AIHelper) StreamResponseForPreparedUserMessage(userName string, ctx con
 	// 第四阶段开始，流式主消息的正式持久化改由 service 层同步写 MySQL。
 	// 这里先只维护 helper 内存上下文，不再直接触发 outbox/MQ 主链路。
 	return a.AddMessageWithStatus(modelMsg.Content, userName, false, false, model.MessageStatusCompleted), nil
-}
-
-// StreamResponse 走流式模型调用。
-func (a *AIHelper) StreamResponse(userName string, ctx context.Context, cb StreamCallback, userQuestion string) (*model.Message, error) {
-	// 流式场景也要先把用户问题放入上下文，否则模型拿不到当前轮问题。
-	a.AddMessage(userQuestion, userName, true, false)
-	return a.StreamResponseForPreparedUserMessage(userName, ctx, cb)
 }
 
 // StreamResponseWithExistingAssistantForPreparedUserMessage 在“用户消息已经提前进入上下文”后执行流式模型调用，
@@ -738,14 +726,6 @@ func (a *AIHelper) StreamResponseWithExistingAssistantForPreparedUserMessage(use
 
 	a.AppendExistingMessage(finalAssistant)
 	return finalAssistant, nil
-}
-
-// StreamResponseWithExistingAssistant 和 StreamResponse 类似，但最终 assistant 消息使用外部已确定的 message_key。
-// 这主要用于流式占位消息：先创建 streaming 占位，再在流结束时把完整内容补回同一条消息。
-func (a *AIHelper) StreamResponseWithExistingAssistant(userName string, ctx context.Context, cb StreamCallback, userQuestion string, assistantMessage *model.Message) (*model.Message, error) {
-	// 流式场景也要先把用户问题放入上下文，否则模型拿不到当前轮问题。
-	a.AddMessage(userQuestion, userName, true, false)
-	return a.StreamResponseWithExistingAssistantForPreparedUserMessage(userName, ctx, cb, assistantMessage)
 }
 
 // GetModelType 返回当前 helper 绑定的模型类型。

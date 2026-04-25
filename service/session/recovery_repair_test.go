@@ -145,3 +145,41 @@ func TestApplySessionMetadataToHelperIncludesPersistedVersion(t *testing.T) {
 		t.Fatalf("expected persisted_version 7, got %d", helper.GetPersistedVersion())
 	}
 }
+
+func TestBuildSessionHotStateFromDatabaseIncludesSessionVersion(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	sess := &model.Session{
+		ID:                  "session-1",
+		Version:             5,
+		PersistedVersion:    5,
+		ContextSummary:      "摘要",
+		SummaryMessageCount: 4,
+	}
+	messages := []model.Message{
+		{
+			ID:             1,
+			MessageKey:     "msg-1",
+			SessionID:      "session-1",
+			SessionVersion: 5,
+			UserName:       "tester",
+			Content:        "hello",
+			IsUser:         true,
+			Status:         model.MessageStatusCompleted,
+			CreatedAt:      now,
+		},
+	}
+
+	state := buildSessionHotStateFromDatabase(sess, messages, "selection-1")
+	if state == nil {
+		t.Fatal("expected non-nil hot state")
+	}
+	if len(state.RecentMessages) != 1 {
+		t.Fatalf("expected 1 recent message, got %d", len(state.RecentMessages))
+	}
+	if state.RecentMessages[0].SessionVersion != 5 {
+		t.Fatalf("expected session_version 5, got %d", state.RecentMessages[0].SessionVersion)
+	}
+	if state.SelectionSignature != "selection-1" {
+		t.Fatalf("expected selection signature preserved, got %s", state.SelectionSignature)
+	}
+}

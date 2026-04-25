@@ -2,6 +2,7 @@ package session
 
 import (
 	"GopherAI/common/aihelper"
+	"GopherAI/common/applog"
 	"GopherAI/common/code"
 	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
@@ -11,6 +12,7 @@ import (
 	notifyservice "GopherAI/service/notify"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -28,6 +30,98 @@ const (
 )
 
 var publishChatMessageReadyFunc = notifyservice.PublishChatMessageReady
+
+type traceContextKey string
+
+const sessionTraceContextKey traceContextKey = "session-trace"
+
+// SessionRuntimeSource 表示当前请求最终采用了哪一种运行态恢复来源。
+// 这里并回 session 主文件，减少只有枚举定义的薄文件数量。
+type SessionRuntimeSource string
+
+const (
+	// SessionRuntimeSourceProcessEphemeral 表示当前请求复用了进程内短生命周期执行对象。
+	// 它只代表执行优化，不代表跨请求恢复真相源。
+	SessionRuntimeSourceProcessEphemeral SessionRuntimeSource = "process_ephemeral"
+	// SessionRuntimeSourceRedisHotState 表示当前请求基于 Redis 热状态重建执行器。
+	SessionRuntimeSourceRedisHotState SessionRuntimeSource = "redis_hot_state"
+	// SessionRuntimeSourceDatabaseRebuild 表示当前请求回退到了 MySQL 全量重建。
+	SessionRuntimeSourceDatabaseRebuild SessionRuntimeSource = "database_rebuild"
+)
+
+// sessionTrace 用于把一次会话请求的关键字段串起来。
+// 这里继续保留轻量日志 trace，但并回 session 主文件，减少单独薄文件数量。
+type sessionTrace struct {
+	RequestID          string
+	Operation          string
+	SessionID          string
+	RequestedModelType string
+	StartTime          time.Time
+}
+
+func newSessionTrace(ctx context.Context, operation string, sessionID string, requestedModelType string) (context.Context, *sessionTrace) {
+	trace := &sessionTrace{
+		RequestID:          uuid.NewString(),
+		Operation:          operation,
+		SessionID:          sessionID,
+		RequestedModelType: requestedModelType,
+		StartTime:          time.Now(),
+	}
+
+	return context.WithValue(ctx, sessionTraceContextKey, trace), trace
+}
+
+func traceFromContext(ctx context.Context) *sessionTrace {
+	if ctx == nil {
+		return nil
+	}
+
+	trace, _ := ctx.Value(sessionTraceContextKey).(*sessionTrace)
+	return trace
+}
+
+func logSessionTrace(ctx context.Context, stage string, format string, args ...interface{}) {
+	trace := traceFromContext(ctx)
+	if trace == nil {
+		applog.Userf("session_trace stage=%s "+format, append([]interface{}{stage}, args...)...)
+		return
+	}
+
+	prefixArgs := []interface{}{
+		stage,
+		trace.RequestID,
+		trace.Operation,
+		trace.SessionID,
+		trace.RequestedModelType,
+		time.Since(trace.StartTime).Milliseconds(),
+	}
+	applog.Userf(
+		"session_trace stage=%s request_id=%s operation=%s session_id=%s requested_model=%s elapsed_ms=%d "+format,
+		append(prefixArgs, args...)...,
+	)
+}
+
+func logResolvedSelection(ctx context.Context, resolved *resolvedChatRequest) {
+	if resolved == nil {
+		return
+	}
+
+	configID := "nil"
+	if resolved.RuntimeConfig.LLMConfigID != nil {
+		configID = fmt.Sprintf("%d", *resolved.RuntimeConfig.LLMConfigID)
+	}
+
+	logSessionTrace(
+		ctx,
+		"resolved_selection",
+		"chat_mode=%s provider=%s config_id=%s model=%s base_url=%s",
+		resolved.ChatMode,
+		resolved.RuntimeConfig.Provider,
+		configID,
+		resolved.RuntimeConfig.ModelName,
+		resolved.RuntimeConfig.BaseURL,
+	)
+}
 
 // ensureOwnedSession 校验会话是否存在且归当前用户所有。
 // 后续所有读写操作都应先经过该检查，避免越权访问其他用户会话。
@@ -65,24 +159,6 @@ func ensureSessionWriteOwnership(ctx context.Context, sessionID string) code.Cod
 		logSessionTrace(ctx, "owner_fence_reject", "owner=%s fence=%d", guard.OwnerID, guard.FenceToken)
 		return code.AIModelCancelled
 	}
-	return code.CodeSuccess
-}
-
-// persistSessionProgress 将 helper 当前的摘要状态和版本号持久化到 session。
-// 这个方法保留给“消息正式落库与 session 进度推进暂时分离”的路径使用。
-func persistSessionProgress(ctx context.Context, sessionID string, helper *aihelper.AIHelper) code.Code {
-	if code_ := ensureSessionWriteOwnership(ctx, sessionID); code_ != code.CodeSuccess {
-		return code_
-	}
-	afterSummary, afterCount := helper.GetSummaryState()
-	nextVersion := helper.GetVersion() + 1
-	if err := sessionDAO.UpdateSessionProgress(sessionID, nextVersion, afterSummary, afterCount); err != nil {
-		observability.RecordDBPersistFail()
-		log.Println("persistSessionProgress UpdateSessionProgress error:", err)
-		return code.CodeServerBusy
-	}
-
-	helper.SetVersion(nextVersion)
 	return code.CodeSuccess
 }
 
@@ -191,6 +267,28 @@ func persistMessageSync(ctx context.Context, message *model.Message) code.Code {
 		log.Println("persistMessageSync CreateMessage error:", err)
 		return code.CodeServerBusy
 	}
+	return code.CodeSuccess
+}
+
+// finalizeAssistantTurn 在 assistant 终态消息已经进入 helper 后，统一完成正式落库、进度推进、热状态提交与通知。
+// 这样同步聊天和传统流式链路可以复用同一套 assistant 收敛逻辑，减少重复分支。
+func finalizeAssistantTurn(ctx context.Context, sess *model.Session, sessionID string, helper *aihelper.AIHelper, message *model.Message) code.Code {
+	if sess == nil || helper == nil || message == nil {
+		return code.CodeInvalidParams
+	}
+	if code_ := persistMessageSync(ctx, message); code_ != code.CodeSuccess {
+		savePendingPersistHotStateBestEffort(ctx, helper)
+		return code_
+	}
+	if code_ := persistSessionProgressWithPersistedVersion(ctx, sessionID, helper); code_ != code.CodeSuccess {
+		savePendingPersistHotStateBestEffort(ctx, helper)
+		return code_
+	}
+	if code_ := commitHelperHotState(ctx, helper); code_ != code.CodeSuccess {
+		enqueueHotStateRebuildRepairBestEffort(helper)
+		return code_
+	}
+	publishAssistantReadyNotificationBestEffort(ctx, sess, message)
 	return code.CodeSuccess
 }
 
@@ -550,16 +648,9 @@ func CreateSessionAndSendMessage(ctx context.Context, userName string, userID in
 			log.Println("CreateSessionAndSendMessage GenerateResponse error:", err)
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistMessageSync(execCtx, aiResponse); code_ != code.CodeSuccess {
+		if code_ = finalizeAssistantTurn(execCtx, createdSession, createdSession.ID, helper, aiResponse); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
-		if code_ = persistSessionProgressWithPersistedVersion(execCtx, createdSession.ID, helper); code_ != code.CodeSuccess {
-			return codeExecutorResult{code: code_}
-		}
-		if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
-			return codeExecutorResult{code: code_}
-		}
-		publishAssistantReadyNotificationBestEffort(execCtx, createdSession, aiResponse)
 
 		return codeExecutorResult{
 			code:       code.CodeSuccess,
@@ -678,16 +769,9 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 			return codeExecutorResult{code: code.AIModelFail}
 		}
 		assistantMessage := helper.GetLatestMessage()
-		if code_ = persistMessageSync(execCtx, assistantMessage); code_ != code.CodeSuccess {
+		if code_ = finalizeAssistantTurn(execCtx, sess, sessionID, helper, assistantMessage); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
-		if code_ = persistSessionProgressWithPersistedVersion(execCtx, sessionID, helper); code_ != code.CodeSuccess {
-			return codeExecutorResult{code: code_}
-		}
-		if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
-			return codeExecutorResult{code: code_}
-		}
-		publishAssistantReadyNotificationBestEffort(execCtx, sess, assistantMessage)
 
 		return codeExecutorResult{code: code.CodeSuccess}
 	})
@@ -781,16 +865,9 @@ func ChatSend(ctx context.Context, userName string, sessionID string, userQuesti
 			log.Println("ChatSend GenerateResponse error:", err)
 			return codeExecutorResult{code: code.AIModelFail}
 		}
-		if code_ = persistMessageSync(execCtx, aiResponse); code_ != code.CodeSuccess {
+		if code_ = finalizeAssistantTurn(execCtx, sess, sessionID, helper, aiResponse); code_ != code.CodeSuccess {
 			return codeExecutorResult{code: code_}
 		}
-		if code_ = persistSessionProgressWithPersistedVersion(execCtx, sessionID, helper); code_ != code.CodeSuccess {
-			return codeExecutorResult{code: code_}
-		}
-		if code_ = commitHelperHotState(execCtx, helper); code_ != code.CodeSuccess {
-			return codeExecutorResult{code: code_}
-		}
-		publishAssistantReadyNotificationBestEffort(execCtx, sess, aiResponse)
 
 		return codeExecutorResult{
 			code:       code.CodeSuccess,
