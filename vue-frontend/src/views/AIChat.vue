@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-row h-screen w-screen overflow-hidden bg-bg-light dark:bg-bg-dark text-text-primary-light dark:text-text-primary-dark">
+  <div class="flex flex-row h-screen w-screen overflow-hidden bg-bg-light dark:bg-bg-dark text-text-primary-light dark:text-text-primary-dark selection:bg-accent-light selection:text-white">
     <ChatSidebar
       :is-sidebar-collapsed="isSidebarCollapsed"
       :user-menu-visible="userMenuVisible"
@@ -26,7 +26,7 @@
       @go-login="goLogin"
     />
 
-    <section class="flex-1 flex flex-col relative min-w-0 bg-bg-light dark:bg-bg-dark">
+    <section class="flex-1 flex flex-col relative min-w-0 bg-bg-light dark:bg-bg-dark overflow-hidden">
       <ChatHeader
         :has-messages="currentMessages.length > 0"
         :is-dark="isDark"
@@ -115,6 +115,7 @@
 
       <!-- File Manager Dialog -->
       <FileManagerDialog v-model="fileManagerVisible" />
+
     </section>
   </div>
 </template>

@@ -1,65 +1,57 @@
 <template>
-  <div class="flex-1 overflow-y-auto px-4 md:px-16 lg:px-32 pt-6 pb-44" ref="scrollContainer">
-    <div class="max-w-4xl mx-auto flex flex-col">
+  <div class="flex-1 overflow-y-auto px-4 pt-6 pb-48 scroll-smooth" ref="scrollContainer">
+    <div class="max-w-3xl mx-auto flex flex-col">
       <div
         v-for="(message, index) in currentMessages"
         :key="index"
       >
-        <!-- User message: right-aligned colored bubble -->
-        <div v-if="message.role === 'user'" class="flex justify-end mb-6">
-          <div class="max-w-[85%]">
-            <div class="flex items-end gap-2 justify-end">
-              <div class="bg-black text-white dark:bg-white dark:text-black rounded-2xl rounded-br-sm px-4 py-3">
-                <img v-if="message.imageUrl" :src="message.imageUrl" alt="Uploaded image" class="max-w-xs rounded-xl shadow-md mb-2" />
-                <div class="whitespace-pre-wrap break-words">{{ getMessageRawMarkdown(message) }}</div>
-              </div>
-              <img
-                v-if="userProfile.avatar_url"
-                :src="userProfile.avatar_url"
-                alt="头像"
-                class="w-7 h-7 rounded-full object-cover border border-border-light dark:border-border-dark shrink-0"
-              />
-              <div v-else class="w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs select-none bg-black text-white dark:bg-white dark:text-black shrink-0">
-                {{ getUserInitial }}
-              </div>
-            </div>
+        <div v-if="message.role === 'user'" class="flex gap-4 mb-10 group">
+          <img
+            v-if="userProfile.avatar_url"
+            :src="userProfile.avatar_url"
+            alt="头像"
+            class="w-8 h-8 rounded-full object-cover border border-border-light dark:border-neutral-700 shrink-0 mt-1 shadow-sm"
+          />
+          <div v-else class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs select-none bg-white text-text-primary-light dark:bg-neutral-800 dark:text-neutral-100 shrink-0 mt-1 border border-border-light dark:border-neutral-700">
+            {{ getUserInitial }}
+          </div>
+          <div class="flex-1 min-w-0 pt-1.5">
+            <img v-if="message.imageUrl" :src="message.imageUrl" alt="Uploaded image" class="max-w-xs rounded-lg shadow-md mb-3 border border-border-light dark:border-neutral-700" />
+            <div class="whitespace-pre-wrap break-words text-[15px] leading-7 text-text-primary-light dark:text-neutral-100 dark:bg-neutral-800/80 dark:px-4 dark:py-3 dark:rounded-lg">{{ getMessageRawMarkdown(message) }}</div>
           </div>
         </div>
 
-        <!-- AI message: left-aligned with avatar -->
-        <div v-else class="flex items-start gap-3 mb-6">
-          <div class="w-7 h-7 rounded-full bg-surface-light dark:bg-surface-dark flex items-center justify-center text-xs font-bold shrink-0 border border-border-light dark:border-border-dark select-none">
-            AI
+        <div v-else class="flex gap-4 mb-10 group">
+          <div class="w-8 h-8 rounded-full bg-accent-light flex items-center justify-center text-white shrink-0 mt-1 shadow-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.65 5.08L19 5.45l-3.3 4.55L21 12l-5.3 2 3.3 4.55-5.35-1.63L12 22l-1.65-5.08L5 18.55 8.3 14 3 12l5.3-2L5 5.45l5.35 1.63L12 2z"/></svg>
           </div>
-          <div class="flex-1 min-w-0 max-w-[85%]">
-            <!-- Actions & Meta above content -->
-            <div v-if="message.content || message.imageUrl || getMessageReasoning(message)" class="flex items-center gap-2 mb-2 flex-wrap">
-              <div class="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div class="flex-1 min-w-0 pt-1.5">
+            <div v-if="message.content || message.imageUrl || getMessageReasoning(message)" class="flex items-center gap-2 mb-3 flex-wrap">
+              <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                   v-if="message.content"
-                  class="px-2 py-0.5 text-xs rounded-full bg-surface-light dark:bg-surface-dark border border-border-light dark:border-border-dark hover:text-accent-light dark:hover:text-accent-dark cursor-pointer transition-colors"
+                  class="px-2 py-1 text-xs rounded-md bg-transparent hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80 text-text-secondary-light dark:text-neutral-400 hover:text-text-primary-light dark:hover:text-neutral-100 cursor-pointer transition-colors border-none"
                   @click="$emit('play-tts', message.content)"
                 >
                   朗读
                 </button>
                 <button
                   v-if="message.content"
-                  class="px-2 py-0.5 text-xs rounded-full bg-surface-light dark:bg-surface-dark border border-border-light dark:border-border-dark hover:text-accent-light dark:hover:text-accent-dark cursor-pointer transition-colors"
+                  class="px-2 py-1 text-xs rounded-md bg-transparent hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80 text-text-secondary-light dark:text-neutral-400 hover:text-text-primary-light dark:hover:text-neutral-100 cursor-pointer transition-colors border-none"
                   @click="toggleViewMode(index)"
                 >
                   {{ getViewMode(index) === 'preview' ? '源码' : '预览' }}
                 </button>
               </div>
-              <span v-if="getMessageMetaStatus(message)" class="text-xs text-text-secondary-light dark:text-text-secondary-dark ml-auto">
+              <span v-if="getMessageMetaStatus(message)" class="text-xs text-text-secondary-light dark:text-neutral-500 ml-auto">
                 {{ getMessageStatusLabel(getMessageMetaStatus(message)) }}
               </span>
             </div>
-            <!-- Image Preview -->
-            <img v-if="message.imageUrl" :src="message.imageUrl" alt="Uploaded image" class="max-w-xs rounded-xl shadow-md mb-2" />
+            <img v-if="message.imageUrl" :src="message.imageUrl" alt="Uploaded image" class="max-w-xs rounded-lg shadow-md mb-3 border border-border-light dark:border-neutral-700" />
             <details
               v-if="getMessageReasoning(message)"
               :open="Boolean(reasoningExpanded[index])"
-              class="mb-3 rounded-2xl border border-amber-200/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 dark:border-amber-900/80 dark:bg-amber-950/40 dark:text-amber-100"
+              class="mb-4 rounded-lg border border-accent-light/30 bg-accent-light/10 px-4 py-3 text-sm text-[#5B3510] dark:border-orange-500/30 dark:bg-neutral-900 dark:text-neutral-300"
               @toggle="reasoningExpanded[index] = $event.target.open"
             >
               <summary class="cursor-pointer select-none font-medium">推理链</summary>
@@ -67,12 +59,12 @@
             </details>
             <pre
               v-if="message.content && getViewMode(index) === 'source'"
-              class="whitespace-pre-wrap break-words rounded-2xl border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark px-4 py-3 text-sm"
+              class="whitespace-pre-wrap break-words rounded-lg border border-border-light dark:border-neutral-700 bg-white dark:bg-[#1e1e1e] px-4 py-3 text-sm leading-7 dark:text-neutral-300"
             >{{ getMessageRawMarkdown(message) }}</pre>
             <div
               v-else-if="message.content"
               v-html="renderMarkdown(message.content)"
-              class="prose dark:prose-invert prose-p:my-2 prose-pre:bg-surface-light dark:prose-pre:bg-surface-dark prose-pre:border prose-pre:border-border-light dark:prose-pre:border-border-dark prose-pre:shadow-[0_2px_10px_rgba(0,0,0,0.02)] max-w-none"
+              class="prose dark:prose-invert prose-p:my-2 prose-p:leading-7 dark:prose-p:text-neutral-300 prose-pre:bg-[#1e1e1e] prose-pre:text-[#e5e5e5] prose-pre:rounded-lg prose-pre:border prose-pre:border-[#3a3a3a] prose-code:text-[#B65A00] dark:prose-code:text-green-400 prose-a:text-accent-light dark:prose-a:text-orange-500 max-w-none"
             ></div>
           </div>
         </div>

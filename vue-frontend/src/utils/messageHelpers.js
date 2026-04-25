@@ -68,6 +68,42 @@ export const getMessageRawMarkdown = (message) => String(message?.content || '')
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
+const escapeHtml = (value) => String(value)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
+
+const highlightCode = (code) => {
+  const placeholders = []
+  let html = escapeHtml(code).replace(/(&quot;.*?&quot;|&#39;.*?&#39;|`.*?`)/g, (match) => {
+    const key = `@@CODE_STRING_${placeholders.length}@@`
+    placeholders.push(`<span class="code-token--string">${match}</span>`)
+    return key
+  })
+
+  html = html
+    .replace(/\b(import|from|export|const|let|var|return|function|class|if|else|for|while|try|catch|async|await|new|def|raise|except|with|as)\b/g, '<span class="code-token--keyword">$1</span>')
+    .replace(/(&lt;\/?)([A-Za-z][\w-]*)/g, '$1<span class="code-token--tag">$2</span>')
+    .replace(/\b([A-Za-z_$][\w$]*)(?=\s*\()/g, '<span class="code-token--function">$1</span>')
+    .replace(/\b([A-Za-z_:][-A-Za-z0-9_:]*)(?==)/g, '<span class="code-token--attr">$1</span>')
+
+  placeholders.forEach((value, index) => {
+    html = html.replace(`@@CODE_STRING_${index}@@`, value)
+  })
+
+  return html
+}
+
+const renderer = new marked.Renderer()
+renderer.code = (token) => {
+  const lang = token.lang ? escapeHtml(token.lang) : 'code'
+  return `<div class="markdown-code"><div class="markdown-code__header"><span>${lang}</span></div><pre><code class="language-${lang}">${highlightCode(token.text || '')}</code></pre></div>`
+}
+
+marked.use({ renderer })
+
 marked.setOptions({
   breaks: true,
   gfm: true

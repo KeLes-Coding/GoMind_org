@@ -1,13 +1,14 @@
 <template>
-  <div class="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-3xl px-4 z-20">
-    <div class="bg-surface-light dark:bg-surface-dark rounded-3xl shadow-[0_2px_12px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_12px_rgba(0,0,0,0.3)] ring-1 ring-black/5 dark:ring-white/10 flex flex-col p-2 transition-shadow focus-within:ring-2 focus-within:ring-black/10 dark:focus-within:ring-white/15">
+  <div class="absolute bottom-0 left-0 w-full px-4 pt-8 pb-6 z-20 bg-gradient-to-t from-bg-light via-bg-light/95 to-transparent dark:from-neutral-950 dark:via-neutral-950/95">
+    <div class="mx-auto w-full max-w-3xl">
+      <div class="bg-white dark:bg-neutral-900/80 dark:backdrop-blur-xl rounded-3xl shadow-[0_2px_15px_-3px_rgba(0,0,0,0.07),0_10px_20px_-2px_rgba(0,0,0,0.04)] dark:shadow-[0_12px_30px_rgba(0,0,0,0.28)] border border-border-light dark:border-neutral-800 flex flex-col p-3 transition-all focus-within:ring-1 focus-within:ring-orange-500/50 focus-within:border-orange-500/50">
 
       <!-- Active mode chips -->
       <div v-if="activeModes.length" class="flex flex-wrap gap-1.5 px-2 pt-1">
         <span
           v-for="mode in activeModes"
           :key="mode.key"
-          class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-accent-light/15 dark:bg-accent-dark/15 text-accent-light dark:text-accent-dark border border-accent-light/30 dark:border-accent-dark/30"
+          class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-accent-light/10 dark:bg-orange-500/10 text-accent-light dark:text-orange-500 border border-accent-light/30 dark:border-orange-500/30"
         >
           {{ mode.label }}
           <button type="button" class="hover:text-red-500 dark:hover:text-red-400 transition-colors cursor-pointer bg-transparent border-none p-0 leading-none" @click="removeMode(mode.key)">&times;</button>
@@ -15,15 +16,15 @@
       </div>
 
       <!-- Slash command menu -->
-      <div v-if="showSlashMenu && slashCommands.length" class="mx-2 mt-1 rounded-xl border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark shadow-lg overflow-hidden">
-        <div class="px-3 py-2 text-xs font-medium text-text-secondary-light dark:text-text-secondary-dark border-b border-border-light dark:border-border-dark">选择模式</div>
+      <div v-if="showSlashMenu && slashCommands.length" class="mx-2 mt-1 rounded-xl border border-border-light dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-lg overflow-hidden">
+        <div class="px-3 py-2 text-xs font-medium text-text-secondary-light dark:text-neutral-500 border-b border-border-light dark:border-neutral-800">选择模式</div>
         <button
           v-for="(cmd, idx) in slashCommands"
           :key="cmd.key"
           type="button"
           :class="[
-            'w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors cursor-pointer bg-transparent border-none text-text-primary-light dark:text-text-primary-dark',
-            slashMenuIndex === idx ? 'bg-black/5 dark:bg-white/5' : 'hover:bg-black/5 dark:hover:bg-white/5'
+            'w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors cursor-pointer bg-transparent border-none text-text-primary-light dark:text-neutral-100',
+            slashMenuIndex === idx ? 'bg-[#EDE8E1] dark:bg-neutral-800/80' : 'hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80'
           ]"
           @click="selectSlashCommand(cmd)"
           @mouseenter="slashMenuIndex = idx"
@@ -31,17 +32,17 @@
           <span class="text-base">{{ cmd.icon }}</span>
           <div>
             <div class="font-medium">{{ cmd.label }}</div>
-            <div class="text-xs text-text-secondary-light dark:text-text-secondary-dark">{{ cmd.description }}</div>
+            <div class="text-xs text-text-secondary-light dark:text-neutral-500">{{ cmd.description }}</div>
           </div>
         </button>
       </div>
 
       <!-- Toolbar -->
       <div class="flex items-center gap-0.5 px-2 pt-1">
-        <button @click="handleFileUploadClick" :disabled="uploading || loading" class="p-1.5 rounded-full text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-transparent border-none" title="上传文档 (.md/.txt)">
+        <button @click="handleFileUploadClick" :disabled="uploading || loading" class="p-2 rounded-full text-text-secondary-light dark:text-neutral-400 hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80 hover:text-text-primary-light dark:hover:text-neutral-100 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-transparent border-none" title="上传文档 (.md/.txt)">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
         </button>
-        <button @click="handleImageUploadClick" :disabled="loading" class="p-1.5 rounded-full text-text-secondary-light dark:text-text-secondary-dark hover:bg-black/5 dark:hover:bg-white/5 hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-transparent border-none" title="图像识别">
+        <button @click="handleImageUploadClick" :disabled="loading" class="p-2 rounded-full text-text-secondary-light dark:text-neutral-400 hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80 hover:text-text-primary-light dark:hover:text-neutral-100 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-transparent border-none" title="图像识别">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
         </button>
         <input ref="fileInput" type="file" accept=".md,.txt,text/markdown,text/plain" class="hidden" @change="onFileChange" />
@@ -56,13 +57,13 @@
           :disabled="loading"
           ref="messageInput"
           rows="1"
-          placeholder="问点什么… 输入 / 选择 RAG 或 MCP"
-          class="flex-1 max-h-40 min-h-[44px] bg-transparent border-none outline-none resize-none px-4 py-2 text-base text-text-primary-light dark:text-text-primary-dark placeholder-text-secondary-light dark:placeholder-text-secondary-dark"
+          placeholder="Message GoMind..."
+          class="flex-1 max-h-40 min-h-[44px] bg-transparent border-none outline-none resize-none px-4 py-2 text-[15px] leading-7 text-text-primary-light dark:text-neutral-100 placeholder:text-text-secondary-light dark:placeholder:text-neutral-500 focus:ring-0"
         ></textarea>
 
         <!-- Model selector + settings -->
         <div class="flex items-center gap-1 mb-1 mx-1">
-          <div class="toolbar-select-wrap max-w-[130px] !bg-black/5 dark:!bg-white/5 !border-none !rounded-xl">
+          <div class="toolbar-select-wrap max-w-[130px] !bg-[#F3EFEA] dark:!bg-neutral-800/80 !border-none !rounded-xl hidden sm:flex">
             <select
               :value="selectedConfigId"
               @change="onConfigSelect"
@@ -78,7 +79,7 @@
             </span>
           </div>
 
-          <button type="button" @click="$emit('open-model-config-dialog')" class="p-2 w-9 h-9 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-text-secondary-light dark:text-text-secondary-dark hover:text-text-primary-light dark:hover:text-text-primary-dark transition-colors bg-transparent border-none cursor-pointer flex items-center justify-center shrink-0" title="Model Configs">
+          <button type="button" @click="$emit('open-model-config-dialog')" class="p-2 w-9 h-9 rounded-full hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80 text-text-secondary-light dark:text-neutral-400 hover:text-text-primary-light dark:hover:text-neutral-100 transition-colors bg-transparent border-none cursor-pointer flex items-center justify-center shrink-0" title="Model Configs">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
           </button>
         </div>
@@ -103,8 +104,8 @@
           :class="[
             'p-2 w-10 h-10 mb-1 mr-1 rounded-full flex items-center justify-center transition-all disabled:cursor-not-allowed border-none',
             (!inputMessage.trim() || loading)
-              ? 'bg-transparent text-text-secondary-light dark:text-text-secondary-dark opacity-50'
-              : 'bg-black text-white dark:bg-white dark:text-black shadow-sm'
+              ? 'bg-[#EDE8E1] dark:bg-neutral-800 text-text-secondary-light dark:text-neutral-500 opacity-60'
+              : 'bg-accent-light text-white shadow-sm hover:bg-accent-light/90'
           ]"
         >
           <svg v-if="!loading" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
@@ -112,6 +113,10 @@
           </svg>
         </button>
       </div>
+      </div>
+      <p class="text-center text-xs text-text-secondary-light/80 dark:text-neutral-500 mt-3">
+        GoMind may occasionally generate inaccurate information. Verify critical details.
+      </p>
     </div>
   </div>
 </template>
