@@ -190,11 +190,25 @@ export function useChatStream({
     }
 
     if (parsed.type === 'session') {
+      const newSid = parsed.sessionId ? String(parsed.sessionId) : ''
       if (parsed.streamId) {
         activeStreamId.value = String(parsed.streamId)
       }
       if (parsed.messageId) {
         activeMessageId.value = String(parsed.messageId)
+      }
+      if (newSid) {
+        activeStreamingSessionId.value = newSid
+        if (tempSession.value) {
+          upsertSessionEntry({
+            id: newSid,
+            name: buildSessionTitle(currentMessages.value.find(message => message.role === 'user')?.content),
+            messages: [...currentMessages.value]
+          })
+          currentSessionId.value = newSid
+          tempSession.value = false
+          loadSessions()
+        }
       }
       activeStreamLastSeq.value = 0
       await patchActiveAssistantMeta({
