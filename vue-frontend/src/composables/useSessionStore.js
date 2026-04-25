@@ -1,7 +1,7 @@
 import { computed, nextTick, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../utils/api'
-import { buildMessageMeta } from '../utils/messageHelpers'
+import { buildChatMessage, buildMessageMeta } from '../utils/messageHelpers'
 
 export function useSessionStore() {
   const sessions = ref({})
@@ -53,10 +53,14 @@ export function useSessionStore() {
     return title || 'New session'
   }
 
-  const mapHistoryItemToMessage = (item) => ({
+  const mapHistoryItemToMessage = (item) => buildChatMessage({
     role: item.is_user ? 'user' : 'assistant',
     content: item.content || '',
-    meta: buildMessageMeta(item.status)
+    reasoningContent: item.reasoning_content || '',
+    meta: buildMessageMeta(item.status, {
+      responseMeta: item.response_meta || null,
+      extra: item.extra || null
+    })
   })
 
   const scrollToBottom = () => {

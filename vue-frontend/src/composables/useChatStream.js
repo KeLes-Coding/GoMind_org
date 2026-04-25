@@ -5,6 +5,7 @@ import { ensureAccessToken } from '../utils/token'
 import {
   OWNER_MISMATCH_CODE,
   MAX_OWNER_MISMATCH_RETRIES,
+  buildChatMessage,
   normalizeMessageStatus,
   buildMessageMeta,
   delay,
@@ -115,11 +116,22 @@ export function useChatStream({
     await syncSessionMessagesFromCurrent()
   }
 
-  const applyAssistantSnapshot = async (content, lastSeq) => {
+  const appendAssistantReasoning = async (chunk) => {
+    if (!chunk || activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
+      return
+    }
+    currentMessages.value[activeAssistantIndex.value].reasoningContent =
+      (currentMessages.value[activeAssistantIndex.value].reasoningContent || '') + chunk
+    currentMessages.value = [...currentMessages.value]
+    await syncSessionMessagesFromCurrent()
+  }
+
+  const applyAssistantSnapshot = async (content, lastSeq, reasoningContent = '', responseMeta = null, extra = null) => {
     if (activeAssistantIndex.value < 0 || !currentMessages.value[activeAssistantIndex.value]) {
       return
     }
     currentMessages.value[activeAssistantIndex.value].content = content || ''
+    currentMessages.value[activeAssistantIndex.value].reasoningContent = reasoningContent || ''
     activeStreamLastSeq.value = Number(lastSeq || 0)
     const prevMeta = currentMessages.value[activeAssistantIndex.value].meta || {}
     currentMessages.value[activeAssistantIndex.value].meta = {
@@ -127,6 +139,8 @@ export function useChatStream({
       streamId: prevMeta.streamId || activeStreamId.value,
       messageId: prevMeta.messageId || activeMessageId.value,
       lastSeq: activeStreamLastSeq.value,
+      responseMeta: responseMeta || prevMeta.responseMeta || null,
+      extra: extra || prevMeta.extra || null,
       status: normalizeMessageStatus(prevMeta.status || 'streaming')
     }
     currentMessages.value = [...currentMessages.value]
@@ -166,6 +180,15 @@ export function useChatStream({
 
     if (parsed.type === 'chunk') {
       await appendAssistantChunk(parsed.delta || '', parsed.seq)
+      if (parsed.reasoningDelta) {
+        await appendAssistantReasoning(parsed.reasoningDelta)
+      }
+      if (parsed.responseMeta || parsed.extra) {
+        await patchActiveAssistantMeta({
+          responseMeta: parsed.responseMeta || null,
+          extra: parsed.extra || null
+        })
+      }
       return
     }
 
@@ -176,7 +199,13 @@ export function useChatStream({
       if (parsed.messageId) {
         activeMessageId.value = String(parsed.messageId)
       }
-      await applyAssistantSnapshot(parsed.content || '', parsed.lastSeq || 0)
+      await applyAssistantSnapshot(
+        parsed.content || '',
+        parsed.lastSeq || 0,
+        parsed.reasoningContent || '',
+        parsed.responseMeta || null,
+        parsed.extra || null
+      )
       return
     }
 
@@ -295,11 +324,11 @@ export function useChatStream({
     }
 
     const currentInput = inputMessage.value.trim()
-    const userMessage = {
+    const userMessage = buildChatMessage({
       role: 'user',
       content: currentInput,
       meta: buildMessageMeta('completed')
-    }
+    })
     inputMessage.value = ''
 
     currentMessages.value.push(userMessage)
@@ -330,15 +359,16 @@ export function useChatStream({
   }
 
   async function handleStreaming(question) {
-    const aiMessage = {
+    const aiMessage = buildChatMessage({
       role: 'assistant',
       content: '',
+      reasoningContent: '',
       meta: buildMessageMeta('streaming', {
         streamId: null,
         messageId: null,
         lastSeq: 0
       })
-    }
+    })
 
     activeAssistantIndex.value = currentMessages.value.length
     currentMessages.value.push(aiMessage)
@@ -514,16 +544,16 @@ export function useChatStream({
       })
       if (response.data && response.data.status_code === 1000) {
         const sessionId = String(response.data.sessionId)
-        const aiMessage = {
+        const aiMessage = buildChatMessage({
           role: 'assistant',
           content: response.data.Information || '',
           meta: buildMessageMeta('completed')
-        }
+        })
 
         upsertSessionEntry({
           id: sessionId,
           name: buildSessionTitle(question),
-          messages: [{ role: 'user', content: question, meta: buildMessageMeta('completed') }, aiMessage]
+          messages: [buildChatMessage({ role: 'user', content: question, meta: buildMessageMeta('completed') }), aiMessage]
         })
         currentSessionId.value = sessionId
         tempSession.value = false
@@ -533,7 +563,7 @@ export function useChatStream({
     } else {
       const targetSession = ensureSessionEntry(currentSessionId.value)
       const sessionMsgs = targetSession ? (targetSession.messages || []) : []
-      sessionMsgs.push({ role: 'user', content: question, meta: buildMessageMeta('completed') })
+      sessionMsgs.push(buildChatMessage({ role: 'user', content: question, meta: buildMessageMeta('completed') }))
       if (targetSession) {
         targetSession.messages = sessionMsgs
       }
@@ -550,11 +580,11 @@ export function useChatStream({
         }
       })
       if (response.data && response.data.status_code === 1000) {
-        sessionMsgs.push({
+        sessionMsgs.push(buildChatMessage({
           role: 'assistant',
           content: response.data.Information || '',
           meta: buildMessageMeta('completed')
-        })
+        }))
         currentMessages.value = [...sessionMsgs]
       }
     }

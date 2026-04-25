@@ -25,15 +25,15 @@ func (f *fakeChatProvider) Generate(ctx context.Context, messages []*schema.Mess
 	return f.generateResp, nil
 }
 
-func (f *fakeChatProvider) Stream(ctx context.Context, messages []*schema.Message, cb StreamCallback) (string, error) {
+func (f *fakeChatProvider) Stream(ctx context.Context, messages []*schema.Message, cb StreamCallback) (*schema.Message, error) {
 	f.streamInvoked = true
 	if f.streamErr != nil {
-		return "", f.streamErr
+		return nil, f.streamErr
 	}
 	if cb != nil && f.streamResp != "" {
-		cb(f.streamResp)
+		cb(&schema.Message{Role: schema.Assistant, Content: f.streamResp})
 	}
-	return f.streamResp, nil
+	return &schema.Message{Role: schema.Assistant, Content: f.streamResp}, nil
 }
 
 func (f *fakeChatProvider) GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error) {
@@ -57,14 +57,14 @@ func TestMCPChatCapabilityStreamResponseFallsBackToProviderStreamWhenManagerDisa
 	var chunks []string
 	got, err := capability.StreamResponse(context.Background(), provider, []*schema.Message{
 		{Role: schema.User, Content: "你好"},
-	}, func(msg string) {
-		chunks = append(chunks, msg)
+	}, func(msg *schema.Message) {
+		chunks = append(chunks, msg.Content)
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if got != "普通回答" {
-		t.Fatalf("expected fallback content, got %q", got)
+	if got == nil || got.Content != "普通回答" {
+		t.Fatalf("expected fallback content, got %#v", got)
 	}
 	if len(chunks) != 1 || chunks[0] != "普通回答" {
 		t.Fatalf("expected callback to receive fallback content, got %#v", chunks)
@@ -97,7 +97,7 @@ func TestRenderToolListIncludesQualifiedNameAndAlias(t *testing.T) {
 func TestEmitStreamFallbackIgnoresEmptyContent(t *testing.T) {
 	capability := &MCPChatCapability{}
 	called := false
-	capability.emitStreamFallback("", func(msg string) {
+	capability.emitStreamFallback("", func(msg *schema.Message) {
 		called = true
 	})
 	if called {

@@ -16,8 +16,8 @@ func (stubAIModel) GenerateResponse(ctx context.Context, messages []*schema.Mess
 	return &schema.Message{}, nil
 }
 
-func (stubAIModel) StreamResponse(ctx context.Context, messages []*schema.Message, cb StreamCallback) (string, error) {
-	return "", nil
+func (stubAIModel) StreamResponse(ctx context.Context, messages []*schema.Message, cb StreamCallback) (*schema.Message, error) {
+	return &schema.Message{}, nil
 }
 
 func (stubAIModel) GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error) {

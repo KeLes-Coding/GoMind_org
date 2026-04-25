@@ -18,7 +18,7 @@ import (
 // 它不参与 RAG 检索和 MCP 工具编排，只负责真正的模型请求。
 type ChatProvider interface {
 	Generate(ctx context.Context, messages []*schema.Message) (*schema.Message, error)
-	Stream(ctx context.Context, messages []*schema.Message, cb StreamCallback) (string, error)
+	Stream(ctx context.Context, messages []*schema.Message, cb StreamCallback) (*schema.Message, error)
 	GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error)
 	GetModelType() string
 	GetProviderName() string
@@ -86,29 +86,56 @@ func (p *BaseChatProvider) Generate(ctx context.Context, messages []*schema.Mess
 }
 
 // Stream 负责把底层流式响应聚合成完整文本，同时逐段回调给上层。
-func (p *BaseChatProvider) Stream(ctx context.Context, messages []*schema.Message, cb StreamCallback) (string, error) {
+func (p *BaseChatProvider) Stream(ctx context.Context, messages []*schema.Message, cb StreamCallback) (*schema.Message, error) {
 	stream, err := p.llm.Stream(ctx, messages)
 	if err != nil {
-		return "", fmt.Errorf("%s stream failed: %v", p.providerName, err)
+		return nil, fmt.Errorf("%s stream failed: %v", p.providerName, err)
 	}
 	defer stream.Close()
 
 	var fullResp strings.Builder
+	var fullReasoning strings.Builder
+	var responseMeta *schema.ResponseMeta
+	extra := make(map[string]any)
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return "", fmt.Errorf("%s stream recv failed: %v", p.providerName, err)
+			return nil, fmt.Errorf("%s stream recv failed: %v", p.providerName, err)
 		}
-		if len(msg.Content) > 0 {
+		if msg == nil {
+			continue
+		}
+		if msg.Content != "" {
 			fullResp.WriteString(msg.Content)
-			cb(msg.Content)
+		}
+		if msg.ReasoningContent != "" {
+			fullReasoning.WriteString(msg.ReasoningContent)
+		}
+		if msg.ResponseMeta != nil {
+			responseMeta = msg.ResponseMeta
+		}
+		for key, value := range msg.Extra {
+			extra[key] = value
+		}
+		if cb != nil {
+			cb(msg)
 		}
 	}
 
-	return fullResp.String(), nil
+	finalExtra := extra
+	if len(finalExtra) == 0 {
+		finalExtra = nil
+	}
+	return &schema.Message{
+		Role:             schema.Assistant,
+		Content:          fullResp.String(),
+		ReasoningContent: fullReasoning.String(),
+		ResponseMeta:     responseMeta,
+		Extra:            finalExtra,
+	}, nil
 }
 
 // GenerateSummary 始终只走底层 Provider。

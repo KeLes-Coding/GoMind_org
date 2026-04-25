@@ -10,6 +10,7 @@ import (
 	sessionDAO "GopherAI/dao/session"
 	"GopherAI/model"
 	notifyservice "GopherAI/service/notify"
+	"GopherAI/utils"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -751,9 +753,12 @@ func StreamMessageToExistingSession(ctx context.Context, userName string, sessio
 			return codeExecutorResult{code: code_}
 		}
 
-		cb := func(msg string) {
+		cb := func(msg *schema.Message) {
+			if msg == nil || msg.Content == "" {
+				return
+			}
 			// SSE 需要按 data: <chunk> 后跟两个换行的格式持续写出，并在每次写后 flush。
-			_, err := writer.Write([]byte("data: " + msg + "\n\n"))
+			_, err := writer.Write([]byte("data: " + msg.Content + "\n\n"))
 			if err != nil {
 				log.Println("StreamMessageToExistingSession Write error:", err)
 				return
@@ -912,9 +917,12 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 	for _, msg := range messages {
 		// 保留 IsUser 字段，供前端区分用户消息与模型消息。
 		history = append(history, model.History{
-			IsUser:  msg.IsUser,
-			Content: msg.Content,
-			Status:  msg.Status,
+			IsUser:           msg.IsUser,
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			ResponseMeta:     utils.ParseJSONStringToMap(msg.ResponseMeta),
+			Extra:            utils.ParseJSONStringToMap(msg.Extra),
+			Status:           msg.Status,
 		})
 	}
 

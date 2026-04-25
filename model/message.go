@@ -39,6 +39,12 @@ type Message struct {
 	UserName string `gorm:"type:varchar(20)" json:"username"`
 	// Content 是消息正文。
 	Content string `gorm:"type:text" json:"content"`
+	// ReasoningContent 保留模型显式返回的推理链文本，便于前端折叠展示和排障。
+	ReasoningContent string `gorm:"type:longtext" json:"reasoning_content,omitempty"`
+	// ResponseMeta 保存底层模型 SDK 返回的结构化元信息 JSON。
+	ResponseMeta string `gorm:"type:longtext" json:"response_meta,omitempty"`
+	// Extra 保存模型实现透传的扩展字段 JSON。
+	Extra string `gorm:"type:longtext" json:"extra,omitempty"`
 	// IsUser 标识该消息是否由用户发送。
 	IsUser bool `gorm:"index:idx_messages_session_order,priority:3;not null" json:"is_user"`
 	// Status 描述该消息在当前系统中的最终状态。
@@ -51,7 +57,10 @@ type Message struct {
 type History struct {
 	// History 直接面向前端会话历史接口，因此除了内容本身，还要把状态带出去，
 	// 这样前端才能区分 completed / cancelled / timeout / failed，而不是一律当普通 assistant 消息展示。
-	IsUser  bool          `json:"is_user"`
-	Content string        `json:"content"`
-	Status  MessageStatus `json:"status"`
+	IsUser           bool           `json:"is_user"`
+	Content          string         `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	ResponseMeta     map[string]any `json:"response_meta,omitempty"`
+	Extra            map[string]any `json:"extra,omitempty"`
+	Status           MessageStatus  `json:"status"`
 }

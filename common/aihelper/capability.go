@@ -24,7 +24,7 @@ func (c *PlainChatCapability) GenerateResponse(ctx context.Context, provider Cha
 }
 
 // StreamResponse 普通聊天模式下的流式行为同样直接透传。
-func (c *PlainChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (string, error) {
+func (c *PlainChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (*schema.Message, error) {
 	return provider.Stream(ctx, messages, cb)
 }
 
@@ -52,7 +52,7 @@ func (c *RAGChatCapability) GenerateResponse(ctx context.Context, provider ChatP
 }
 
 // StreamResponse 与同步模式保持同一套检索增强和回退口径。
-func (c *RAGChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (string, error) {
+func (c *RAGChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (*schema.Message, error) {
 	ragMessages, err := c.buildRAGMessages(ctx, messages)
 	if err != nil {
 		return provider.Stream(ctx, messages, cb)
@@ -172,9 +172,9 @@ func (c *MCPChatCapability) GenerateResponse(ctx context.Context, provider ChatP
 }
 
 // StreamResponse 的首轮工具决策仍走同步调用，只有最终回答阶段走流式输出。
-func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (string, error) {
+func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (*schema.Message, error) {
 	if len(messages) == 0 {
-		return "", fmt.Errorf("no messages provided")
+		return nil, fmt.Errorf("no messages provided")
 	}
 	if c.mcpManager == nil || !c.mcpManager.IsEnabled() {
 		return provider.Stream(ctx, messages, cb)
@@ -192,7 +192,7 @@ func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatPro
 	firstMessages := c.buildPromptMessages(messages, c.buildFirstPrompt(query, tools))
 	firstResp, err := provider.Generate(ctx, firstMessages)
 	if err != nil {
-		return "", fmt.Errorf("mcp first generate failed: %v", err)
+		return nil, fmt.Errorf("mcp first generate failed: %v", err)
 	}
 
 	toolCall, err := c.parseAIResponse(firstResp.Content)
@@ -201,14 +201,14 @@ func (c *MCPChatCapability) StreamResponse(ctx context.Context, provider ChatPro
 			log.Printf("Failed to parse AI response: %v", err)
 		}
 		c.emitStreamFallback(firstResp.Content, cb)
-		return firstResp.Content, nil
+		return firstResp, nil
 	}
 
 	toolResult, err := c.callMCPTool(ctx, toolCall.ToolName, toolCall.Args)
 	if err != nil {
 		applog.Categoryf(applog.CategoryMCP, "MCP tool call failed user=%s tool=%s args=%v err=%v", c.username, toolCall.ToolName, toolCall.Args, err)
 		c.emitStreamFallback(firstResp.Content, cb)
-		return firstResp.Content, nil
+		return firstResp, nil
 	}
 
 	secondMessages := c.buildPromptMessages(messages, c.buildSecondPrompt(query, toolCall.ToolName, toolCall.Args, toolResult))
@@ -228,7 +228,7 @@ func (c *RAGMCPChatCapability) GenerateResponse(ctx context.Context, provider Ch
 }
 
 // StreamResponse 与同步模式保持一致：优先做 RAG 增强，失败时降级为纯 MCP。
-func (c *RAGMCPChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (string, error) {
+func (c *RAGMCPChatCapability) StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (*schema.Message, error) {
 	ragMessages, err := c.rag.buildRAGMessages(ctx, messages)
 	if err != nil {
 		return c.mcp.StreamResponse(ctx, provider, messages, cb)
@@ -352,7 +352,10 @@ func (c *MCPChatCapability) emitStreamFallback(content string, cb StreamCallback
 	if cb == nil || content == "" {
 		return
 	}
-	cb(content)
+	cb(&schema.Message{
+		Role:    schema.Assistant,
+		Content: content,
+	})
 }
 
 func (c *MCPChatCapability) renderToolList(tools []mcpgateway.ToolDefinition) string {

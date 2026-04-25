@@ -101,7 +101,7 @@ func (a *AIHelper) appendMessage(message *model.Message, save bool) *model.Messa
 // 之所以新增这个方法，而不是继续只保留 AddMessage，是因为 stop / timeout / partial
 // 这类中断场景需要把“消息内容”和“消息最终状态”一起落到持久化层。
 func (a *AIHelper) AddMessageWithStatus(Content string, UserName string, IsUser bool, Save bool, status model.MessageStatus) *model.Message {
-	userMsg := model.Message{
+	return a.AddStructuredMessageWithStatus(&model.Message{
 		MessageKey: utils.GenerateUUID(),
 		SessionID:  a.SessionID,
 		// 当前一轮对话里的消息都归属到“下一次正式会话推进版本”。
@@ -111,9 +111,22 @@ func (a *AIHelper) AddMessageWithStatus(Content string, UserName string, IsUser 
 		UserName:       UserName,
 		IsUser:         IsUser,
 		Status:         status,
-	}
+	}, Save, status)
+}
 
-	return a.appendMessage(&userMsg, Save)
+func (a *AIHelper) AddStructuredMessageWithStatus(message *model.Message, save bool, status model.MessageStatus) *model.Message {
+	if message == nil {
+		return nil
+	}
+	if message.MessageKey == "" {
+		message.MessageKey = utils.GenerateUUID()
+	}
+	message.SessionID = a.SessionID
+	if message.SessionVersion <= 0 {
+		message.SessionVersion = a.GetVersion() + 1
+	}
+	message.Status = status
+	return a.appendMessage(message, save)
 }
 
 // AppendExistingMessage 把一个已经存在固定 message_key 的消息补回 helper。
@@ -136,15 +149,18 @@ func (a *AIHelper) LoadHotState(state *model.SessionHotState) {
 	for i := range state.RecentMessages {
 		msg := state.RecentMessages[i]
 		modelMsg := &model.Message{
-			ID:             msg.ID,
-			MessageKey:     msg.MessageKey,
-			SessionID:      msg.SessionID,
-			SessionVersion: msg.SessionVersion,
-			UserName:       msg.UserName,
-			Content:        msg.Content,
-			IsUser:         msg.IsUser,
-			Status:         model.MessageStatus(msg.Status),
-			CreatedAt:      msg.CreatedAt,
+			ID:               msg.ID,
+			MessageKey:       msg.MessageKey,
+			SessionID:        msg.SessionID,
+			SessionVersion:   msg.SessionVersion,
+			UserName:         msg.UserName,
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			ResponseMeta:     utils.MustMarshalJSONString(msg.ResponseMeta),
+			Extra:            utils.MustMarshalJSONString(msg.Extra),
+			IsUser:           msg.IsUser,
+			Status:           model.MessageStatus(msg.Status),
+			CreatedAt:        msg.CreatedAt,
 		}
 		a.messages = append(a.messages, modelMsg)
 	}
@@ -176,15 +192,18 @@ func (a *AIHelper) ExportHotState() *model.SessionHotState {
 	recentMessages := make([]model.SessionHotMessage, 0, len(a.messages[start:]))
 	for _, msg := range a.messages[start:] {
 		recentMessages = append(recentMessages, model.SessionHotMessage{
-			ID:             msg.ID,
-			MessageKey:     msg.MessageKey,
-			SessionID:      msg.SessionID,
-			SessionVersion: msg.SessionVersion,
-			UserName:       msg.UserName,
-			Content:        msg.Content,
-			IsUser:         msg.IsUser,
-			Status:         string(msg.Status),
-			CreatedAt:      msg.CreatedAt,
+			ID:               msg.ID,
+			MessageKey:       msg.MessageKey,
+			SessionID:        msg.SessionID,
+			SessionVersion:   msg.SessionVersion,
+			UserName:         msg.UserName,
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			ResponseMeta:     utils.ParseJSONStringToMap(msg.ResponseMeta),
+			Extra:            utils.ParseJSONStringToMap(msg.Extra),
+			IsUser:           msg.IsUser,
+			Status:           string(msg.Status),
+			CreatedAt:        msg.CreatedAt,
 		})
 	}
 
@@ -539,51 +558,51 @@ func (a *AIHelper) streamWithRetryAndFallback(
 	messages []*schema.Message,
 	usedSummary bool,
 	allowRetry func() bool,
-	invoke func(model AIModel) (string, error),
-) (string, error) {
+	invoke func(model AIModel) (*schema.Message, error),
+) (*schema.Message, error) {
 	callStart := time.Now()
-	content, err := invoke(a.model)
+	resp, err := invoke(a.model)
 	observability.RecordModelCall(operation, a.model.GetModelType(), err == nil, time.Since(callStart), len(messages), usedSummary)
 	if err == nil {
-		return content, nil
+		return resp, nil
 	}
 	log.Printf("AIHelper %s primary stream failed: session=%s model=%s err=%v", operation, a.SessionID, a.model.GetModelType(), err)
 
 	if ctx.Err() != nil {
-		return "", err
+		return nil, err
 	}
 
 	// 流式场景下，一旦已经向客户端输出了部分 token，就不能再重试或切模型，
 	// 否则前端会看到重复内容或语义断裂。
 	if allowRetry != nil && !allowRetry() {
-		return "", err
+		return nil, err
 	}
 
 	observability.RecordModelRetry()
 	log.Printf("AIHelper %s retrying primary stream model: session=%s model=%s", operation, a.SessionID, a.model.GetModelType())
 	retryStart := time.Now()
-	content, retryErr := invoke(a.model)
+	resp, retryErr := invoke(a.model)
 	observability.RecordModelCall(operation+"_retry", a.model.GetModelType(), retryErr == nil, time.Since(retryStart), len(messages), usedSummary)
 	if retryErr == nil {
-		return content, nil
+		return resp, nil
 	}
 	log.Printf("AIHelper %s retry stream failed: session=%s model=%s err=%v", operation, a.SessionID, a.model.GetModelType(), retryErr)
 
 	if a.fallbackModel == nil || ctx.Err() != nil {
-		return "", retryErr
+		return nil, retryErr
 	}
 
 	observability.RecordModelFallback()
 	log.Printf("AIHelper %s falling back stream: session=%s from=%s to=%s", operation, a.SessionID, a.model.GetModelType(), a.fallbackModel.GetModelType())
 	fallbackStart := time.Now()
-	content, fallbackErr := invoke(a.fallbackModel)
+	resp, fallbackErr := invoke(a.fallbackModel)
 	observability.RecordModelCall(operation+"_fallback", a.fallbackModel.GetModelType(), fallbackErr == nil, time.Since(fallbackStart), len(messages), usedSummary)
 	if fallbackErr == nil {
-		return content, nil
+		return resp, nil
 	}
 	log.Printf("AIHelper %s fallback stream failed: session=%s model=%s err=%v", operation, a.SessionID, a.fallbackModel.GetModelType(), fallbackErr)
 
-	return "", fallbackErr
+	return nil, fallbackErr
 }
 
 // GenerateResponseForPreparedUserMessage 在“用户消息已经提前进入上下文”后执行同步模型调用。
@@ -611,6 +630,7 @@ func (a *AIHelper) GenerateResponseForPreparedUserMessage(userName string, ctx c
 	defer releasePermit()
 
 	log.Printf("AIHelper GenerateResponseForPreparedUserMessage invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
+	log.Printf("AIHelper GenerateResponseForPreparedUserMessage request payload: session=%s model=%s messages_json=%s", a.SessionID, a.model.GetModelType(), utils.MustMarshalJSONString(messages))
 	schemaMsg, err := a.generateWithRetryAndFallback(ctx, "generate", messages, usedSummary, func(model AIModel) (*schema.Message, error) {
 		return model.GenerateResponse(ctx, messages)
 	})
@@ -619,11 +639,13 @@ func (a *AIHelper) GenerateResponseForPreparedUserMessage(userName string, ctx c
 		return nil, err
 	}
 	log.Printf("AIHelper GenerateResponseForPreparedUserMessage model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(schemaMsg.Content))
+	log.Printf("AIHelper GenerateResponseForPreparedUserMessage response payload: session=%s model=%s message_json=%s", a.SessionID, a.model.GetModelType(), utils.MustMarshalJSONString(schemaMsg))
 
 	modelMsg := utils.ConvertToModelMessage(a.SessionID, userName, schemaMsg)
 	// 第四阶段开始，聊天核心消息由 service 层同步写 MySQL。
 	// 因此这里先只把 assistant 消息加入内存上下文，不再直接触发 outbox/MQ 主链路。
-	return a.AddMessageWithStatus(modelMsg.Content, userName, false, false, model.MessageStatusCompleted), nil
+	modelMsg.IsUser = false
+	return a.AddStructuredMessageWithStatus(modelMsg, false, model.MessageStatusCompleted), nil
 }
 
 // StreamResponseForPreparedUserMessage 在“用户消息已经提前进入上下文”后执行流式模型调用。
@@ -650,11 +672,17 @@ func (a *AIHelper) StreamResponseForPreparedUserMessage(userName string, ctx con
 
 	emitted := false
 	log.Printf("AIHelper StreamResponseForPreparedUserMessage invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
-	content, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
+	log.Printf("AIHelper StreamResponseForPreparedUserMessage request payload: session=%s model=%s messages_json=%s", a.SessionID, a.model.GetModelType(), utils.MustMarshalJSONString(messages))
+	schemaMsg, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
 		return !emitted
-	}, func(model AIModel) (string, error) {
-		return model.StreamResponse(ctx, messages, func(msg string) {
-			emitted = true
+	}, func(model AIModel) (*schema.Message, error) {
+		return model.StreamResponse(ctx, messages, func(msg *schema.Message) {
+			if msg == nil {
+				return
+			}
+			if msg.Content != "" || msg.ReasoningContent != "" {
+				emitted = true
+			}
 			cb(msg)
 		})
 	})
@@ -662,18 +690,14 @@ func (a *AIHelper) StreamResponseForPreparedUserMessage(userName string, ctx con
 		log.Printf("AIHelper StreamResponseForPreparedUserMessage model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
-	log.Printf("AIHelper StreamResponseForPreparedUserMessage model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(content))
-
-	modelMsg := &model.Message{
-		SessionID: a.SessionID,
-		UserName:  userName,
-		Content:   content,
-		IsUser:    false,
-	}
+	log.Printf("AIHelper StreamResponseForPreparedUserMessage model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(schemaMsg.Content))
+	log.Printf("AIHelper StreamResponseForPreparedUserMessage response payload: session=%s model=%s message_json=%s", a.SessionID, a.model.GetModelType(), utils.MustMarshalJSONString(schemaMsg))
 
 	// 第四阶段开始，流式主消息的正式持久化改由 service 层同步写 MySQL。
 	// 这里先只维护 helper 内存上下文，不再直接触发 outbox/MQ 主链路。
-	return a.AddMessageWithStatus(modelMsg.Content, userName, false, false, model.MessageStatusCompleted), nil
+	modelMsg := utils.ConvertToModelMessage(a.SessionID, userName, schemaMsg)
+	modelMsg.IsUser = false
+	return a.AddStructuredMessageWithStatus(modelMsg, false, model.MessageStatusCompleted), nil
 }
 
 // StreamResponseWithExistingAssistantForPreparedUserMessage 在“用户消息已经提前进入上下文”后执行流式模型调用，
@@ -700,11 +724,17 @@ func (a *AIHelper) StreamResponseWithExistingAssistantForPreparedUserMessage(use
 
 	emitted := false
 	log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage invoking model: session=%s model=%s", a.SessionID, a.model.GetModelType())
-	content, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
+	log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage request payload: session=%s model=%s messages_json=%s", a.SessionID, a.model.GetModelType(), utils.MustMarshalJSONString(messages))
+	schemaMsg, err := a.streamWithRetryAndFallback(ctx, "stream", messages, usedSummary, func() bool {
 		return !emitted
-	}, func(model AIModel) (string, error) {
-		return model.StreamResponse(ctx, messages, func(msg string) {
-			emitted = true
+	}, func(model AIModel) (*schema.Message, error) {
+		return model.StreamResponse(ctx, messages, func(msg *schema.Message) {
+			if msg == nil {
+				return
+			}
+			if msg.Content != "" || msg.ReasoningContent != "" {
+				emitted = true
+			}
 			cb(msg)
 		})
 	})
@@ -712,16 +742,20 @@ func (a *AIHelper) StreamResponseWithExistingAssistantForPreparedUserMessage(use
 		log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage model failed: session=%s model=%s err=%v", a.SessionID, a.model.GetModelType(), err)
 		return nil, err
 	}
-	log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(content))
+	log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage model success: session=%s model=%s response_chars=%d", a.SessionID, a.model.GetModelType(), len(schemaMsg.Content))
+	log.Printf("AIHelper StreamResponseWithExistingAssistantForPreparedUserMessage response payload: session=%s model=%s message_json=%s", a.SessionID, a.model.GetModelType(), utils.MustMarshalJSONString(schemaMsg))
 
 	finalAssistant := &model.Message{
-		MessageKey:     assistantMessage.MessageKey,
-		SessionID:      a.SessionID,
-		SessionVersion: assistantMessage.SessionVersion,
-		UserName:       userName,
-		Content:        content,
-		IsUser:         false,
-		Status:         model.MessageStatusCompleted,
+		MessageKey:       assistantMessage.MessageKey,
+		SessionID:        a.SessionID,
+		SessionVersion:   assistantMessage.SessionVersion,
+		UserName:         userName,
+		Content:          schemaMsg.Content,
+		ReasoningContent: schemaMsg.ReasoningContent,
+		ResponseMeta:     utils.MustMarshalJSONString(schemaMsg.ResponseMeta),
+		Extra:            utils.MustMarshalJSONString(schemaMsg.Extra),
+		IsUser:           false,
+		Status:           model.MessageStatusCompleted,
 	}
 
 	a.AppendExistingMessage(finalAssistant)

@@ -21,6 +21,24 @@ export const buildMessageMeta = (status, extra = {}) => ({
   ...extra
 })
 
+export const buildChatMessage = (overrides = {}) => {
+  const base = {
+    role: 'assistant',
+    content: '',
+    reasoningContent: '',
+    imageUrl: ''
+  }
+
+  return {
+    ...base,
+    ...overrides,
+    meta: {
+      ...buildMessageMeta(overrides?.meta?.status || overrides?.status || 'completed'),
+      ...(overrides?.meta || {})
+    }
+  }
+}
+
 export const getMessageStatusLabel = (status) => {
   switch (normalizeMessageStatus(status)) {
     case 'streaming':
@@ -42,6 +60,10 @@ export const getMessageMetaStatus = (message) => {
   if (!message || !message.meta) return ''
   return message.meta.status || ''
 }
+
+export const getMessageReasoning = (message) => String(message?.reasoningContent || '')
+
+export const getMessageRawMarkdown = (message) => String(message?.content || '')
 
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'

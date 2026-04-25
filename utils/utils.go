@@ -4,6 +4,7 @@ import (
 	"GopherAI/model"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"mime/multipart"
@@ -56,10 +57,20 @@ func GenerateUUID() string {
 
 // ConvertToModelMessage 把 schema.Message 转成数据库可存储的消息结构。
 func ConvertToModelMessage(sessionID string, userName string, msg *schema.Message) *model.Message {
+	if msg == nil {
+		return &model.Message{
+			SessionID: sessionID,
+			UserName:  userName,
+		}
+	}
+
 	return &model.Message{
-		SessionID: sessionID,
-		UserName:  userName,
-		Content:   msg.Content,
+		SessionID:        sessionID,
+		UserName:         userName,
+		Content:          msg.Content,
+		ReasoningContent: msg.ReasoningContent,
+		ResponseMeta:     MustMarshalJSONString(msg.ResponseMeta),
+		Extra:            MustMarshalJSONString(msg.Extra),
 	}
 }
 
@@ -72,11 +83,53 @@ func ConvertToSchemaMessages(msgs []*model.Message) []*schema.Message {
 			role = schema.User
 		}
 		schemaMsgs = append(schemaMsgs, &schema.Message{
-			Role:    role,
-			Content: m.Content,
+			Role:             role,
+			Content:          m.Content,
+			ReasoningContent: m.ReasoningContent,
+			ResponseMeta:     ParseJSONStringToResponseMeta(m.ResponseMeta),
+			Extra:            ParseJSONStringToMap(m.Extra),
 		})
 	}
 	return schemaMsgs
+}
+
+func MustMarshalJSONString(v any) string {
+	if v == nil {
+		return ""
+	}
+
+	payload, err := json.Marshal(v)
+	if err != nil || string(payload) == "null" || string(payload) == "{}" {
+		return ""
+	}
+	return string(payload)
+}
+
+func ParseJSONStringToMap(raw string) map[string]any {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func ParseJSONStringToResponseMeta(raw string) *schema.ResponseMeta {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+
+	var out schema.ResponseMeta
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	if out.FinishReason == "" && out.Usage == nil && out.LogProbs == nil {
+		return nil
+	}
+	return &out
 }
 
 // RemoveAllFilesInDir 删除目录中的所有文件，但保留子目录。

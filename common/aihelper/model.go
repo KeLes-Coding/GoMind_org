@@ -8,14 +8,14 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-type StreamCallback func(msg string)
+type StreamCallback func(msg *schema.Message)
 
 // AIModel 定义 AIHelper 面向上层暴露的统一模型接口。
 // 第一阶段收口后，这个接口的实现不再直接区分 RAG / MCP / 普通聊天，
 // 而是统一由“底层 Provider + 上层 Capability”组合生成。
 type AIModel interface {
 	GenerateResponse(ctx context.Context, messages []*schema.Message) (*schema.Message, error)
-	StreamResponse(ctx context.Context, messages []*schema.Message, cb StreamCallback) (string, error)
+	StreamResponse(ctx context.Context, messages []*schema.Message, cb StreamCallback) (*schema.Message, error)
 	GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error)
 	GetModelType() string
 }
@@ -24,7 +24,7 @@ type AIModel interface {
 // 它只关心“是否做 RAG / MCP 增强”，不关心底层 SDK 怎么调用。
 type ChatCapability interface {
 	GenerateResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message) (*schema.Message, error)
-	StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (string, error)
+	StreamResponse(ctx context.Context, provider ChatProvider, messages []*schema.Message, cb StreamCallback) (*schema.Message, error)
 	GetChatMode() string
 }
 
@@ -45,7 +45,7 @@ func (m *CapabilityModel) GenerateResponse(ctx context.Context, messages []*sche
 	return m.capability.GenerateResponse(ctx, m.provider, messages)
 }
 
-func (m *CapabilityModel) StreamResponse(ctx context.Context, messages []*schema.Message, cb StreamCallback) (string, error) {
+func (m *CapabilityModel) StreamResponse(ctx context.Context, messages []*schema.Message, cb StreamCallback) (*schema.Message, error) {
 	return m.capability.StreamResponse(ctx, m.provider, messages, cb)
 }
 

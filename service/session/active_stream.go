@@ -5,10 +5,13 @@ import (
 	"GopherAI/common/observability"
 	myredis "GopherAI/common/redis"
 	"GopherAI/model"
+	"GopherAI/utils"
 	"context"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/cloudwego/eino/schema"
 )
 
 const (
@@ -52,20 +55,23 @@ type activeStreamTask struct {
 	messageID string
 	cancel    context.CancelFunc
 
-	mu             sync.RWMutex
-	status         model.StreamRuntimeStatus
-	messageStatus  model.MessageStatus
-	cancelStatus   model.MessageStatus
-	content        string
-	nextSeq        int64
-	sessionVersion int64
-	ownerID        string
-	fenceToken     int64
-	chunks         []model.StreamChunkSnapshot
-	bufferBytes    int
-	subscribers    map[string]chan activeStreamEvent
-	resumeDeadline *time.Time
-	commitErr      error
+	mu               sync.RWMutex
+	status           model.StreamRuntimeStatus
+	messageStatus    model.MessageStatus
+	cancelStatus     model.MessageStatus
+	content          string
+	reasoningContent string
+	responseMeta     map[string]any
+	extra            map[string]any
+	nextSeq          int64
+	sessionVersion   int64
+	ownerID          string
+	fenceToken       int64
+	chunks           []model.StreamChunkSnapshot
+	bufferBytes      int
+	subscribers      map[string]chan activeStreamEvent
+	resumeDeadline   *time.Time
+	commitErr        error
 }
 
 func newActiveStreamTask(userName string, sessionID string, streamID string, messageID string, cancel context.CancelFunc) *activeStreamTask {
@@ -105,13 +111,16 @@ func (t *activeStreamTask) exportSnapshot() *model.StreamSnapshot {
 	defer t.mu.RUnlock()
 
 	return &model.StreamSnapshot{
-		StreamID:   t.streamID,
-		SessionID:  t.sessionID,
-		MessageID:  t.messageID,
-		Content:    t.content,
-		LastSeq:    t.nextSeq - 1,
-		UpdatedAt:  time.Now(),
-		StatusHint: string(t.status),
+		StreamID:         t.streamID,
+		SessionID:        t.sessionID,
+		MessageID:        t.messageID,
+		Content:          t.content,
+		ReasoningContent: t.reasoningContent,
+		ResponseMeta:     cloneJSONMap(t.responseMeta),
+		Extra:            cloneJSONMap(t.extra),
+		LastSeq:          t.nextSeq - 1,
+		UpdatedAt:        time.Now(),
+		StatusHint:       string(t.status),
 	}
 }
 
@@ -222,31 +231,52 @@ func (t *activeStreamTask) buildAssistantMessage(status model.MessageStatus) *mo
 	defer t.mu.RUnlock()
 
 	return &model.Message{
-		MessageKey:     t.messageID,
-		SessionID:      t.sessionID,
-		SessionVersion: t.sessionVersion,
-		UserName:       t.userName,
-		Content:        t.content,
-		IsUser:         false,
-		Status:         status,
+		MessageKey:       t.messageID,
+		SessionID:        t.sessionID,
+		SessionVersion:   t.sessionVersion,
+		UserName:         t.userName,
+		Content:          t.content,
+		ReasoningContent: t.reasoningContent,
+		ResponseMeta:     utils.MustMarshalJSONString(t.responseMeta),
+		Extra:            utils.MustMarshalJSONString(t.extra),
+		IsUser:           false,
+		Status:           status,
 	}
 }
 
 // appendChunkLocalOnly 只更新本地环形缓冲区和订阅广播所需数据。
 // 第三阶段开始，Redis 写入会在调用方里作为同步提交点单独处理。
-func (t *activeStreamTask) appendChunkLocalOnly(chunk string) (model.StreamChunkSnapshot, []chan activeStreamEvent) {
+func (t *activeStreamTask) appendChunkLocalOnly(chunkMsg *schema.Message) (model.StreamChunkSnapshot, []chan activeStreamEvent) {
 	now := time.Now()
+	if chunkMsg == nil {
+		chunkMsg = &schema.Message{}
+	}
 
 	t.mu.Lock()
 	t.nextSeq++
 	item := model.StreamChunkSnapshot{
-		StreamID: t.streamID,
-		Seq:      t.nextSeq - 1,
-		Delta:    chunk,
-		TsUnixMs: now.UnixMilli(),
+		StreamID:       t.streamID,
+		Seq:            t.nextSeq - 1,
+		Delta:          chunkMsg.Content,
+		ReasoningDelta: chunkMsg.ReasoningContent,
+		ResponseMeta:   cloneJSONMap(anyMapFromResponseMeta(chunkMsg.ResponseMeta)),
+		Extra:          cloneJSONMap(chunkMsg.Extra),
+		TsUnixMs:       now.UnixMilli(),
 	}
-	t.content += chunk
-	t.bufferBytes += len(chunk)
+	t.content += chunkMsg.Content
+	t.reasoningContent += chunkMsg.ReasoningContent
+	if chunkMsg.ResponseMeta != nil {
+		t.responseMeta = anyMapFromResponseMeta(chunkMsg.ResponseMeta)
+	}
+	if len(chunkMsg.Extra) > 0 {
+		if t.extra == nil {
+			t.extra = make(map[string]any)
+		}
+		for key, value := range chunkMsg.Extra {
+			t.extra[key] = value
+		}
+	}
+	t.bufferBytes += len(chunkMsg.Content) + len(chunkMsg.ReasoningContent)
 	t.chunks = append(t.chunks, item)
 	for len(t.chunks) > activeStreamBufferMaxChunks || t.bufferBytes > activeStreamBufferMaxBytes {
 		if len(t.chunks) == 0 {
@@ -266,8 +296,8 @@ func (t *activeStreamTask) appendChunkLocalOnly(chunk string) (model.StreamChunk
 
 // appendChunkAndCommit 先更新本地 chunk 缓冲，再同步提交 Redis 的 chunk/snapshot/meta。
 // 第三阶段把这里提升为正式恢复层提交点，一旦提交失败，会把错误上抛给主链路处理。
-func (t *activeStreamTask) appendChunkAndCommit(chunk string) error {
-	item, subscribers := t.appendChunkLocalOnly(chunk)
+func (t *activeStreamTask) appendChunkAndCommit(chunkMsg *schema.Message) error {
+	item, subscribers := t.appendChunkLocalOnly(chunkMsg)
 
 	if t.canPersistRecoveryState() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -324,24 +354,30 @@ func (t *activeStreamTask) attachSubscriber(lastSeq int64) (string, *model.Strea
 	var snapshot *model.StreamSnapshot
 	if len(backlog) > 0 && backlog[0].Seq > lastSeq+1 {
 		snapshot = &model.StreamSnapshot{
-			StreamID:   t.streamID,
-			SessionID:  t.sessionID,
-			MessageID:  t.messageID,
-			Content:    t.content,
-			LastSeq:    t.nextSeq - 1,
-			UpdatedAt:  time.Now(),
-			StatusHint: string(t.status),
+			StreamID:         t.streamID,
+			SessionID:        t.sessionID,
+			MessageID:        t.messageID,
+			Content:          t.content,
+			ReasoningContent: t.reasoningContent,
+			ResponseMeta:     cloneJSONMap(t.responseMeta),
+			Extra:            cloneJSONMap(t.extra),
+			LastSeq:          t.nextSeq - 1,
+			UpdatedAt:        time.Now(),
+			StatusHint:       string(t.status),
 		}
 	}
 	if len(backlog) == 0 && lastSeq < t.nextSeq-1 {
 		snapshot = &model.StreamSnapshot{
-			StreamID:   t.streamID,
-			SessionID:  t.sessionID,
-			MessageID:  t.messageID,
-			Content:    t.content,
-			LastSeq:    t.nextSeq - 1,
-			UpdatedAt:  time.Now(),
-			StatusHint: string(t.status),
+			StreamID:         t.streamID,
+			SessionID:        t.sessionID,
+			MessageID:        t.messageID,
+			Content:          t.content,
+			ReasoningContent: t.reasoningContent,
+			ResponseMeta:     cloneJSONMap(t.responseMeta),
+			Extra:            cloneJSONMap(t.extra),
+			LastSeq:          t.nextSeq - 1,
+			UpdatedAt:        time.Now(),
+			StatusHint:       string(t.status),
 		}
 	}
 
@@ -443,6 +479,24 @@ func cloneTimePtr(v *time.Time) *time.Time {
 	}
 	copyValue := *v
 	return &copyValue
+}
+
+func anyMapFromResponseMeta(meta *schema.ResponseMeta) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	return utils.ParseJSONStringToMap(utils.MustMarshalJSONString(meta))
+}
+
+func cloneJSONMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
 }
 
 // activeStreamRegistry 维护当前进程内所有活跃或短期可恢复的流式任务。

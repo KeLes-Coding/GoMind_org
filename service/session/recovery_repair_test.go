@@ -17,8 +17,8 @@ func (sessionStubModel) GenerateResponse(ctx context.Context, messages []*schema
 	return &schema.Message{}, nil
 }
 
-func (sessionStubModel) StreamResponse(ctx context.Context, messages []*schema.Message, cb aihelper.StreamCallback) (string, error) {
-	return "", nil
+func (sessionStubModel) StreamResponse(ctx context.Context, messages []*schema.Message, cb aihelper.StreamCallback) (*schema.Message, error) {
+	return &schema.Message{}, nil
 }
 
 func (sessionStubModel) GenerateSummary(ctx context.Context, existingSummary string, messages []*schema.Message) (string, error) {

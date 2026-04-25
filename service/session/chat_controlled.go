@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 )
 
@@ -245,7 +246,7 @@ func startActiveStream(userName string, sess *model.Session, resolved *resolvedC
 
 			go watchRemoteStopSignal(execCtx, task)
 
-			if _, err := helper.StreamResponseWithExistingAssistantForPreparedUserMessage(userName, execCtx, func(msg string) {
+			if _, err := helper.StreamResponseWithExistingAssistantForPreparedUserMessage(userName, execCtx, func(msg *schema.Message) {
 				if commitErr := task.appendChunkAndCommit(msg); commitErr != nil {
 					task.setCommitError(commitErr)
 					task.requestStop(model.MessageStatusPartial)
@@ -434,21 +435,27 @@ func attachToActiveStream(ctx context.Context, writer http.ResponseWriter, task 
 	if snapshot != nil {
 		observability.RecordStreamResumeSnapshotFallback()
 		if err := writeStreamJSON(writer, flusher, map[string]interface{}{
-			"type":      "snapshot",
-			"streamId":  snapshot.StreamID,
-			"messageId": snapshot.MessageID,
-			"content":   snapshot.Content,
-			"lastSeq":   snapshot.LastSeq,
+			"type":             "snapshot",
+			"streamId":         snapshot.StreamID,
+			"messageId":        snapshot.MessageID,
+			"content":          snapshot.Content,
+			"reasoningContent": snapshot.ReasoningContent,
+			"responseMeta":     snapshot.ResponseMeta,
+			"extra":            snapshot.Extra,
+			"lastSeq":          snapshot.LastSeq,
 		}); err != nil {
 			return code.CodeSuccess
 		}
 	}
 	for _, chunk := range backlog {
 		if err := writeStreamJSON(writer, flusher, map[string]interface{}{
-			"type":     "chunk",
-			"streamId": chunk.StreamID,
-			"seq":      chunk.Seq,
-			"delta":    chunk.Delta,
+			"type":           "chunk",
+			"streamId":       chunk.StreamID,
+			"seq":            chunk.Seq,
+			"delta":          chunk.Delta,
+			"reasoningDelta": chunk.ReasoningDelta,
+			"responseMeta":   chunk.ResponseMeta,
+			"extra":          chunk.Extra,
 		}); err != nil {
 			return code.CodeSuccess
 		}
@@ -474,10 +481,13 @@ func attachToActiveStream(ctx context.Context, writer http.ResponseWriter, task 
 					continue
 				}
 				if err := writeStreamJSON(writer, flusher, map[string]interface{}{
-					"type":     "chunk",
-					"streamId": event.Chunk.StreamID,
-					"seq":      event.Chunk.Seq,
-					"delta":    event.Chunk.Delta,
+					"type":           "chunk",
+					"streamId":       event.Chunk.StreamID,
+					"seq":            event.Chunk.Seq,
+					"delta":          event.Chunk.Delta,
+					"reasoningDelta": event.Chunk.ReasoningDelta,
+					"responseMeta":   event.Chunk.ResponseMeta,
+					"extra":          event.Chunk.Extra,
 				}); err != nil {
 					return code.CodeSuccess
 				}
@@ -558,11 +568,14 @@ func attachToRedisBackedStream(ctx context.Context, writer http.ResponseWriter, 
 				}
 				if snapshot != nil {
 					if err := writeStreamJSON(writer, flusher, map[string]interface{}{
-						"type":      "snapshot",
-						"streamId":  snapshot.StreamID,
-						"messageId": snapshot.MessageID,
-						"content":   snapshot.Content,
-						"lastSeq":   snapshot.LastSeq,
+						"type":             "snapshot",
+						"streamId":         snapshot.StreamID,
+						"messageId":        snapshot.MessageID,
+						"content":          snapshot.Content,
+						"reasoningContent": snapshot.ReasoningContent,
+						"responseMeta":     snapshot.ResponseMeta,
+						"extra":            snapshot.Extra,
+						"lastSeq":          snapshot.LastSeq,
 					}); err != nil {
 						return code.CodeSuccess
 					}
@@ -574,10 +587,13 @@ func attachToRedisBackedStream(ctx context.Context, writer http.ResponseWriter, 
 
 		for _, chunk := range filtered {
 			if err := writeStreamJSON(writer, flusher, map[string]interface{}{
-				"type":     "chunk",
-				"streamId": chunk.StreamID,
-				"seq":      chunk.Seq,
-				"delta":    chunk.Delta,
+				"type":           "chunk",
+				"streamId":       chunk.StreamID,
+				"seq":            chunk.Seq,
+				"delta":          chunk.Delta,
+				"reasoningDelta": chunk.ReasoningDelta,
+				"responseMeta":   chunk.ResponseMeta,
+				"extra":          chunk.Extra,
 			}); err != nil {
 				return code.CodeSuccess
 			}
