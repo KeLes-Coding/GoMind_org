@@ -176,18 +176,20 @@
   </aside>
 
   <!-- User Menu Dropdown (rendered outside sidebar to avoid overflow clipping) -->
-  <div
-    v-if="userMenuVisible && isLoggedIn"
-    ref="userMenuRef"
-    class="fixed z-50 rounded-xl border border-border-light dark:border-neutral-800 bg-surface-light dark:bg-neutral-900 shadow-xl overflow-hidden"
-    :style="userMenuStyle"
-  >
-    <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-[#EDE8E1] dark:hover:bg-neutral-800 text-text-primary-light dark:text-neutral-100 bg-transparent border-none cursor-pointer" @click="$emit('handle-settings')">Settings</button>
-    <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-[#EDE8E1] dark:hover:bg-neutral-800 text-text-primary-light dark:text-neutral-100 bg-transparent border-none cursor-pointer" @click="$emit('open-model-config-dialog')">Model Configs</button>
-    <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-[#EDE8E1] dark:hover:bg-neutral-800 text-text-primary-light dark:text-neutral-100 bg-transparent border-none cursor-pointer" @click="$emit('open-file-manager-dialog')">File Management</button>
-    <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-[#EDE8E1] dark:hover:bg-neutral-800 text-text-primary-light dark:text-neutral-100 bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" :disabled="!currentSessionId || tempSession || loading" @click="$emit('handle-sync-history')">Sync history</button>
-    <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 bg-transparent border-none cursor-pointer" @click="$emit('handle-logout')">Log out</button>
-  </div>
+  <Transition name="user-menu-pop">
+    <div
+      v-if="userMenuVisible && isLoggedIn"
+      ref="userMenuRef"
+      class="user-menu-dropdown fixed z-50 rounded-xl border border-border-light dark:border-neutral-800 bg-surface-light dark:bg-neutral-900 shadow-xl overflow-hidden"
+      :style="userMenuStyle"
+    >
+      <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-[#EDE8E1] dark:hover:bg-neutral-800 text-text-primary-light dark:text-neutral-100 bg-transparent border-none cursor-pointer" @click="$emit('handle-settings')">Settings</button>
+      <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-[#EDE8E1] dark:hover:bg-neutral-800 text-text-primary-light dark:text-neutral-100 bg-transparent border-none cursor-pointer" @click="$emit('open-model-config-dialog')">Model Configs</button>
+      <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-[#EDE8E1] dark:hover:bg-neutral-800 text-text-primary-light dark:text-neutral-100 bg-transparent border-none cursor-pointer" @click="$emit('open-file-manager-dialog')">File Management</button>
+      <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-[#EDE8E1] dark:hover:bg-neutral-800 text-text-primary-light dark:text-neutral-100 bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" :disabled="!currentSessionId || tempSession || loading" @click="$emit('handle-sync-history')">Sync history</button>
+      <button type="button" class="w-full px-4 py-3 text-left text-sm hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 bg-transparent border-none cursor-pointer" @click="$emit('handle-logout')">Log out</button>
+    </div>
+  </Transition>
 </template>
 
 <script>
@@ -274,7 +276,7 @@ export default {
     },
     userMenuStyle() {
       return {
-        bottom: `${window.innerHeight - this.userMenuBottom}px`,
+        bottom: `${window.innerHeight - this.userMenuBottom + 8}px`,
         left: `${this.userMenuLeft}px`,
         width: `${this.userMenuWidth}px`
       }
@@ -306,7 +308,7 @@ export default {
       const trigger = sidebar?.querySelector('.user-menu-trigger')
       if (!trigger) return
       const rect = trigger.getBoundingClientRect()
-      this.userMenuBottom = rect.bottom
+      this.userMenuBottom = rect.top
       this.userMenuLeft = rect.left
       this.userMenuWidth = this.isSidebarCollapsed ? 180 : rect.width
     },
@@ -358,5 +360,28 @@ aside ::-webkit-scrollbar-thumb {
 .sidebar-label.is-expanded {
   max-width: 180px;
   opacity: 1;
+}
+
+.user-menu-dropdown {
+  transform-origin: left bottom;
+}
+
+.user-menu-pop-enter-active,
+.user-menu-pop-leave-active {
+  transition:
+    opacity 150ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.user-menu-pop-enter-from,
+.user-menu-pop-leave-to {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+}
+
+.user-menu-pop-enter-to,
+.user-menu-pop-leave-from {
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
 </style>

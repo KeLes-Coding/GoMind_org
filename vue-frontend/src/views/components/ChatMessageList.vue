@@ -4,20 +4,36 @@
       <div
         v-for="(message, index) in currentMessages"
         :key="index"
+        class="message-row"
       >
-        <div v-if="message.role === 'user'" class="flex gap-4 mb-10 group">
+        <div v-if="message.role === 'user'" class="flex flex-row-reverse items-start gap-3 mb-7 group">
           <img
             v-if="userProfile.avatar_url"
             :src="userProfile.avatar_url"
             alt="头像"
-            class="w-8 h-8 rounded-full object-cover border border-border-light dark:border-neutral-700 shrink-0 mt-1 shadow-sm"
+            class="w-9 h-9 rounded-full object-cover border border-white/80 dark:border-neutral-700 shrink-0 mt-1 shadow-sm"
           />
-          <div v-else class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs select-none bg-white text-text-primary-light dark:bg-neutral-800 dark:text-neutral-100 shrink-0 mt-1 border border-border-light dark:border-neutral-700">
+          <div v-else class="w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs select-none bg-[#2E2A24] text-white dark:bg-neutral-100 dark:text-neutral-950 shrink-0 mt-1 border border-white/80 dark:border-neutral-700 shadow-sm">
             {{ getUserInitial }}
           </div>
-          <div class="flex-1 min-w-0 pt-1.5">
+          <div class="flex flex-col items-end min-w-0 max-w-[82%] sm:max-w-[74%] pt-1">
             <img v-if="message.imageUrl" :src="message.imageUrl" alt="Uploaded image" class="max-w-xs rounded-lg shadow-md mb-3 border border-border-light dark:border-neutral-700" />
-            <div class="whitespace-pre-wrap break-words text-[15px] leading-7 text-text-primary-light dark:text-neutral-100 dark:bg-neutral-800/80 dark:px-4 dark:py-3 dark:rounded-lg">{{ getMessageRawMarkdown(message) }}</div>
+            <div class="relative max-w-full">
+              <div
+                v-html="renderMarkdown(message.content)"
+                @click="handleMarkdownClick"
+                class="user-message-bubble prose dark:prose-invert max-w-none rounded-2xl rounded-tr-md border border-[#E6D8C7] bg-[#FFF7EC] px-4 py-3 text-[15px] leading-7 text-[#2E261D] shadow-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                :class="{ 'user-message-bubble--collapsed': isUserMessageCollapsed(index, message) }"
+              ></div>
+              <button
+                v-if="isExpandableUserMessage(message)"
+                type="button"
+                class="mt-2 inline-flex items-center rounded-md border border-transparent px-2 py-1 text-xs text-text-secondary-light transition-colors hover:bg-[#EDE8E1] hover:text-text-primary-light dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                @click="toggleUserMessage(index)"
+              >
+                {{ isUserMessageCollapsed(index, message) ? '展开' : '收起' }}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -64,6 +80,7 @@
             <div
               v-else-if="message.content"
               v-html="renderMarkdown(message.content)"
+              @click="handleMarkdownClick"
               class="prose dark:prose-invert prose-p:my-2 prose-p:leading-7 dark:prose-p:text-neutral-300 prose-pre:bg-[#1e1e1e] prose-pre:text-[#e5e5e5] prose-pre:rounded-lg prose-pre:border prose-pre:border-[#3a3a3a] prose-code:text-[#B65A00] dark:prose-code:text-green-400 prose-a:text-accent-light dark:prose-a:text-orange-500 max-w-none"
             ></div>
           </div>
@@ -74,7 +91,7 @@
 </template>
 
 <script>
-/* eslint-env node */
+/* eslint-env browser */
 import { ref, computed, reactive } from 'vue'
 import { getMessageReasoning, getMessageRawMarkdown, getMessageStatusLabel, getMessageMetaStatus, renderMarkdown } from '../../utils/messageHelpers'
 
@@ -89,6 +106,7 @@ export default {
     const scrollContainer = ref(null)
     const viewModes = reactive({})
     const reasoningExpanded = reactive({})
+    const expandedUserMessages = reactive({})
     const getUserInitial = computed(() => {
       const name = props.userProfile.name || props.userProfile.username || 'U'
       return name.slice(0, 1).toUpperCase()
@@ -97,13 +115,51 @@ export default {
     const toggleViewMode = (index) => {
       viewModes[index] = getViewMode(index) === 'preview' ? 'source' : 'preview'
     }
+    const isExpandableUserMessage = (message) => {
+      const raw = getMessageRawMarkdown(message)
+      return raw.length > 90 || raw.split(/\r\n|\r|\n/).length > 2
+    }
+    const isUserMessageCollapsed = (index, message) => {
+      return isExpandableUserMessage(message) && !expandedUserMessages[index]
+    }
+    const toggleUserMessage = (index) => {
+      expandedUserMessages[index] = !expandedUserMessages[index]
+    }
+    const copyText = async (text) => {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        return
+      }
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    const handleMarkdownClick = async (event) => {
+      const button = event.target.closest?.('[data-copy-code]')
+      if (!button) return
+      const encoded = button.getAttribute('data-copy-code') || ''
+      await copyText(decodeURIComponent(encoded))
+      button.classList.add('is-copied')
+      window.setTimeout(() => button.classList.remove('is-copied'), 1200)
+    }
     return {
       scrollContainer,
       viewModes,
       reasoningExpanded,
+      expandedUserMessages,
       getUserInitial,
       getViewMode,
       toggleViewMode,
+      isExpandableUserMessage,
+      isUserMessageCollapsed,
+      toggleUserMessage,
+      handleMarkdownClick,
       renderMarkdown,
       getMessageReasoning,
       getMessageRawMarkdown,

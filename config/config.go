@@ -105,8 +105,10 @@ type MilvusConfig struct {
 }
 
 type LogConfig struct {
-	Path      string `toml:"path"`
-	MaxSizeMB int    `toml:"maxSizeMB"`
+	Path                         string `toml:"path"`
+	MaxSizeMB                    int    `toml:"maxSizeMB"`
+	SessionConversationDir       string `toml:"sessionConversationDir"`
+	SessionConversationRetention int    `toml:"sessionConversationRetention"`
 }
 
 type MCPConfig struct {

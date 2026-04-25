@@ -2,6 +2,7 @@ package message
 
 import (
 	"GopherAI/common/mysql"
+	"GopherAI/common/sessionlog"
 	"GopherAI/model"
 
 	"gorm.io/gorm"
@@ -41,6 +42,9 @@ func CreateMessage(message *model.Message) (*model.Message, error) {
 		Columns:   []clause.Column{{Name: "message_key"}},
 		DoUpdates: clause.AssignmentColumns([]string{"session_version", "content", "reasoning_content", "response_meta", "extra", "is_user", "status", "updated_at"}),
 	}).Create(message).Error
+	if err == nil {
+		sessionlog.RecordMessageBestEffort(message)
+	}
 	return message, err
 }
 

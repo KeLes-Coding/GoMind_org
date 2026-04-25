@@ -7,6 +7,7 @@ import (
 	"GopherAI/common/observability"
 	"GopherAI/common/redis"
 	rt "GopherAI/common/runtime"
+	"GopherAI/common/sessionlog"
 	"GopherAI/common/vectorruntime"
 	"GopherAI/config"
 	"GopherAI/router"
@@ -41,6 +42,11 @@ func main() {
 	}); err != nil {
 		log.Println("applog setup degraded, fallback to default stderr:", err)
 	}
+	sessionlog.Setup(sessionlog.Config{
+		Dir:         conf.LogConfig.SessionConversationDir,
+		MaxSessions: conf.LogConfig.SessionConversationRetention,
+		BaseLogPath: conf.LogConfig.Path,
+	})
 	host := conf.MainConfig.Host
 	port := conf.MainConfig.Port
 

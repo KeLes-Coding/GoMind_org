@@ -96,10 +96,13 @@ const highlightCode = (code) => {
   return html
 }
 
+const encodeCodeForCopy = (code) => encodeURIComponent(String(code || ''))
+
 const renderer = new marked.Renderer()
 renderer.code = (token) => {
   const lang = token.lang ? escapeHtml(token.lang) : 'code'
-  return `<div class="markdown-code"><div class="markdown-code__header"><span>${lang}</span></div><pre><code class="language-${lang}">${highlightCode(token.text || '')}</code></pre></div>`
+  const code = token.text || ''
+  return `<div class="markdown-code"><div class="markdown-code__header"><span>${lang}</span><button type="button" class="markdown-code__copy" data-copy-code="${encodeCodeForCopy(code)}" title="复制代码"><span class="markdown-code__copy-icon" aria-hidden="true"></span></button></div><pre><code class="language-${lang}">${highlightCode(code)}</code></pre></div>`
 }
 
 marked.use({ renderer })

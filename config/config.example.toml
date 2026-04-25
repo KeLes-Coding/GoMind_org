@@ -86,6 +86,8 @@ indexedCacheTTLSeconds = 600
 [logConfig]
 path = "logs/gomind.log"
 maxSizeMB = 20
+sessionConversationDir = "logs/session_conversations"
+sessionConversationRetention = 100
 
 [mcpConfig]
 enabled = true
