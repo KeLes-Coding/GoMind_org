@@ -31,6 +31,11 @@
         :has-messages="currentMessages.length > 0"
         :is-dark="isDark"
         :loading="loading"
+        :selected-config-id="selectedConfigId"
+        @update:selected-config-id="val => selectedConfigId = val"
+        :available-configs="availableConfigs"
+        @config-change="onConfigChange"
+        @open-model-config-dialog="openModelConfigDialog"
         @toggle-theme="toggleTheme"
       />
 
@@ -50,19 +55,14 @@
         @update:input-message="val => inputMessage = val"
         :loading="loading"
         :uploading="uploading"
-        :selected-config-id="selectedConfigId"
-        @update:selected-config-id="val => selectedConfigId = val"
-        @config-change="onConfigChange"
         :selected-chat-mode="selectedChatMode"
         @update:selected-chat-mode="val => selectedChatMode = val"
-        :available-configs="availableConfigs"
         :available-chat-modes="availableChatModes"
         :chat-mode-label="chatModeLabel"
         @send-message="sendMessage"
         @stop-stream="stopCurrentStream"
         @file-upload="handleFileUpload"
         @image-recognition="handleImageRecognition"
-        @open-model-config-dialog="openModelConfigDialog"
       />
 
       <SettingsDialog

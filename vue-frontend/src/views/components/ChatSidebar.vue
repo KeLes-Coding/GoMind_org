@@ -12,7 +12,7 @@
       'flex flex-col flex-shrink-0 z-40 border-r shadow-sm',
       'bg-white dark:bg-neutral-900/50 dark:backdrop-blur-xl border-border-light dark:border-neutral-800',
     ]"
-    :style="{ width: isSidebarCollapsed ? '68px' : '260px', transition: 'width 300ms ease-in-out', overflow: 'hidden' }"
+    :style="{ width: isSidebarCollapsed ? '68px' : '260px', transition: 'width 440ms cubic-bezier(0.22, 1, 0.36, 1)', overflow: 'hidden' }"
   >
     <div class="flex items-center gap-3 px-4 pt-5 pb-3 flex-shrink-0">
       <button
@@ -22,21 +22,22 @@
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
-      <div class="min-w-0 transition-opacity duration-150" :class="isSidebarCollapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'">
-        <h2 class="truncate text-xl font-bold tracking-tight text-text-primary-light dark:text-neutral-50">Workspace</h2>
-        <p class="truncate text-xs text-text-secondary-light dark:text-neutral-500">GoMind Studio</p>
-      </div>
     </div>
 
     <div class="px-3 py-2 flex-shrink-0">
       <button
         class="flex items-center rounded-full bg-accent-light hover:bg-accent-light/90 shadow-[0_4px_14px_rgba(255,140,0,0.25)] transition-all cursor-pointer text-sm font-semibold text-white border-none"
-        :class="isSidebarCollapsed ? 'p-2.5 justify-center' : 'gap-3 px-5 py-3 w-full justify-center'"
+        :class="[
+          'h-11 w-full justify-start px-3',
+          isSidebarCollapsed ? 'gap-0' : 'gap-3'
+        ]"
         @click="$emit('create-new-session')"
         title="New chat"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-        <span class="whitespace-nowrap transition-opacity duration-150" :class="isSidebarCollapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'">New chat</span>
+        <span class="flex h-5 w-5 shrink-0 items-center justify-center">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+        </span>
+        <span class="sidebar-label whitespace-nowrap" :class="isSidebarCollapsed ? 'is-collapsed' : 'is-expanded'">New chat</span>
       </button>
     </div>
 
@@ -145,8 +146,8 @@
         <button
           class="user-menu-trigger"
           :class="[
-            'flex items-center rounded-lg hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80 transition-colors cursor-pointer bg-transparent border-none',
-            isSidebarCollapsed ? 'p-2 justify-center w-full' : 'w-full gap-3 px-3 py-2.5 text-left'
+            'flex h-[52px] items-center rounded-lg hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80 transition-colors cursor-pointer bg-transparent border-none',
+            isSidebarCollapsed ? 'w-full justify-start px-1' : 'w-full gap-3 px-1 text-left'
           ]"
           @click.stop="isLoggedIn ? $emit('toggle-user-menu') : $emit('go-login')"
         >
@@ -154,21 +155,21 @@
             v-if="isLoggedIn && userProfile.avatar_url"
             :src="userProfile.avatar_url"
             alt="User avatar"
-            class="w-9 h-9 rounded-full object-cover shrink-0 border border-border-light dark:border-neutral-700"
+            class="w-9 h-9 min-w-[2.25rem] rounded-full object-cover shrink-0 border border-border-light dark:border-neutral-700"
           />
           <div
             v-else
-            class="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0 select-none"
+            class="w-9 h-9 min-w-[2.25rem] rounded-full flex items-center justify-center text-xs font-bold shrink-0 select-none"
             :class="isLoggedIn ? 'bg-accent-light text-white' : 'bg-black/10 dark:bg-neutral-800 text-text-secondary-light dark:text-neutral-400'"
           >
             {{ isLoggedIn ? getUserInitial : '?' }}
           </div>
-          <div class="min-w-0 flex-1 whitespace-nowrap" :class="isSidebarCollapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'" style="transition: opacity 150ms ease-in-out">
+          <div class="sidebar-label min-w-0 flex-1 whitespace-nowrap" :class="isSidebarCollapsed ? 'is-collapsed' : 'is-expanded'">
             <div class="text-sm truncate" :class="isLoggedIn ? 'text-text-primary-light dark:text-neutral-100' : 'text-text-secondary-light dark:text-neutral-400'">{{ isLoggedIn ? getUserDisplayName : '未登录' }}</div>
             <div v-if="isLoggedIn" class="text-xs truncate text-text-secondary-light dark:text-neutral-500">@{{ userProfile.username || 'user' }}</div>
             <div v-else class="text-xs truncate text-accent-light dark:text-orange-500">点击登录</div>
           </div>
-          <svg v-if="isLoggedIn" :class="isSidebarCollapsed ? 'opacity-0 w-0' : 'opacity-100'" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0 text-text-secondary-light dark:text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+          <svg v-if="isLoggedIn" :class="isSidebarCollapsed ? 'opacity-0 max-w-0' : 'opacity-100 max-w-4'" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0 text-text-secondary-light dark:text-neutral-400 transition-all duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
         </button>
       </div>
     </div>
@@ -335,5 +336,27 @@ aside ::-webkit-scrollbar-thumb {
 }
 .dark aside ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-label {
+  max-width: 180px;
+  opacity: 1;
+  overflow: hidden;
+  transition:
+    opacity 220ms ease 130ms,
+    max-width 360ms cubic-bezier(0.22, 1, 0.36, 1) 60ms;
+}
+
+.sidebar-label.is-collapsed {
+  max-width: 0;
+  opacity: 0;
+  transition:
+    opacity 160ms ease,
+    max-width 260ms cubic-bezier(0.22, 1, 0.36, 1) 120ms;
+}
+
+.sidebar-label.is-expanded {
+  max-width: 180px;
+  opacity: 1;
 }
 </style>

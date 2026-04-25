@@ -61,29 +61,6 @@
           class="flex-1 max-h-40 min-h-[44px] bg-transparent border-none outline-none resize-none px-4 py-2 text-[15px] leading-7 text-text-primary-light dark:text-neutral-100 placeholder:text-text-secondary-light dark:placeholder:text-neutral-500 focus:ring-0"
         ></textarea>
 
-        <!-- Model selector + settings -->
-        <div class="flex items-center gap-1 mb-1 mx-1">
-          <div class="toolbar-select-wrap max-w-[130px] !bg-[#F3EFEA] dark:!bg-neutral-800/80 !border-none !rounded-xl hidden sm:flex">
-            <select
-              :value="selectedConfigId"
-              @change="onConfigSelect"
-              class="toolbar-select !py-1.5 !px-2.5 !pr-7 !text-xs !min-h-[36px] bg-transparent font-medium"
-            >
-              <option value="" disabled v-if="!availableConfigs.length">No Config</option>
-              <option v-for="config in availableConfigs" :key="config.id" :value="config.id" class="bg-surface-light dark:bg-surface-dark">
-                {{ config.name }}{{ config.isDefault ? ' ★' : '' }}
-              </option>
-            </select>
-            <span class="toolbar-select-icon right-1.5" aria-hidden="true">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
-            </span>
-          </div>
-
-          <button type="button" @click="$emit('open-model-config-dialog')" class="p-2 w-9 h-9 rounded-full hover:bg-[#EDE8E1] dark:hover:bg-neutral-800/80 text-text-secondary-light dark:text-neutral-400 hover:text-text-primary-light dark:hover:text-neutral-100 transition-colors bg-transparent border-none cursor-pointer flex items-center justify-center shrink-0" title="Model Configs">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-          </button>
-        </div>
-
         <!-- Stop Button -->
         <button
            v-if="loading"
@@ -137,24 +114,19 @@ export default {
     inputMessage: { type: String, default: '' },
     loading: { type: Boolean, default: false },
     uploading: { type: Boolean, default: false },
-    selectedConfigId: { type: String, default: '' },
     selectedChatMode: { type: String, default: '' },
-    availableConfigs: { type: Array, default: () => [] },
     availableChatModes: { type: Array, default: () => [] },
     chatModeLabel: { type: Function, default: (mode) => mode }
   },
   emits: [
     'update:inputMessage',
-    'update:selectedConfigId',
     'update:selectedChatMode',
     'send-message',
     'stop-stream',
     'trigger-file-upload',
     'trigger-image-upload',
     'file-upload',
-    'image-recognition',
-    'config-change',
-    'open-model-config-dialog'
+    'image-recognition'
   ],
   setup(props, { emit }) {
     const fileInput = ref(null)
@@ -245,11 +217,6 @@ export default {
       activeModes.value = activeModes.value.filter(m => m.key !== key)
     }
 
-    const onConfigSelect = (e) => {
-      emit('update:selectedConfigId', e.target.value)
-      emit('config-change')
-    }
-
     // Expose internal refs for parent
     const handleFileUploadClick = () => {
       emit('trigger-file-upload')
@@ -273,7 +240,7 @@ export default {
       fileInput, imageInput, messageInput,
       showSlashMenu, activeModes, slashCommands, slashMenuIndex,
       onInputChange, onKeyDown, selectSlashCommand, removeMode,
-      onConfigSelect, handleFileUploadClick, handleImageUploadClick,
+      handleFileUploadClick, handleImageUploadClick,
       onFileChange, onImageChange
     }
   }
